@@ -1,0 +1,42 @@
+name: Deploy API
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'packages/api-server/**'
+      - 'packages/shared/**'
+      - 'prisma/**'
+
+concurrency:
+  group: deploy-api-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: Build & Deploy API
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t tenderbazaar-api -f packages/api-server/Dockerfile .
+
+      # Push to container registry - configure secrets for your registry
+      - name: Push to registry
+        run: echo "Push to container registry - configure for your deployment target"
+        # Uncomment and configure for ECR:
+        # - name: Configure AWS credentials
+        #   uses: aws-actions/configure-aws-credentials@v4
+        #   with:
+        #     aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        #     aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        #     aws-region: ap-south-1
+        # - name: Login to ECR
+        #   uses: aws-actions/amazon-ecr-login@v2
+        # - name: Tag and push
+        #   run: |
+        #     docker tag tenderbazaar-api:latest ${{ secrets.ECR_REGISTRY }}/tenderbazaar-api:${{ github.sha }}
+        #     docker tag tenderbazaar-api:latest ${{ secrets.ECR_REGISTRY }}/tenderbazaar-api:latest
+        #     docker push ${{ secrets.ECR_REGISTRY }}/tenderbazaar-api:${{ github.sha }}
+        #     docker push ${{ secrets.ECR_REGISTRY }}/tenderbazaar-api:latest

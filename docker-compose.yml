@@ -1,0 +1,194 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: tenderbazaar-postgres
+    restart: unless-stopped
+    ports:
+      - '5432:5432'
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: tenderbazaar
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: tenderbazaar-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+    container_name: tenderbazaar-elasticsearch
+    restart: unless-stopped
+    ports:
+      - '9200:9200'
+      - '9300:9300'
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - xpack.security.enrollment.enabled=false
+      - 'ES_JAVA_OPTS=-Xms512m -Xmx512m'
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:9200/_cluster/health || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  # ── Init: push schema & seed DB ─────────────────────────────────
+  db-init:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.db-init
+    container_name: tenderbazaar-db-init
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/tenderbazaar
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: 'no'
+
+  ai-service:
+    build:
+      context: ./packages/ai-service
+      dockerfile: Dockerfile
+    container_name: tenderbazaar-ai-service
+    restart: unless-stopped
+    ports:
+      - '5050:5000'
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:5000/health || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 3
+
+  api-server:
+    build:
+      context: .
+      dockerfile: packages/api-server/Dockerfile
+    container_name: tenderbazaar-api-server
+    restart: unless-stopped
+    ports:
+      - '4000:4000'
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/tenderbazaar
+      - REDIS_URL=redis://redis:6379
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - AI_SERVICE_URL=http://ai-service:5000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=http://localhost:4000/api/v1
+    container_name: tenderbazaar-web
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+    env_file: .env
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:4000/api/v1
+      - PORT=3000
+      - HOSTNAME=0.0.0.0
+    depends_on:
+      - api-server
+
+  admin:
+    build:
+      context: .
+      dockerfile: apps/admin/Dockerfile
+      args:
+        - NEXT_PUBLIC_API_URL=http://localhost:4000/api/v1
+    container_name: tenderbazaar-admin
+    restart: unless-stopped
+    ports:
+      - '3001:3001'
+    env_file: .env
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:4000/api/v1
+      - PORT=3001
+      - HOSTNAME=0.0.0.0
+    depends_on:
+      - api-server
+
+  scraper:
+    build:
+      context: .
+      dockerfile: packages/scraper-engine/Dockerfile
+    container_name: tenderbazaar-scraper
+    restart: unless-stopped
+    ports:
+      - '4001:4001'
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/tenderbazaar
+      - REDIS_URL=redis://redis:6379
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - SCRAPER_API_PORT=4001
+      - SCRAPER_API_ENABLED=true
+      - NODE_ENV=production
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://localhost:4001/api/health || exit 1']
+      interval: 60s
+      timeout: 15s
+      retries: 3
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: packages/notification-service/Dockerfile
+    container_name: tenderbazaar-notification-service
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/tenderbazaar
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres-data:
+  redis-data:
+  elasticsearch-data:

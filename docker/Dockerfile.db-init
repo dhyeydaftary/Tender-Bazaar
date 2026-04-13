@@ -1,0 +1,30 @@
+# Lightweight init container — pushes Prisma schema & seeds the database
+FROM node:20-alpine
+WORKDIR /app
+
+# Prisma needs OpenSSL on Alpine
+RUN apk add --no-cache openssl
+
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
+
+# Install tsx globally for running seed.ts
+RUN npm install -g tsx
+
+# Copy only what Prisma needs
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY prisma/ prisma/
+
+# Minimal packages stubs so pnpm resolves workspaces
+COPY apps/web/package.json apps/web/
+COPY apps/admin/package.json apps/admin/
+COPY packages/api-server/package.json packages/api-server/
+COPY packages/shared/package.json packages/shared/
+COPY packages/scraper-engine/package.json packages/scraper-engine/
+COPY packages/notification-service/package.json packages/notification-service/
+
+RUN pnpm install --frozen-lockfile
+
+# Generate Prisma client
+RUN npx prisma generate
+
+CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && npx prisma db seed"]

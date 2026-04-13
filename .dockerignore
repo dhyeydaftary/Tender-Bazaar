@@ -1,0 +1,51 @@
+# Dependencies
+node_modules
+**/node_modules
+
+# Build output
+.next
+**/dist
+**/.next
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Version control
+.git
+.github
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Documentation
+*.md
+!pnpm-workspace.yaml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Debug logs
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# Test files
+coverage
+**/__tests__
+**/*.test.ts
+**/*.spec.ts
+
+# Mobile app (not needed in Docker)
+apps/mobile
+
+# Docker files
+docker-compose*.yml
+Dockerfile
+**/Dockerfile

@@ -1,0 +1,768 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ───────────────────────────────────────────
+
+enum UserRole {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum TenderType {
+  OPEN
+  LIMITED
+  SINGLE
+  TWO_PACKET
+  EOI
+  AUCTION
+  RFP
+  RFQ
+}
+
+enum TenderCategory {
+  WORKS
+  GOODS
+  SERVICES
+  CONSULTANCY
+}
+
+enum TenderStatus {
+  ACTIVE
+  CLOSED
+  AWARDED
+  CANCELLED
+  CORRIGENDUM
+}
+
+enum AlertFrequency {
+  INSTANT
+  DAILY
+  WEEKLY
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+  PAST_DUE
+}
+
+enum BillingCycle {
+  MONTHLY
+  YEARLY
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  REFUNDED
+}
+
+enum NotificationType {
+  TENDER_ALERT
+  DEADLINE_REMINDER
+  SUBSCRIPTION_EXPIRY
+  NEW_CORRIGENDUM
+  TENDER_RESULT
+  ELIGIBILITY_RESULT
+  SYSTEM
+}
+
+enum NotificationChannel {
+  EMAIL
+  PUSH
+  WHATSAPP
+  SMS
+  IN_APP
+}
+
+enum CompanyType {
+  PVT_LTD
+  LLP
+  PROPRIETORSHIP
+  PARTNERSHIP
+  SOCIETY
+  TRUST
+  GOVERNMENT
+}
+
+enum MSMECategory {
+  MICRO
+  SMALL
+  MEDIUM
+}
+
+// ─── Models ──────────────────────────────────────────
+
+model User {
+  id              String    @id @default(cuid())
+  name            String
+  email           String    @unique
+  passwordHash    String?
+  phone           String?   @unique
+  avatarUrl       String?
+  role            UserRole  @default(USER)
+  isEmailVerified Boolean   @default(false)
+  isPhoneVerified Boolean   @default(false)
+  googleId        String?   @unique
+
+  companyProfile  CompanyProfile?
+  sessions        Session[]
+  savedTenders    SavedTender[]
+  alerts          Alert[]
+  eligibilityChecks EligibilityCheck[]
+  subscription    Subscription?
+  payments        Payment[]
+  notifications   Notification[]
+  searchHistory   SearchHistory[]
+  supportTickets  SupportTicket[]
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@index([email])
+  @@index([phone])
+  @@index([googleId])
+}
+
+model CompanyProfile {
+  id                  String       @id @default(cuid())
+  userId              String       @unique
+  user                User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  companyName         String
+  gstin               String?
+  pan                 String?
+  companyType         CompanyType?
+  registrationNumber  String?
+  incorporationDate   DateTime?
+
+  annualTurnover      Float?
+  netWorth            Float?
+  employeeCount       Int?
+  yearsInBusiness     Int?
+
+  msmeRegistered      Boolean      @default(false)
+  msmeNumber          String?
+  msmeCategory        MSMECategory?
+
+  isoRegistered       Boolean      @default(false)
+  isoCertificates     String[]     @default([])
+
+  startupDpiit        Boolean      @default(false)
+  gemRegistered       Boolean      @default(false)
+  epfRegistered       Boolean      @default(false)
+  gstRegistered       Boolean      @default(false)
+
+  workCategories      String[]     @default([])
+  specializations     String[]     @default([])
+  statesOperated      String[]     @default([])
+  pastProjectValues   Float[]      @default([])
+  maxProjectCapacity  Float?
+
+  documents           CompanyDocument[]
+
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+
+  @@index([companyName])
+}
+
+model CompanyDocument {
+  id              String         @id @default(cuid())
+  companyProfileId String
+  companyProfile  CompanyProfile @relation(fields: [companyProfileId], references: [id], onDelete: Cascade)
+
+  name            String
+  type            String
+  fileUrl         String
+  fileSize        Int?
+
+  createdAt       DateTime       @default(now())
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  refreshToken String   @unique
+  userAgent    String?
+  ipAddress    String?
+  fcmToken     String?
+
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
+  @@index([refreshToken])
+}
+
+model Tender {
+  id                    String         @id @default(cuid())
+  title                 String
+  description           String?
+  referenceNumber       String
+  organization          String
+  department            String?
+
+  tenderType            TenderType     @default(OPEN)
+  category              TenderCategory @default(WORKS)
+  status                TenderStatus   @default(ACTIVE)
+
+  state                 String
+  district              String?
+  city                  String?
+
+  estimatedValue        Float?
+  emdAmount             Float?
+
+  publishedDate         DateTime
+  bidSubmissionDeadline DateTime
+  bidOpeningDate        DateTime?
+  preBidMeetingDate     DateTime?
+
+  sourcePortal          String
+  sourceUrl             String
+  sourceId              String
+
+  aiSummary             String?
+  aiKeywords            String[]       @default([])
+  aiEligibilityText     String?
+
+  minTurnover           Float?
+  minNetWorth           Float?
+  minExperience         Int?
+  requiredCertifications String[]      @default([])
+  reservedForMSME       Boolean        @default(false)
+  reservedForStartups   Boolean        @default(false)
+  emdExemptMSME         Boolean        @default(false)
+
+  viewCount             Int            @default(0)
+
+  documents             TenderDocument[]
+  results               TenderResult[]
+  savedBy               SavedTender[]
+  eligibilityChecks     EligibilityCheck[]
+
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
+
+  @@unique([sourceId, sourcePortal])
+  @@index([status])
+  @@index([category])
+  @@index([state])
+  @@index([organization])
+  @@index([publishedDate])
+  @@index([bidSubmissionDeadline])
+  @@index([estimatedValue])
+  @@index([sourcePortal])
+}
+
+model TenderDocument {
+  id         String   @id @default(cuid())
+  tenderId   String
+  tender     Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+
+  name       String
+  fileUrl    String
+  fileType   String?
+  fileSize   Int?
+
+  createdAt  DateTime @default(now())
+
+  @@index([tenderId])
+}
+
+model TenderResult {
+  id            String   @id @default(cuid())
+  tenderId      String
+  tender        Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+
+  winnerName    String
+  winnerCompany String?
+  awardedValue  Float?
+  awardedDate   DateTime?
+
+  createdAt     DateTime @default(now())
+
+  @@index([tenderId])
+}
+
+model SavedTender {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenderId   String
+  tender     Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+
+  notes      String?
+
+  createdAt  DateTime @default(now())
+
+  @@unique([userId, tenderId])
+  @@index([userId])
+  @@index([tenderId])
+}
+
+model Alert {
+  id              String         @id @default(cuid())
+  userId          String
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name            String
+  keywords        String[]       @default([])
+  categories      String[]       @default([])
+  states          String[]       @default([])
+  minValue        Float?
+  maxValue        Float?
+  organizations   String[]       @default([])
+  tenderTypes     String[]       @default([])
+
+  frequency       AlertFrequency @default(DAILY)
+
+  emailEnabled    Boolean        @default(true)
+  pushEnabled     Boolean        @default(true)
+  whatsappEnabled Boolean        @default(false)
+  smsEnabled      Boolean        @default(false)
+
+  isActive        Boolean        @default(true)
+  lastMatchedAt   DateTime?
+  matchCount      Int            @default(0)
+
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([userId])
+  @@index([isActive])
+}
+
+model EligibilityCheck {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tenderId    String
+  tender      Tender   @relation(fields: [tenderId], references: [id], onDelete: Cascade)
+
+  score       Float
+  isEligible  Boolean
+  criteria    Json
+  suggestions Json?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, tenderId])
+  @@index([userId])
+  @@index([tenderId])
+}
+
+model SubscriptionPlan {
+  id               String         @id @default(cuid())
+  name             String         // "Free", "Starter", "Professional", "Enterprise"
+  slug             String         @unique
+  description      String         @default("")
+  monthlyPrice     Float          // 0, 1499, 4999, 9999
+  yearlyPrice      Float          // 0, 14999, 49999, 99999
+  currency         String         @default("INR")
+
+  // ─── Tender discovery limits ───
+  tenderViewsPerPage  Int         @default(20)    // 20 for free, -1 unlimited
+  paginationAllowed   Boolean     @default(false)
+  advancedFilters     Boolean     @default(false)
+
+  // ─── Alert limits ───
+  maxAlerts           Int         @default(0)     // 0, 5, 25, -1
+  emailAlerts         Boolean     @default(false)
+  pushAlerts          Boolean     @default(false)
+  whatsappAlerts      Boolean     @default(false)
+  corrigendumAlerts   Boolean     @default(false)
+
+  // ─── AI feature limits ───
+  maxAiChecks         Int         @default(1)     // 1(lifetime), 10, 50, -1
+  aiChecksResetMonthly Boolean    @default(false) // false=lifetime for free
+  aiTenderSummary     Boolean     @default(false)
+  aiBidAssistant      String      @default("none") // "none", "basic", "advanced"
+  tenderComparison    Boolean     @default(false)
+  maxComparisonTenders Int        @default(0)     // 0, 0, 3, 5
+  aiMatching          String      @default("none") // "none", "basic", "advanced"
+  competitorAnalysis  Boolean     @default(false)
+
+  // ─── Save & document limits ───
+  maxSavedTenders     Int         @default(0)     // 0, 50, -1, -1
+  documentDownload    Boolean     @default(false)
+  bulkDownload        Boolean     @default(false)
+  exportEnabled       Boolean     @default(false)
+
+  // ─── Platform features ───
+  tenderCalendar      Boolean     @default(false)
+  multiLanguage       Boolean     @default(false)
+
+  // ─── Team & support ───
+  maxTeamMembers      Int         @default(1)
+  eTenderingSupport   Boolean     @default(false)
+  dedicatedManager    Boolean     @default(false)
+  supportLevel        String      @default("help_center") // "help_center","email","email_chat","priority_phone"
+
+  // ─── Display ───
+  isPopular           Boolean     @default(false) // true for Professional only
+  displayOrder        Int         @default(0)
+  isActive            Boolean     @default(true)
+
+  subscriptions       Subscription[]
+
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  @@index([slug])
+  @@index([isActive, displayOrder])
+}
+
+model Subscription {
+  id                      String             @id @default(cuid())
+  userId                  String             @unique
+  user                    User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  planId                  String
+  plan                    SubscriptionPlan   @relation(fields: [planId], references: [id])
+
+  status                  SubscriptionStatus @default(ACTIVE)
+  billingCycle            BillingCycle       @default(MONTHLY)
+
+  startDate               DateTime           @default(now())
+  endDate                 DateTime
+  autoRenew               Boolean            @default(true)
+
+  // ─── Usage tracking ───
+  aiChecksUsed            Int                @default(0)     // monthly counter (paid) or lifetime (free)
+  aiChecksResetDate       DateTime?                          // last monthly reset date
+  lifetimeAiChecksUsed    Int                @default(0)     // total AI checks ever used (for free plan)
+  savedTendersCount       Int                @default(0)     // current saved tenders count
+  alertsCreatedCount      Int                @default(0)     // current alerts count
+
+  // ─── Razorpay ───
+  razorpaySubscriptionId  String?
+  razorpayOrderId         String?                            // link to latest payment order
+
+  createdAt               DateTime           @default(now())
+  updatedAt               DateTime           @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+model Payment {
+  id                  String        @id @default(cuid())
+  userId              String
+  user                User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  amount              Float                                  // total amount (base + GST)
+  baseAmount          Float?                                 // pre-GST amount
+  gstAmount           Float?                                 // 18% GST component
+  currency            String        @default("INR")
+  status              PaymentStatus @default(PENDING)
+
+  razorpayOrderId     String?       @unique
+  razorpayPaymentId   String?       @unique
+  razorpaySignature   String?
+
+  planSlug            String?
+  billingCycle        BillingCycle?
+
+  invoiceUrl          String?
+  paidAt              DateTime?                              // actual payment timestamp
+
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([paidAt])
+}
+
+model Notification {
+  id         String             @id @default(cuid())
+  userId     String
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  type       NotificationType
+  channel    NotificationChannel @default(IN_APP)
+  title      String
+  message    String
+  data       Json?
+
+  isRead     Boolean            @default(false)
+
+  createdAt  DateTime           @default(now())
+
+  @@index([userId])
+  @@index([isRead])
+  @@index([createdAt])
+}
+
+model SearchHistory {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  query      String
+  filters    Json?
+  resultCount Int?
+
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// ─── Admin / Audit / Content / Support ──────────────
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  WAITING
+  RESOLVED
+  CLOSED
+}
+
+enum TicketPriority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum ContentStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  actorId     String                        // userId of admin who performed action
+  actorEmail  String
+  actorRole   UserRole
+  action      String                        // e.g. "user.update", "tender.delete", "settings.update"
+  entity      String                        // e.g. "User", "Tender", "SubscriptionPlan"
+  entityId    String?                       // ID of affected record
+  changes     Json?                         // { field: { old, new } }
+  metadata    Json?                         // extra context (IP address, user agent, etc.)
+
+  createdAt   DateTime @default(now())
+
+  @@index([actorId])
+  @@index([action])
+  @@index([entity])
+  @@index([createdAt])
+}
+
+model SupportTicket {
+  id          String         @id @default(cuid())
+  userId      String
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  subject     String
+  description String
+  status      TicketStatus   @default(OPEN)
+  priority    TicketPriority @default(MEDIUM)
+  category    String?                       // "billing", "technical", "account", "tender", "other"
+
+  assignedTo  String?                       // admin userId who is handling the ticket
+  resolvedAt  DateTime?
+
+  messages    SupportMessage[]
+
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  @@index([userId])
+  @@index([status])
+  @@index([priority])
+  @@index([assignedTo])
+  @@index([createdAt])
+}
+
+model SupportMessage {
+  id          String        @id @default(cuid())
+  ticketId    String
+  ticket      SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  senderId    String                        // userId — can be user or admin
+  senderRole  UserRole                      // USER, ADMIN, or SUPER_ADMIN
+  message     String
+  attachments String[]      @default([])
+
+  createdAt   DateTime      @default(now())
+
+  @@index([ticketId])
+  @@index([createdAt])
+}
+
+model BlogPost {
+  id          String        @id @default(cuid())
+  title       String
+  slug        String        @unique
+  excerpt     String?
+  content     String
+  coverImage  String?
+  authorId    String                        // admin user who created this
+  authorName  String
+
+  status      ContentStatus @default(DRAFT)
+  tags        String[]      @default([])
+
+  publishedAt DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([status])
+  @@index([slug])
+  @@index([publishedAt])
+}
+
+model Announcement {
+  id          String        @id @default(cuid())
+  title       String
+  message     String
+  type        String        @default("info")  // "info", "warning", "success", "error"
+  targetAudience String     @default("all")   // "all", "free", "paid", "enterprise"
+
+  status      ContentStatus @default(DRAFT)
+  isPinned    Boolean       @default(false)
+
+  startDate   DateTime?
+  endDate     DateTime?
+  authorId    String
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([status])
+  @@index([startDate])
+}
+
+model Banner {
+  id          String        @id @default(cuid())
+  title       String
+  imageUrl    String?
+  linkUrl     String?
+  description String?
+  position    String        @default("top")   // "top", "sidebar", "modal", "footer"
+
+  status      ContentStatus @default(DRAFT)
+  priority    Int           @default(0)       // higher = shown first
+
+  startDate   DateTime?
+  endDate     DateTime?
+  authorId    String
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([status])
+  @@index([position])
+}
+
+model AdminSetting {
+  id          String   @id @default(cuid())
+  category    String                          // "general", "email", "notifications", "security", "billing", "scraper"
+  key         String
+  value       Json                            // flexible JSON value
+  description String?
+  updatedBy   String?                         // last admin who modified this
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([category, key])
+  @@index([category])
+}
+
+// ─── Scraper Infrastructure ─────────────────────────
+
+enum ScrapingRunStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum ScraperHealthStatus {
+  HEALTHY
+  DEGRADED
+  UNHEALTHY
+  DISABLED
+}
+
+model ScrapingRun {
+  id              String           @id @default(cuid())
+  portalName      String
+  status          ScrapingRunStatus @default(PENDING)
+  triggeredBy     String           @default("schedule") // schedule | manual | retry
+  priority        Int              @default(5)
+
+  startedAt       DateTime?
+  completedAt     DateTime?
+  duration        Int?             // milliseconds
+
+  totalFound      Int              @default(0)
+  newTenders      Int              @default(0)
+  updatedTenders  Int              @default(0)
+  duplicates      Int              @default(0)
+  errors          Int              @default(0)
+
+  pagesScraped    Int              @default(0)
+  maxPages        Int?
+
+  errorMessage    String?
+  errorStack      String?
+  metadata        Json?            // extra portal-specific info
+
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([portalName])
+  @@index([status])
+  @@index([createdAt])
+  @@index([portalName, createdAt])
+}
+
+model ScraperHealth {
+  id                   String             @id @default(cuid())
+  portalName           String             @unique
+  status               ScraperHealthStatus @default(HEALTHY)
+
+  lastRunAt            DateTime?
+  lastSuccessAt        DateTime?
+  lastFailureAt        DateTime?
+
+  totalRuns            Int                @default(0)
+  totalSuccessRuns     Int                @default(0)
+  totalFailedRuns      Int                @default(0)
+  consecutiveFailures  Int                @default(0)
+
+  totalTendersFound    Int                @default(0)
+  totalTendersNew      Int                @default(0)
+
+  avgDurationMs        Float              @default(0)
+  errorRate            Float              @default(0)
+  lastError            String?
+
+  cronExpression       String?
+  enabled              Boolean            @default(true)
+
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  @@index([status])
+  @@index([enabled])
+}

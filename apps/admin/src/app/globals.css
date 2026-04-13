@@ -1,0 +1,111 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   DESIGN SYSTEM — CSS Custom Properties (matching web app)
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+@layer base {
+  /* ── Light Mode ─────────────────────────────────────────────────── */
+  :root {
+    --background: 220 14% 96%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 18 95% 54%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 220 13% 91%;
+    --secondary-foreground: 220 9% 46%;
+    --muted: 220 14% 93%;
+    --muted-foreground: 220 9% 46%;
+    --accent: 168 100% 36%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 220 13% 87%;
+    --input: 220 13% 87%;
+    --ring: 18 95% 54%;
+    --radius: 0.5rem;
+
+    /* Sidebar */
+    --sidebar: 222 47% 11%;
+    --sidebar-foreground: 220 20% 93%;
+    --sidebar-border: 217 33% 17%;
+    --sidebar-muted: 217 33% 17%;
+    --sidebar-muted-foreground: 215 16% 47%;
+    --sidebar-active: 18 95% 54%;
+
+    /* Chart tooltip */
+    --chart-tooltip-bg: 0 0% 100%;
+    --chart-tooltip-border: 220 13% 87%;
+    --chart-tooltip-text: 222 47% 11%;
+    --chart-grid: 220 13% 91%;
+    --chart-axis: 220 9% 46%;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+  }
+
+  /* ── Custom Scrollbar ───────────────────────────────────────────── */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/30;
+  }
+
+  /* ── Selection ──────────────────────────────────────────────────── */
+  ::selection {
+    background: rgba(255, 107, 53, 0.2);
+    color: inherit;
+  }
+
+  /* ── Focus ──────────────────────────────────────────────────────── */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+}
+
+@layer utilities {
+  .hover-lift {
+    @apply transition-all duration-300;
+  }
+  .hover-lift:hover {
+    @apply shadow-card-hover -translate-y-0.5;
+  }
+
+  .skeleton {
+    @apply bg-gradient-to-r from-muted via-muted-foreground/10 to-muted bg-[length:200%_100%] animate-shimmer rounded;
+  }
+
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}

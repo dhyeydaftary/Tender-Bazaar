@@ -1,0 +1,16 @@
+# Development overrides
+services:
+  postgres:
+    ports:
+      - '5432:5432'
+
+  redis:
+    ports:
+      - '6379:6379'
+    command: redis-server --appendonly yes
+
+  elasticsearch:
+    ports:
+      - '9200:9200'
+    environment:
+      - 'ES_JAVA_OPTS=-Xms256m -Xmx256m'
