@@ -106,26 +106,148 @@ export function useTenderSearch(initialFilters: TenderFilters = {}) {
   return { filters, result, isLoading, error, updateFilters, loadMore, search, setFilters };
 }
 
-export function useTenderDetail(id: string) {
-  const [tender, setTender] = useState<any>(null);
+export interface TenderDocument {
+  id: string;
+  name: string;
+  fileUrl: string;
+  fileType?: string | null;
+  fileSize?: number | null;
+}
+
+export interface TenderResult {
+  id: string;
+  winnerName: string;
+  winnerCompany?: string | null;
+  awardedValue?: number | null;
+  awardedDate?: string | null;
+}
+
+/** Shape returned by GET /tenders/:id (Prisma tender + documents + results). */
+export interface TenderDetail {
+  id: string;
+  title: string;
+  description?: string | null;
+  referenceNumber: string;
+  organization: string;
+  department?: string | null;
+  tenderType: string;
+  category: string;
+  status: string;
+  state: string;
+  district?: string | null;
+  city?: string | null;
+  estimatedValue?: number | null;
+  emdAmount?: number | null;
+  publishedDate: string;
+  bidSubmissionDeadline: string;
+  bidOpeningDate?: string | null;
+  preBidMeetingDate?: string | null;
+  sourcePortal: string;
+  sourceUrl: string;
+  aiSummary?: string | null;
+  aiKeywords?: string[];
+  aiEligibilityText?: string | null;
+  minTurnover?: number | null;
+  minNetWorth?: number | null;
+  minExperience?: number | null;
+  requiredCertifications?: string[];
+  reservedForMSME?: boolean;
+  reservedForStartups?: boolean;
+  emdExemptMSME?: boolean;
+  viewCount?: number;
+  documents?: TenderDocument[];
+  results?: TenderResult[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export function useTenderDetail(id: string | undefined) {
+  const [tender, setTender] = useState<TenderDetail | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    async function fetch() {
-      try {
-        const res = await api.get(`/tenders/${id}`);
-        setTender(res.data.data);
-      } catch (err: any) {
-        setError(err.response?.data?.error?.message || 'Tender not found');
-      } finally {
-        setIsLoading(false);
-      }
+    if (!id) {
+      setTender(null);
+      setError(null);
+      setIsLoading(false);
+      return;
     }
-    fetch();
+
+    // Reset state so navigating between tender ids re-enters the loading view
+    // instead of briefly showing the previously fetched tender.
+    let cancelled = false;
+    setTender(null);
+    setError(null);
+    setIsLoading(true);
+
+    api
+      .get(`/tenders/${id}`)
+      .then((res) => {
+        if (cancelled) return;
+        setTender(res.data.data);
+      })
+      .catch((err: any) => {
+        if (cancelled) return;
+        setTender(null);
+        setError(err.response?.data?.error?.message || 'Tender not found');
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
   return { tender, isLoading, error };
+}
+
+export interface SimilarTender {
+  id: string;
+  title: string;
+  organization?: string | null;
+  state?: string | null;
+  estimatedValue?: number | null;
+}
+
+/** GET /tenders/:id/similar — degrades to an empty list, never blocks the page. */
+export function useSimilarTenders(id: string | undefined) {
+  const [similar, setSimilar] = useState<SimilarTender[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+
+  useEffect(() => {
+    if (!id) {
+      setSimilar([]);
+      setIsLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setSimilar([]);
+    setIsLoading(true);
+
+    api
+      .get(`/tenders/${id}/similar`)
+      .then((res) => {
+        if (cancelled) return;
+        const list: SimilarTender[] = Array.isArray(res.data?.data) ? res.data.data : [];
+        setSimilar(list.filter((t) => t?.id && t.id !== id));
+      })
+      .catch(() => {
+        if (!cancelled) setSimilar([]);
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  return { similar, isLoading };
 }
 
 export function useSavedTenders() {

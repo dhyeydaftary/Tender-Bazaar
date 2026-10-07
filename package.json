@@ -18,8 +18,9 @@
     "docker:down": "docker compose down"
   },
   "devDependencies": {
-    "turbo": "^2.0.0",
     "prisma": "^5.14.0",
+    "tsx": "^4.21.0",
+    "turbo": "^2.0.0",
     "typescript": "^5.4.0"
   },
   "dependencies": {

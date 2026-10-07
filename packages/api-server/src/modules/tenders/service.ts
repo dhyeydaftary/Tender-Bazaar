@@ -38,7 +38,22 @@ export const tenderService = {
       must.push({
         multi_match: {
           query: filters.query,
-          fields: ['title^3', 'description', 'organization^2', 'aiKeywords^2', 'department'],
+          fields: [
+            'title^3',
+            'description',
+            'organization^2',
+            'department',
+            'state',
+            'district',
+            'city',
+            'category',
+            'tenderType',
+            'status',
+            'sourcePortal',
+            'referenceNumber',
+            'aiKeywords^2',
+            'aiSummary',
+          ],
           type: 'best_fields',
           fuzziness: 'AUTO',
         },
@@ -159,8 +174,11 @@ export const tenderService = {
 
       return { tenders, total, page, limit, aggregations };
     } catch (error: any) {
-      // If Elasticsearch is down, fallback to PostgreSQL
-      if (error.meta?.statusCode === undefined || error.code === 'ECONNREFUSED') {
+      // If Elasticsearch never produced a response — refused, unreachable, or
+      // timed out — fall back to PostgreSQL. Timeouts surface as statusCode 0
+      // rather than undefined, so check for any falsy status instead.
+      const esStatus = error.meta?.statusCode;
+      if (!esStatus || error.name === 'TimeoutError' || error.name === 'ConnectionError') {
         return this.searchTendersFallback(filters, page, limit);
       }
       throw error;
@@ -215,10 +233,10 @@ export const tenderService = {
     }
 
     // Increment view count in background
-    prisma.tender.update({ where: { id }, data: { viewCount: { increment: 1 } } }).catch(() => {});
+    prisma.tender.update({ where: { id }, data: { viewCount: { increment: 1 } } }).catch(() => { });
 
     // Track trending in Redis (sorted set by views in last 7 days)
-    redis.zincrby('trending:tenders:7d', 1, id).catch(() => {});
+    redis.zincrby('trending:tenders:7d', 1, id).catch(() => { });
 
     return tender;
   },
