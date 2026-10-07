@@ -3,6 +3,7 @@ import * as cheerio from 'cheerio';
 import { chromium, Browser, Page } from 'playwright';
 import PQueue from 'p-queue';
 import { PrismaClient } from '@prisma/client';
+import { publishTenderIndexBulk } from '../storage/tender-index-publisher';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -104,6 +105,76 @@ const USER_AGENTS: string[] = [
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
 ];
 
+
+// ---------------------------------------------------------------------------
+// Change detection for Elasticsearch sync
+// ---------------------------------------------------------------------------
+
+/**
+ * Columns compared to decide whether a scrape actually changed a tender.
+ *
+ * This is exactly the set of fields saveTender() writes, so the comparison is
+ * complete with respect to what a scrape can modify. `id` is included because
+ * callers need it; it never participates in the comparison.
+ */
+const TENDER_COMPARE_SELECT = {
+  id: true,
+  title: true,
+  description: true,
+  referenceNumber: true,
+  organization: true,
+  department: true,
+  tenderType: true,
+  category: true,
+  status: true,
+  state: true,
+  district: true,
+  city: true,
+  estimatedValue: true,
+  emdAmount: true,
+  publishedDate: true,
+  bidSubmissionDeadline: true,
+  bidOpeningDate: true,
+  preBidMeetingDate: true,
+  sourcePortal: true,
+  sourceUrl: true,
+  sourceId: true,
+  aiKeywords: true,
+  reservedForMSME: true,
+  reservedForStartups: true,
+  emdExemptMSME: true,
+} as const;
+
+/** Compare one field, normalising Dates and string[] so equal values match. */
+function fieldsDiffer(stored: unknown, incoming: unknown): boolean {
+  if (stored instanceof Date || incoming instanceof Date) {
+    const a = stored instanceof Date ? stored.getTime() : stored == null ? null : new Date(stored as string).getTime();
+    const b = incoming instanceof Date ? incoming.getTime() : incoming == null ? null : new Date(incoming as string).getTime();
+    return a !== b;
+  }
+  if (Array.isArray(stored) || Array.isArray(incoming)) {
+    const a = Array.isArray(stored) ? stored : [];
+    const b = Array.isArray(incoming) ? incoming : [];
+    return a.length !== b.length || a.some((v, i) => v !== b[i]);
+  }
+  // null and undefined both mean "absent" here.
+  if (stored == null && incoming == null) return false;
+  return stored !== incoming;
+}
+
+/**
+ * True when any field the scraper is about to write differs from what is stored.
+ */
+export function hasTenderChanged(
+  stored: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+): boolean {
+  for (const key of Object.keys(incoming)) {
+    if (fieldsDiffer(stored[key], incoming[key])) return true;
+  }
+  return false;
+}
+
 // ---------------------------------------------------------------------------
 // Abstract Base Scraper
 // ---------------------------------------------------------------------------
@@ -145,6 +216,13 @@ export abstract class BaseScraper {
 
   /** Max listing pages to walk in one run */
   protected maxPages: number;
+
+  /**
+   * Tender ids saved this run whose content changed and which therefore need
+   * (re)indexing in Elasticsearch. Flushed with a single addBulk per listing
+   * page by flushTenderIndexQueue(), and again from cleanup() as a safety net.
+   */
+  protected pendingIndexIds: string[] = [];
 
   /**
    * When true, re-fetch and re-save every listing even if it is already known.
@@ -485,10 +563,34 @@ export abstract class BaseScraper {
   }
 
   /**
+   * Publish any buffered Elasticsearch sync jobs in one batch.
+   *
+   * Call after finishing a listing page. Safe to call repeatedly and when the
+   * buffer is empty. Never throws: PostgreSQL already holds the tenders, and a
+   * publish failure must not abort the run (it is logged by the publisher).
+   */
+  protected async flushTenderIndexQueue(reason?: string): Promise<number> {
+    if (this.pendingIndexIds.length === 0) return 0;
+
+    const ids = this.pendingIndexIds;
+    this.pendingIndexIds = [];
+
+    const published = await publishTenderIndexBulk(ids, reason ?? this.portalName);
+    if (published > 0) {
+      this.logger.info(`Queued ${published} tender(s) for Elasticsearch indexing`, {
+        portal: this.portalName,
+      });
+    }
+    return published;
+  }
+
+  /**
    * Upsert a scraped tender into PostgreSQL via Prisma.
    * Uses the compound unique key (sourceId, sourcePortal) for deduplication.
    */
-  protected async saveTender(data: ScrapedTender): Promise<{ isNew: boolean; id: string }> {
+  protected async saveTender(
+    data: ScrapedTender,
+  ): Promise<{ isNew: boolean; id: string; changed: boolean }> {
     try {
       const existing = await this.prisma.tender.findUnique({
         where: {
@@ -497,7 +599,11 @@ export abstract class BaseScraper {
             sourcePortal: data.sourcePortal,
           },
         },
-        select: { id: true, updatedAt: true },
+        // Widened from { id, updatedAt } so an existing row can be compared
+        // field-by-field against what we are about to write. `updatedAt` cannot
+        // serve this purpose: Prisma's @updatedAt bumps on every update, even a
+        // write of identical values, so it never indicates a real change.
+        select: TENDER_COMPARE_SELECT,
       });
 
       const tenderData = {
@@ -527,6 +633,11 @@ export abstract class BaseScraper {
         emdExemptMSME: data.emdExemptMSME ?? false,
       };
 
+      // Does this write actually change anything an Elasticsearch document
+      // would reflect? New rows always do. For existing rows, compare the
+      // values we are about to write against what is stored.
+      const contentChanged = !existing || hasTenderChanged(existing, tenderData);
+
       const result = await this.prisma.tender.upsert({
         where: {
           sourceId_sourcePortal: {
@@ -537,6 +648,13 @@ export abstract class BaseScraper {
         create: tenderData,
         update: tenderData,
       });
+
+      // Queue for Elasticsearch sync only when the content really moved, so an
+      // unchanged tender costs no indexing work. Flushed per listing page via
+      // flushTenderIndexQueue() (one addBulk), with a final flush in cleanup().
+      if (contentChanged) {
+        this.pendingIndexIds.push(result.id);
+      }
 
       // Save documents if provided
       if (data.documents && data.documents.length > 0) {
@@ -569,7 +687,7 @@ export abstract class BaseScraper {
         { id: result.id, sourcePortal: data.sourcePortal },
       );
 
-      return { isNew, id: result.id };
+      return { isNew, id: result.id, changed: contentChanged };
     } catch (err) {
       this.handleError(err instanceof Error ? err : new Error(String(err)), {
         action: 'saveTender',
@@ -674,6 +792,9 @@ export abstract class BaseScraper {
    * Disconnect Prisma and clean up resources.
    */
   async cleanup(): Promise<void> {
+    // Safety net: publish anything a scrape loop did not flush per page, so no
+    // changed tender is left unqueued.
+    await this.flushTenderIndexQueue(`${this.portalName}:cleanup`);
     await this.closeBrowser();
     await this.prisma.$disconnect();
   }

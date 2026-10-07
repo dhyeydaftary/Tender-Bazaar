@@ -122,12 +122,16 @@ async function runStateScrapeLoop(
             logger.error(`Failed to process tender ${listing.sourceId}: ${(err as Error).message}`);
           }
         }
+        // One addBulk per page rather than one add per tender.
+        await (scraper as any).flushTenderIndexQueue(`${scraper.portalName}:page-${page}`);
       } catch (err) {
         errors++;
         logger.error(`Failed to fetch page ${page}: ${(err as Error).message}`);
       }
     }
   } finally {
+    // Guarantee every changed tender is queued, even on an early break or error.
+    await (scraper as any).flushTenderIndexQueue();
     await (scraper as any).closeBrowser();
   }
 

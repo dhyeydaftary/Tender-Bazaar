@@ -8,6 +8,10 @@ import {
   createTenderIndex,
   bulkIndexTenders,
 } from './config/elasticsearch-setup';
+import {
+  startTenderIndexWorker,
+  stopTenderIndexWorker,
+} from './queue/tender-index-queue';
 
 const PORT = env.PORT || 4000;
 
@@ -33,11 +37,37 @@ async function bootstrap() {
       console.log('No tenders found in PostgreSQL');
     }
 
+    // Start the incremental PostgreSQL -> Elasticsearch worker.
+    //
+    // Deliberately started AFTER the boot-time full reindex above: that reindex
+    // is the reconciliation pass for anything the queue missed while this
+    // process was down, so it should settle before incremental jobs drain.
+    startTenderIndexWorker();
+
     // Start API server
-    app.listen(PORT, () => {
+    const server = app.listen(PORT, () => {
       console.log(`API Server running on port ${PORT}`);
       console.log(`Environment: ${env.NODE_ENV}`);
     });
+
+    // --- Graceful shutdown ---
+    let shuttingDown = false;
+    async function shutdown(signal: string) {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      console.log(`Received ${signal}, shutting down...`);
+      try {
+        server.close();
+        await stopTenderIndexWorker();
+        await prisma.$disconnect();
+      } catch (error) {
+        console.error('Error during shutdown:', error);
+      }
+      process.exit(0);
+    }
+
+    process.on('SIGTERM', () => void shutdown('SIGTERM'));
+    process.on('SIGINT', () => void shutdown('SIGINT'));
   } catch (error) {
     console.error('Failed to initialize API:', error);
     process.exit(1);

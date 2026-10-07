@@ -22,6 +22,7 @@ import { StorageWriter } from './storage/writer';
 import { createAdminApi } from './api/server';
 import { getAllScraperClasses } from './index';
 import { ScrapingScheduler, type ScraperJobResult } from './scheduler/scheduler';
+import { closeTenderIndexPublisher } from './storage/tender-index-publisher';
 import type { ScrapeResult } from './scrapers/base-scraper';
 
 const logger = createLogger('Main');
@@ -257,6 +258,7 @@ async function main() {
         await scheduler.stop();
         logger.info('Scheduler stopped');
       }
+      await closeTenderIndexPublisher();
       await storageWriter.disconnect();
       if (redis) await redis.quit();
       logger.info('Shutdown complete');
