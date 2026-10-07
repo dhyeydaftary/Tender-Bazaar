@@ -209,6 +209,10 @@ export class CpppScraper extends BaseScraper {
         action: 'cpppScrapeMain',
       });
     } finally {
+      // Guarantee every changed tender is queued, even on an early break or
+      // error. main.ts calls closeBrowser() rather than cleanup(), so this is
+      // the end-of-run flush for a scheduled/manual run.
+      await this.flushTenderIndexQueue();
       await this.closeBrowser();
     }
 

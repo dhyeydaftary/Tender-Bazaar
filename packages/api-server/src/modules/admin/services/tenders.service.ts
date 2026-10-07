@@ -1,5 +1,6 @@
 import { prisma } from '../../../config/database';
 import { AppError } from '../../../shared/middleware/error-handler';
+import { enqueueTenderIndex } from '../../../queue/tender-index-queue';
 
 interface TenderListFilters {
   page: number;
@@ -133,6 +134,13 @@ export const tendersService = {
       data: updateData,
     });
 
+    // Keep Elasticsearch in step with the admin edit. Best-effort: a failed
+    // enqueue is logged and never fails the update (PostgreSQL is the source of
+    // truth); the boot-time reindex is the fallback.
+    if (Object.keys(updateData).length > 0) {
+      await enqueueTenderIndex(tenderId, 'index', 'admin:update');
+    }
+
     return { tender: updated, changes };
   },
 
@@ -143,6 +151,10 @@ export const tendersService = {
     }
 
     await prisma.tender.delete({ where: { id: tenderId } });
+
+    // Remove it from the search index too, with the queue's retry behaviour.
+    await enqueueTenderIndex(tenderId, 'delete', 'admin:delete');
+
     return { message: 'Tender deleted successfully', tender: { id: tender.id, title: tender.title } };
   },
 

@@ -333,6 +333,9 @@ export class GemScraper extends BaseScraper {
             }
           }
 
+          // One addBulk per page rather than one add per tender.
+          await this.flushTenderIndexQueue(`${this.portalName}:page-${page}`);
+
           // Results are sorted newest-first, so a page in which every bid is
           // already known means everything beyond it is older and also known.
           // Stop here instead of walking the remaining pages.
@@ -367,6 +370,10 @@ export class GemScraper extends BaseScraper {
         action: 'gemScrapeMain',
       });
     } finally {
+      // Guarantee every changed tender is queued, even on an early break or
+      // error. main.ts calls closeBrowser() rather than cleanup(), so this is
+      // the end-of-run flush for a scheduled/manual run.
+      await this.flushTenderIndexQueue();
       await this.closeBrowser();
     }
 

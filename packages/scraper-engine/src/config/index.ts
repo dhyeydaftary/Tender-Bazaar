@@ -83,6 +83,12 @@ export const config = {
   // --- BullMQ ---
   queue: {
     name: 'scraper-jobs',
+    /**
+     * Queue carrying PostgreSQL -> Elasticsearch sync jobs. Produced here,
+     * consumed by api-server (which owns the ES client and document mapping).
+     * Both sides must agree on this name.
+     */
+    tenderIndexName: env('TENDER_INDEX_QUEUE', 'tender-index'),
     concurrency: envInt('QUEUE_CONCURRENCY', 3),
     retryAttempts: envInt('QUEUE_RETRY_ATTEMPTS', 3),
     retryBackoffMs: envInt('QUEUE_RETRY_BACKOFF_MS', 5000),
