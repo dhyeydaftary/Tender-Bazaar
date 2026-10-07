@@ -71,6 +71,20 @@ export interface ScrapeResult {
   updatedTenders: number;
   errors: number;
   duration: number;
+  /** Known tenders whose detail page was deliberately not fetched (new-only mode). */
+  skippedExisting?: number;
+}
+
+/**
+ * Minimal projection of a tender already stored in PostgreSQL, used by the
+ * new-only pre-check to decide whether a listing needs a detail fetch.
+ */
+export interface KnownTender {
+  id: string;
+  sourceId: string;
+  bidSubmissionDeadline: Date;
+  status: string;
+  updatedAt: Date;
 }
 
 // ---------------------------------------------------------------------------
@@ -129,6 +143,15 @@ export abstract class BaseScraper {
   /** Shared browser instance for Playwright */
   private browser: Browser | null = null;
 
+  /** Max listing pages to walk in one run */
+  protected maxPages: number;
+
+  /**
+   * When true, re-fetch and re-save every listing even if it is already known.
+   * Used by the daily full re-scrape; defaults to false (new-only).
+   */
+  protected fullRescrape: boolean;
+
   constructor(
     portalName: string,
     portalUrl: string,
@@ -138,6 +161,8 @@ export abstract class BaseScraper {
       retryCount?: number;
       retryDelay?: number;
       prisma?: PrismaClient;
+      maxPages?: number;
+      fullRescrape?: boolean;
     },
   ) {
     this.portalName = portalName;
@@ -147,6 +172,8 @@ export abstract class BaseScraper {
     this.retryCount = options?.retryCount ?? 3;
     this.retryDelay = options?.retryDelay ?? 1000;
     this.prisma = options?.prisma ?? new PrismaClient();
+    this.maxPages = options?.maxPages ?? 10;
+    this.fullRescrape = options?.fullRescrape ?? false;
 
     this.queue = new PQueue({
       concurrency: this.maxConcurrency,
@@ -353,6 +380,108 @@ export abstract class BaseScraper {
       portal: this.portalName,
       timestamp: new Date().toISOString(),
     });
+  }
+
+  // -----------------------------------------------------------------------
+  // New-only support (shared by every portal scraper)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Batch-resolve which of these source IDs this portal has already stored.
+   *
+   * PostgreSQL is the source of truth — no timestamps, no in-memory caches. One
+   * `findMany` covers the whole listing page, so adding the pre-check does not
+   * introduce an N+1 (contrast saveTender, which does one findUnique per tender).
+   *
+   * Returns a Map keyed by sourceId so callers can both test membership and read
+   * the stored deadline/status for change detection.
+   */
+  protected async findKnownTenders(sourceIds: string[]): Promise<Map<string, KnownTender>> {
+    const unique = [...new Set(sourceIds.filter((id): id is string => Boolean(id)))];
+    if (unique.length === 0) return new Map();
+
+    const rows = await this.prisma.tender.findMany({
+      where: {
+        sourcePortal: this.portalName,
+        sourceId: { in: unique },
+      },
+      select: {
+        id: true,
+        sourceId: true,
+        bidSubmissionDeadline: true,
+        status: true,
+        updatedAt: true,
+      },
+    });
+
+    return new Map(rows.map((r) => [r.sourceId, r as KnownTender]));
+  }
+
+  /**
+   * Decide whether a listing entry warrants a detail fetch.
+   *
+   * - unknown sourceId                     → yes (genuinely new)
+   * - fullRescrape mode                    → yes (daily refresh)
+   * - listing shows a changed deadline     → yes (corrigendum / extension)
+   * - listing shows a changed status        → yes
+   * - otherwise                            → no (already known and unchanged)
+   *
+   * Deliberately conservative: anything the listing reveals as changed still gets
+   * re-fetched, so legitimate updates are preserved rather than blindly skipped.
+   * Portals whose listing exposes neither deadline nor status simply fall through
+   * to "known and unchanged" and are skipped, which is the intended saving.
+   */
+  protected shouldFetchDetail(
+    listing: Partial<ScrapedTender>,
+    known: KnownTender | undefined,
+  ): boolean {
+    if (!known) return true;
+    if (this.fullRescrape) return true;
+
+    if (listing.bidSubmissionDeadline instanceof Date && !isNaN(listing.bidSubmissionDeadline.getTime())) {
+      if (listing.bidSubmissionDeadline.getTime() !== known.bidSubmissionDeadline.getTime()) {
+        return true;
+      }
+    }
+
+    if (listing.status && listing.status !== known.status) return true;
+
+    return false;
+  }
+
+  /**
+   * Partition a page of listings into the ones needing a detail fetch and the
+   * known-unchanged ones that can be skipped. One batch query per page.
+   */
+  protected async partitionListings(
+    listings: Partial<ScrapedTender>[],
+  ): Promise<{
+    toProcess: Partial<ScrapedTender>[];
+    skipped: Partial<ScrapedTender>[];
+    known: Map<string, KnownTender>;
+  }> {
+    const withIds = listings.filter((l) => Boolean(l.sourceId));
+    const known = await this.findKnownTenders(withIds.map((l) => l.sourceId as string));
+
+    const toProcess: Partial<ScrapedTender>[] = [];
+    const skipped: Partial<ScrapedTender>[] = [];
+
+    for (const listing of withIds) {
+      if (this.shouldFetchDetail(listing, known.get(listing.sourceId as string))) {
+        toProcess.push(listing);
+      } else {
+        skipped.push(listing);
+      }
+    }
+
+    if (skipped.length > 0) {
+      this.logger.info(
+        `New-only: skipping detail fetch for ${skipped.length}/${withIds.length} already-known tenders`,
+        { portal: this.portalName, toProcess: toProcess.length },
+      );
+    }
+
+    return { toProcess, skipped, known };
   }
 
   /**

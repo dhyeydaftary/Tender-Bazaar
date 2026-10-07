@@ -9,6 +9,10 @@ interface StateScraperOptions {
   prisma?: PrismaClient;
   maxConcurrency?: number;
   requestDelay?: number;
+  /** Max listing pages for this run; falls back to the scraper's getMaxPages(). */
+  maxPages?: number;
+  /** Re-fetch already-known tenders (used by the daily full re-scrape). */
+  fullRescrape?: boolean;
 }
 
 /**
@@ -30,6 +34,7 @@ async function runStateScrapeLoop(
   let newTenders = 0;
   let updatedTenders = 0;
   let errors = 0;
+  let skippedExisting = 0;
 
   const logger = {
     info: (msg: string, meta?: Record<string, unknown>) =>
@@ -43,7 +48,11 @@ async function runStateScrapeLoop(
   logger.info('Starting scraping run');
 
   try {
-    for (let page = 1; page <= scraper.getMaxPages(); page++) {
+    // Prefer the run's configured page budget (PORTAL_CONFIGS.maxPages, threaded
+    // through main.ts); fall back to the scraper's own default.
+    const pageBudget = (scraper as any).maxPages ?? scraper.getMaxPages();
+
+    for (let page = 1; page <= pageBudget; page++) {
       try {
         const listingUrl = scraper.buildListingUrl(page);
         const listingHtml = await (scraper as any).fetchPage(listingUrl, {
@@ -61,7 +70,12 @@ async function runStateScrapeLoop(
         totalFound += listings.length;
         logger.info(`Found ${listings.length} tenders on page ${page}`);
 
-        for (const listing of listings) {
+        // New-only: one batch existence check per listing page (PostgreSQL is the
+        // source of truth). Known-and-unchanged tenders never reach the detail fetch.
+        const { toProcess, skipped } = await (scraper as any).partitionListings(listings);
+        skippedExisting += skipped.length;
+
+        for (const listing of toProcess) {
           try {
             if (!listing.sourceId) continue;
 
@@ -118,9 +132,24 @@ async function runStateScrapeLoop(
   }
 
   const duration = Date.now() - startTime;
-  logger.info('Scraping complete', { totalFound, newTenders, updatedTenders, errors, durationMs: duration });
+  logger.info('Scraping complete', {
+    totalFound,
+    newTenders,
+    updatedTenders,
+    skippedExisting,
+    errors,
+    durationMs: duration,
+  });
 
-  return { portal: scraper.portalName, totalFound, newTenders, updatedTenders, errors, duration };
+  return {
+    portal: scraper.portalName,
+    totalFound,
+    newTenders,
+    updatedTenders,
+    errors,
+    duration,
+    skippedExisting,
+  };
 }
 
 // ===========================================================================
@@ -135,6 +164,8 @@ export class GujaratScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -268,6 +299,8 @@ export class MaharashtraScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -408,6 +441,8 @@ export class RajasthanScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -527,6 +562,8 @@ export class KarnatakaScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -641,6 +678,8 @@ export class TamilNaduScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -758,6 +797,8 @@ export class UPScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -878,6 +919,8 @@ export class MPScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -993,6 +1036,8 @@ export class DelhiScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -1115,6 +1160,8 @@ export class KeralaScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -1234,6 +1281,8 @@ export class WestBengalScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
