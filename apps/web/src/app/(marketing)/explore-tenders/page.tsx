@@ -152,7 +152,13 @@ export default function TendersPage() {
     (cat: 'All' | TenderCategory) => {
       setActiveCategory(cat);
       updateFilters({
-        categories: cat === 'All' ? undefined : [cat],
+        // The API filters on Elasticsearch's `category` keyword field, which holds
+        // the Prisma TenderCategory enum values (WORKS / GOODS / SERVICES /
+        // CONSULTANCY). Keyword matching is exact and case-sensitive, so sending
+        // the display label ('Works') matched nothing and every category filter
+        // returned 0 results. Same conversion as the dashboard tender and search
+        // pages already do.
+        categories: cat === 'All' ? undefined : [cat.toUpperCase()],
       });
     },
     [updateFilters]
