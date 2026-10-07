@@ -4,11 +4,15 @@
  * Orchestrates scraping jobs using node-cron for scheduling
  * and BullMQ for job queuing with Redis-backed state.
  *
- * Default schedules:
+ * Schedules are NOT defined here — they are derived from PORTAL_CONFIGS in
+ * ../config, which is the canonical portal registry (see buildDefaultSchedules).
+ * As configured there today that gives:
  * - GeM: every 2 hours (high volume)
- * - CPPP: every 4 hours
- * - State portals: every 6 hours
+ * - CPPP / eProcure: every 4 hours
+ * - State portals: every 6 hours, staggered by 10-minute offsets
  * - Full re-scrape: daily at 2 AM IST (20:30 UTC previous day)
+ *
+ * All cron expressions are evaluated in UTC (see CRON_TIMEZONE).
  *
  * BullMQ configuration:
  * - Queue: 'scraper-jobs'
@@ -19,6 +23,8 @@
 import cron from 'node-cron';
 import { Queue, Worker, Job, QueueEvents } from 'bullmq';
 import Redis from 'ioredis';
+
+import { PORTAL_CONFIGS, getPortalConfig, type PortalConfig } from '../config';
 
 // ─── Types ──────────────────────────────────────────────────────────────────────
 
@@ -49,6 +55,12 @@ export interface ScraperJobData {
   maxPages?: number;
   startedAt?: string;
   retryCount?: number;
+  /**
+   * Re-fetch and re-save tenders that are already known, instead of the default
+   * new-only behaviour. Set by the daily full re-scrape so legitimate updates
+   * (deadline extensions, corrigenda, status changes) are still picked up.
+   */
+  fullRescrape?: boolean;
 }
 
 export interface ScraperJobResult {
@@ -64,103 +76,64 @@ export interface ScraperJobResult {
 type PortalScrapeHandler = (
   portalName: string,
   maxPages?: number,
+  fullRescrape?: boolean,
+  triggeredBy?: 'schedule' | 'manual' | 'retry',
 ) => Promise<ScraperJobResult>;
 
 // ─── Default Schedules ──────────────────────────────────────────────────────────
 
 /**
- * Default portal schedules.
- * Cron expressions are in UTC. IST = UTC + 5:30
+ * Portal schedules are derived from PORTAL_CONFIGS (packages/scraper-engine/src/config),
+ * which is the canonical configuration for the engine. There is deliberately no second
+ * hardcoded schedule table: an earlier one drifted out of sync and used portal names
+ * ('maharashtra-eprocurement', 'up-etender', …) that do not exist as scraper registry
+ * keys, so 8 of its 10 cron firings resolved to "Unknown portal" at run time.
  *
- * GeM: every 2 hours → "0 *​/2 * * *"
- * CPPP: every 4 hours → "0 *​/4 * * *"
- * State portals: every 6 hours → "0 *​/6 * * *"
- * Full re-scrape: daily at 2 AM IST = 20:30 UTC prev day → "30 20 * * *"
+ * `portalName` here is therefore always a registry key (PortalConfig.key), which is what
+ * getPortalConfig() and getAllScraperClasses() are indexed by.
+ *
+ * Cadences and the staggered state-portal offsets come straight from PORTAL_CONFIGS:
+ *   GeM           every 2 hours      '0 *​/2 * * *'
+ *   CPPP          every 4 hours      '0 *​/4 * * *'
+ *   eProcure      every 4 hours :30  '30 *​/4 * * *'
+ *   state portals every 6 hours, staggered '0 *​/6', '10 *​/6', '20 *​/6', …
+ * Full re-scrape: daily at 2 AM IST = 20:30 UTC prev day → '30 20 * * *'
  */
-const DEFAULT_SCHEDULES: PortalScheduleConfig[] = [
-  {
-    portalName: 'gem',
-    cronExpression: '0 */2 * * *',
-    enabled: true,
-    priority: 1,
-    portalType: 'gem',
-    maxPages: 50,
-  },
-  {
-    portalName: 'cppp',
-    cronExpression: '0 */4 * * *',
-    enabled: true,
-    priority: 2,
-    portalType: 'cppp',
-    maxPages: 30,
-  },
-  {
-    portalName: 'maharashtra-eprocurement',
-    cronExpression: '0 */6 * * *',
-    enabled: true,
-    priority: 3,
-    portalType: 'state',
-    maxPages: 20,
-  },
-  {
-    portalName: 'up-etender',
-    cronExpression: '0 */6 * * *',
-    enabled: true,
-    priority: 3,
-    portalType: 'state',
-    maxPages: 20,
-  },
-  {
-    portalName: 'karnataka-eprocurement',
-    cronExpression: '0 */6 * * *',
-    enabled: true,
-    priority: 3,
-    portalType: 'state',
-    maxPages: 20,
-  },
-  {
-    portalName: 'rajasthan-eprocurement',
-    cronExpression: '0 */6 * * *',
-    enabled: true,
-    priority: 3,
-    portalType: 'state',
-    maxPages: 20,
-  },
-  {
-    portalName: 'mp-eprocurement',
-    cronExpression: '0 */6 * * *',
-    enabled: true,
-    priority: 3,
-    portalType: 'state',
-    maxPages: 20,
-  },
-  {
-    portalName: 'gujarat-eprocurement',
-    cronExpression: '0 */6 * * *',
-    enabled: true,
-    priority: 3,
-    portalType: 'state',
-    maxPages: 20,
-  },
-  {
-    portalName: 'tamil-nadu-tntenders',
-    cronExpression: '0 */6 * * *',
-    enabled: true,
-    priority: 3,
-    portalType: 'state',
-    maxPages: 20,
-  },
-  {
-    portalName: 'west-bengal-wbtenders',
-    cronExpression: '0 */6 * * *',
-    enabled: true,
-    priority: 3,
-    portalType: 'state',
-    maxPages: 20,
-  },
-];
+function portalTypeFor(portal: PortalConfig): PortalScheduleConfig['portalType'] {
+  if (portal.key === 'gem') return 'gem';
+  if (portal.key === 'cppp') return 'cppp';
+  return portal.type === 'state' ? 'state' : 'other';
+}
+
+function scheduleFromPortal(portal: PortalConfig): PortalScheduleConfig {
+  return {
+    portalName: portal.key,
+    cronExpression: portal.cronExpression,
+    enabled: portal.enabled,
+    priority: portal.priority,
+    portalType: portalTypeFor(portal),
+    maxPages: portal.maxPages,
+  };
+}
+
+/** Build the canonical schedule set from the portal registry. */
+export function buildDefaultSchedules(): PortalScheduleConfig[] {
+  return PORTAL_CONFIGS.map(scheduleFromPortal);
+}
 
 // ─── Redis Keys ─────────────────────────────────────────────────────────────────
+
+/**
+ * All cron expressions in this file are UTC, as documented on
+ * PortalScheduleConfig.cronExpression and in PORTAL_CONFIGS.
+ *
+ * node-cron evaluates expressions in the *system* timezone unless told otherwise,
+ * so every cron.schedule() call below passes this explicitly. Without it the
+ * schedules silently shift by the host's UTC offset — on an IST machine
+ * (Asia/Kolkata, +05:30) '20 *​/6 * * *' fired at 06:50 UTC instead of 06:20,
+ * and the "2 AM IST" full re-scrape would have run at 20:30 IST.
+ */
+const CRON_TIMEZONE = 'UTC';
 
 const REDIS_PREFIX = 'tb:scheduler';
 const SCHEDULES_KEY = `${REDIS_PREFIX}:schedules`;
@@ -175,8 +148,9 @@ export class ScrapingScheduler {
   private queueEvents: QueueEvents | null = null;
   private cronJobs: Map<string, cron.ScheduledTask> = new Map();
   private scrapeHandler: PortalScrapeHandler | null = null;
-  private isRunning = false;
+  private running = false;
   private concurrency: number;
+  private readonly queueName: string;
 
   constructor(
     redis: Redis,
@@ -187,12 +161,40 @@ export class ScrapingScheduler {
   ) {
     this.redis = redis;
     this.concurrency = options?.concurrency ?? 3;
+    this.queueName = options?.queueName ?? 'scraper-jobs';
+    this.queue = this.createQueue();
+  }
 
-    const queueName = options?.queueName ?? 'scraper-jobs';
+  /**
+   * Whether the scheduler is currently running.
+   *
+   * Exposed as a public getter so the admin API's `SchedulerLike` contract
+   * (and therefore GET /api/health's `schedulerRunning`) can read it.
+   */
+  get isRunning(): boolean {
+    return this.running;
+  }
 
-    // Create BullMQ queue
-    this.queue = new Queue<ScraperJobData, ScraperJobResult>(queueName, {
-      connection: redis.duplicate(),
+  /**
+   * BullMQ requires `maxRetriesPerRequest: null` on any connection it uses for
+   * blocking commands (Worker, QueueEvents) and refuses to start otherwise. The
+   * Redis instance handed to this scheduler is the engine's general-purpose one
+   * (created with maxRetriesPerRequest: 3), and ioredis `duplicate()` inherits
+   * that, so every duplicate made here overrides it explicitly.
+   */
+  private bullConnection(): Redis {
+    return this.redis.duplicate({ maxRetriesPerRequest: null });
+  }
+
+  /**
+   * Build the BullMQ queue. Called from the constructor and again by start()
+   * after a stop(), because stop() closes the queue and a closed Queue cannot
+   * be reused — without this, stop() followed by start() (e.g. via the
+   * POST /api/scheduler/stop then /start endpoints) operated on a dead queue.
+   */
+  private createQueue(): Queue<ScraperJobData, ScraperJobResult> {
+    return new Queue<ScraperJobData, ScraperJobResult>(this.queueName, {
+      connection: this.bullConnection(),
       defaultJobOptions: {
         attempts: 3,
         backoff: {
@@ -224,12 +226,17 @@ export class ScrapingScheduler {
    * 3. Start the BullMQ worker
    */
   async start(): Promise<void> {
-    if (this.isRunning) {
+    if (this.running) {
       console.log('[Scheduler] Already running');
       return;
     }
 
     console.log('[Scheduler] Starting...');
+
+    // A previous stop() closed the queue; rebuild it before re-use.
+    if (this.queue.closing) {
+      this.queue = this.createQueue();
+    }
 
     // Load or initialize schedules
     const schedules = await this.loadSchedules();
@@ -253,7 +260,7 @@ export class ScrapingScheduler {
     // Start queue events listener
     this.startQueueEvents();
 
-    this.isRunning = true;
+    this.running = true;
     console.log(`[Scheduler] Started with ${schedules.filter((s) => s.enabled).length} active portals`);
   }
 
@@ -261,7 +268,7 @@ export class ScrapingScheduler {
    * Graceful shutdown.
    */
   async stop(): Promise<void> {
-    if (!this.isRunning) return;
+    if (!this.running) return;
 
     console.log('[Scheduler] Shutting down...');
 
@@ -287,7 +294,7 @@ export class ScrapingScheduler {
     // Close queue
     await this.queue.close();
 
-    this.isRunning = false;
+    this.running = false;
     console.log('[Scheduler] Shutdown complete');
   }
 
@@ -297,18 +304,90 @@ export class ScrapingScheduler {
    * Load schedules from Redis, falling back to defaults.
    */
   private async loadSchedules(): Promise<PortalScheduleConfig[]> {
+    const defaults = buildDefaultSchedules();
+
     const raw = await this.redis.get(SCHEDULES_KEY);
     if (raw) {
       try {
-        return JSON.parse(raw) as PortalScheduleConfig[];
+        const stored = JSON.parse(raw) as PortalScheduleConfig[];
+        if (Array.isArray(stored)) {
+          return this.reconcileSchedules(stored, defaults);
+        }
+        console.error('[Scheduler] Stored schedules are not an array, rebuilding from PORTAL_CONFIGS');
       } catch {
-        console.error('[Scheduler] Failed to parse schedules from Redis, using defaults');
+        console.error('[Scheduler] Failed to parse schedules from Redis, rebuilding from PORTAL_CONFIGS');
       }
     }
 
-    // Save defaults to Redis
-    await this.saveSchedules(DEFAULT_SCHEDULES);
-    return DEFAULT_SCHEDULES;
+    await this.saveSchedules(defaults);
+    return defaults;
+  }
+
+  /**
+   * Reconcile schedules persisted in Redis against the portal registry.
+   *
+   * Entries whose portalName is not a known registry key are dropped — they can
+   * never be scraped (getPortalConfig / getAllScraperClasses are keyed by
+   * PortalConfig.key), so keeping them would just reproduce the "Unknown portal"
+   * failures. Registry portals missing from the stored set are added from the
+   * defaults. Operator intent that is still meaningful (enabled, cronExpression,
+   * maxPages) is preserved for entries that remain valid.
+   *
+   * Only the scheduler's own SCHEDULES_KEY is rewritten; no other Redis data is
+   * touched and nothing is deleted outright.
+   */
+  private reconcileSchedules(
+    stored: PortalScheduleConfig[],
+    defaults: PortalScheduleConfig[],
+  ): PortalScheduleConfig[] {
+    const storedByName = new Map<string, PortalScheduleConfig>();
+    const dropped: string[] = [];
+
+    for (const entry of stored) {
+      if (!entry || typeof entry.portalName !== 'string') continue;
+      if (!getPortalConfig(entry.portalName)) {
+        dropped.push(entry.portalName);
+        continue;
+      }
+      storedByName.set(entry.portalName, entry);
+    }
+
+    const reconciled = defaults.map((def) => {
+      const prev = storedByName.get(def.portalName);
+      if (!prev) return def;
+
+      // Keep operator overrides where they are still usable, otherwise fall back
+      // to the canonical registry value.
+      const cronExpression =
+        typeof prev.cronExpression === 'string' && cron.validate(prev.cronExpression)
+          ? prev.cronExpression
+          : def.cronExpression;
+
+      return {
+        ...def,
+        cronExpression,
+        enabled: typeof prev.enabled === 'boolean' ? prev.enabled : def.enabled,
+        maxPages: typeof prev.maxPages === 'number' ? prev.maxPages : def.maxPages,
+      };
+    });
+
+    const added = reconciled
+      .filter((r) => !storedByName.has(r.portalName))
+      .map((r) => r.portalName);
+
+    if (dropped.length > 0 || added.length > 0) {
+      console.log(
+        `[Scheduler] Reconciled schedules against PORTAL_CONFIGS — ` +
+        `dropped ${dropped.length} unknown portal(s)${dropped.length ? ` [${dropped.join(', ')}]` : ''}, ` +
+        `added ${added.length}${added.length ? ` [${added.join(', ')}]` : ''}`,
+      );
+      // Persist the repaired set so the stale names do not linger.
+      void this.saveSchedules(reconciled).catch((err) =>
+        console.error('[Scheduler] Failed to persist reconciled schedules:', err),
+      );
+    }
+
+    return reconciled;
   }
 
   /**
@@ -360,6 +439,14 @@ export class ScrapingScheduler {
    * Add a new portal schedule.
    */
   async addSchedule(config: PortalScheduleConfig): Promise<void> {
+    // portalName must be a registry key or the job can never resolve a scraper.
+    if (!getPortalConfig(config.portalName)) {
+      throw new Error(
+        `Portal '${config.portalName}' is not a known registry key. ` +
+        `Valid keys: ${PORTAL_CONFIGS.map((p) => p.key).join(', ')}`,
+      );
+    }
+
     const schedules = await this.loadSchedules();
 
     // Check for duplicate
@@ -404,6 +491,7 @@ export class ScrapingScheduler {
     portalName: string,
     triggeredBy: 'schedule' | 'manual' | 'retry' = 'manual',
     maxPages?: number,
+    fullRescrape = false,
   ): Promise<Job<ScraperJobData, ScraperJobResult>> {
     // Acquire a lock to prevent double-queueing
     const lockKey = `${LOCK_PREFIX}:${portalName}`;
@@ -432,6 +520,7 @@ export class ScrapingScheduler {
         triggeredBy,
         maxPages: maxPages ?? schedule?.maxPages,
         startedAt: new Date().toISOString(),
+        fullRescrape,
       },
       {
         priority: schedule?.priority ?? 5,
@@ -453,7 +542,8 @@ export class ScrapingScheduler {
     console.log(`[Scheduler] Enqueuing full scrape for ${enabled.length} portals`);
 
     for (const schedule of enabled) {
-      await this.enqueueScrapeJob(schedule.portalName, 'schedule', schedule.maxPages);
+      // fullRescrape = true: refresh already-known tenders too.
+      await this.enqueueScrapeJob(schedule.portalName, 'schedule', schedule.maxPages, true);
     }
   }
 
@@ -494,10 +584,10 @@ export class ScrapingScheduler {
       } catch (error) {
         console.error(`[Scheduler] Failed to enqueue ${schedule.portalName}:`, error);
       }
-    });
+    }, { timezone: CRON_TIMEZONE });
 
     this.cronJobs.set(schedule.portalName, task);
-    console.log(`[Scheduler] Cron set for ${schedule.portalName}: ${schedule.cronExpression}`);
+    console.log(`[Scheduler] Cron set for ${schedule.portalName}: ${schedule.cronExpression} (${CRON_TIMEZONE})`);
   }
 
   private setupFullRescrapeCron(): void {
@@ -509,10 +599,10 @@ export class ScrapingScheduler {
       } catch (error) {
         console.error('[Scheduler] Failed to enqueue full scrape:', error);
       }
-    });
+    }, { timezone: CRON_TIMEZONE });
 
     this.cronJobs.set('__full_rescrape__', task);
-    console.log('[Scheduler] Full re-scrape cron set: 30 20 * * * (2 AM IST)');
+    console.log(`[Scheduler] Full re-scrape cron set: 30 20 * * * ${CRON_TIMEZONE} (2 AM IST)`);
   }
 
   private setupRetryFailedCron(): void {
@@ -523,7 +613,7 @@ export class ScrapingScheduler {
       } catch (error) {
         console.error('[Scheduler] Failed to retry jobs:', error);
       }
-    });
+    }, { timezone: CRON_TIMEZONE });
 
     this.cronJobs.set('__retry_failed__', task);
   }
@@ -537,7 +627,7 @@ export class ScrapingScheduler {
         return this.processJob(job);
       },
       {
-        connection: this.redis.duplicate(),
+        connection: this.bullConnection(),
         concurrency: this.concurrency,
         limiter: {
           max: 5,
@@ -577,7 +667,7 @@ export class ScrapingScheduler {
 
   private startQueueEvents(): void {
     this.queueEvents = new QueueEvents(this.queue.name, {
-      connection: this.redis.duplicate(),
+      connection: this.bullConnection(),
     });
 
     this.queueEvents.on('stalled', ({ jobId }) => {
@@ -589,7 +679,7 @@ export class ScrapingScheduler {
    * Process a scraping job.
    */
   private async processJob(job: Job<ScraperJobData, ScraperJobResult>): Promise<ScraperJobResult> {
-    const { portalName, jobType, maxPages } = job.data;
+    const { portalName, jobType, maxPages, fullRescrape, triggeredBy } = job.data;
     const startTime = Date.now();
 
     console.log(`[Worker] Processing ${jobType} for ${portalName}`);
@@ -602,7 +692,7 @@ export class ScrapingScheduler {
       // Update progress
       await job.updateProgress(0);
 
-      const result = await this.scrapeHandler(portalName, maxPages);
+      const result = await this.scrapeHandler(portalName, maxPages, fullRescrape, triggeredBy);
 
       await job.updateProgress(100);
 

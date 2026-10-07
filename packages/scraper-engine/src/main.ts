@@ -21,6 +21,7 @@ import { scraperEvents } from './utils/events';
 import { StorageWriter } from './storage/writer';
 import { createAdminApi } from './api/server';
 import { getAllScraperClasses } from './index';
+import { ScrapingScheduler, type ScraperJobResult } from './scheduler/scheduler';
 import type { ScrapeResult } from './scrapers/base-scraper';
 
 const logger = createLogger('Main');
@@ -76,8 +77,23 @@ async function main() {
   // --- Event listeners ---
   setupEventListeners();
 
-  // --- Manual trigger handler ---
-  async function triggerManualRun(portalKey: string): Promise<void> {
+  // --- Shared scrape execution ---
+  /**
+   * Execute one scraping run for a portal and await its completion.
+   *
+   * This is the single place that instantiates a scraper, tracks the run via
+   * StorageWriter and emits run events. Both the manual trigger (fire-and-forget)
+   * and the scheduler's BullMQ worker (awaits the result) go through it, so
+   * there is exactly one scrape code path.
+   *
+   * `portalKey` must be a registry key (PortalConfig.key).
+   */
+  async function executeScrapeRun(
+    portalKey: string,
+    triggeredBy: 'manual' | 'schedule' | 'retry',
+    maxPages?: number,
+    fullRescrape = false,
+  ): Promise<ScrapeResult> {
     const portalConfig = getPortalConfig(portalKey);
     if (!portalConfig) throw new Error(`Unknown portal: ${portalKey}`);
 
@@ -85,58 +101,138 @@ async function main() {
     const ScraperClass = (scraperClasses as Record<string, any>)[portalKey];
     if (!ScraperClass) throw new Error(`No scraper class for: ${portalKey}`);
 
-    const run = await storageWriter.createRun(portalConfig.name, 'manual', portalConfig.maxPages);
+    const pages = maxPages ?? portalConfig.maxPages;
+
+    const run = await storageWriter.createRun(portalConfig.name, triggeredBy, pages);
     await storageWriter.startRun(run.id);
 
     scraperEvents.emit('run:start', {
       portalName: portalConfig.name,
       runId: run.id,
-      triggeredBy: 'manual',
+      triggeredBy,
       timestamp: new Date(),
     });
 
-    // Run in background
-    (async () => {
-      try {
-        const scraper = new ScraperClass({ prisma, maxConcurrency: portalConfig.maxConcurrency });
-        const result: ScrapeResult = await scraper.scrape();
+    let scraper: any;
+    try {
+      scraper = new ScraperClass({
+        prisma,
+        maxConcurrency: portalConfig.maxConcurrency,
+        maxPages: pages,
+        fullRescrape,
+      });
+      const result: ScrapeResult = await scraper.scrape();
 
-        await storageWriter.completeRun(run.id, {
-          totalFound: result.totalFound,
-          newTenders: result.newTenders,
-          updatedTenders: result.updatedTenders,
-          duplicates: 0,
-          errors: result.errors,
-          pagesScraped: 0,
-        });
+      await storageWriter.completeRun(run.id, {
+        totalFound: result.totalFound,
+        newTenders: result.newTenders,
+        updatedTenders: result.updatedTenders,
+        duplicates: 0,
+        errors: result.errors,
+        pagesScraped: 0,
+      });
 
-        scraperEvents.emit('run:complete', {
-          portalName: portalConfig.name,
-          runId: run.id,
-          totalFound: result.totalFound,
-          newTenders: result.newTenders,
-          updatedTenders: result.updatedTenders,
-          duplicates: 0,
-          errors: result.errors,
-          duration: result.duration,
-          pagesScraped: 0,
-          timestamp: new Date(),
-        });
+      scraperEvents.emit('run:complete', {
+        portalName: portalConfig.name,
+        runId: run.id,
+        totalFound: result.totalFound,
+        newTenders: result.newTenders,
+        updatedTenders: result.updatedTenders,
+        duplicates: 0,
+        errors: result.errors,
+        duration: result.duration,
+        pagesScraped: 0,
+        timestamp: new Date(),
+      });
 
-        await scraper.cleanup();
-      } catch (err) {
-        const error = err instanceof Error ? err : new Error(String(err));
-        await storageWriter.failRun(run.id, error);
+      return result;
+    } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      await storageWriter.failRun(run.id, error);
 
-        scraperEvents.emit('run:error', {
-          portalName: portalConfig.name,
-          runId: run.id,
-          error,
-          duration: 0,
-          timestamp: new Date(),
-        });
+      scraperEvents.emit('run:error', {
+        portalName: portalConfig.name,
+        runId: run.id,
+        error,
+        duration: 0,
+        timestamp: new Date(),
+      });
+
+      throw error;
+    } finally {
+      // The scraper owns a Playwright browser; always release it. Prisma is shared
+      // and owned by main(), so only close the browser here.
+      if (scraper?.closeBrowser) {
+        await scraper.closeBrowser().catch(() => {});
       }
-    })();
+    }
+  }
+
+  // --- Scheduler (declared before the manual trigger, which reads it) ---
+  // Requires Redis (BullMQ + schedule persistence). Without it the engine still
+  // serves the admin API and manual runs, and /api/health reports
+  // schedulerRunning: false rather than pretending otherwise.
+  let scheduler: ScrapingScheduler | null = null;
+
+  // --- Manual trigger handler (kept fire-and-forget: the API returns immediately) ---
+  async function triggerManualRun(portalKey: string): Promise<void> {
+    const portalConfig = getPortalConfig(portalKey);
+    if (!portalConfig) throw new Error(`Unknown portal: ${portalKey}`);
+
+    // If the scheduler is up, route through the queue so locking, retries and
+    // concurrency limits apply. Otherwise run directly in-process.
+    if (scheduler && scheduler.isRunning) {
+      await scheduler.enqueueScrapeJob(portalKey, 'manual', portalConfig.maxPages);
+      return;
+    }
+
+    void executeScrapeRun(portalKey, 'manual').catch(() => {
+      // Already logged and recorded as a failed run by executeScrapeRun.
+    });
+  }
+
+  if (redis) {
+    scheduler = new ScrapingScheduler(redis, {
+      concurrency: config.queue.concurrency,
+      queueName: config.queue.name,
+    });
+
+    // The worker calls this; portalName is a registry key.
+    scheduler.registerScrapeHandler(async (
+      portalName,
+      maxPages,
+      fullRescrape,
+      triggeredBy,
+    ): Promise<ScraperJobResult> => {
+      const started = Date.now();
+      try {
+        const result = await executeScrapeRun(
+          portalName,
+          triggeredBy ?? 'schedule',
+          maxPages,
+          fullRescrape ?? false,
+        );
+        return {
+          portalName,
+          tendersFound: result.totalFound,
+          tendersNew: result.newTenders,
+          tendersDuplicate: result.updatedTenders,
+          tendersFailed: result.errors,
+          duration: Date.now() - started,
+          errors: [],
+        };
+      } catch (err) {
+        // Surface as a thrown error so BullMQ records the attempt and retries.
+        throw err instanceof Error ? err : new Error(String(err));
+      }
+    });
+
+    await scheduler.start();
+    logger.info('Scheduler started', {
+      schedules: (await scheduler.getSchedules()).filter((s) => s.enabled).length,
+    });
+  } else {
+    logger.warn('Scheduler not started — Redis unavailable (manual runs still work)');
   }
 
   // --- Admin API ---
@@ -144,6 +240,7 @@ async function main() {
     const api = createAdminApi({
       port: config.api.port,
       storageWriter,
+      scheduler: scheduler ?? undefined,
       onTriggerRun: triggerManualRun,
     });
     await api.start();
@@ -154,6 +251,12 @@ async function main() {
     logger.info(`Received ${signal}, shutting down gracefully...`);
 
     try {
+      // Stop cron jobs + BullMQ worker/queue before tearing down Redis, so
+      // in-flight jobs drain and no scheduler resources leak.
+      if (scheduler) {
+        await scheduler.stop();
+        logger.info('Scheduler stopped');
+      }
       await storageWriter.disconnect();
       if (redis) await redis.quit();
       logger.info('Shutdown complete');
