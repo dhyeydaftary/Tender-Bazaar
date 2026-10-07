@@ -35,6 +35,7 @@ async function runStateScrapeLoop(
   let updatedTenders = 0;
   let errors = 0;
   let skippedExisting = 0;
+  let pagesScraped = 0;
 
   const logger = {
     info: (msg: string, meta?: Record<string, unknown>) =>
@@ -67,6 +68,10 @@ async function runStateScrapeLoop(
           logger.info(`No tenders on page ${page}, stopping pagination`);
           break;
         }
+        // This page was fetched and parsed into listings, so it counts as
+        // scraped. Reached only past fetchPage() (which throws on failure) and
+        // past the empty-listings break, so failed and empty pages are excluded.
+        pagesScraped++;
         totalFound += listings.length;
         logger.info(`Found ${listings.length} tenders on page ${page}`);
 
@@ -141,6 +146,7 @@ async function runStateScrapeLoop(
     newTenders,
     updatedTenders,
     skippedExisting,
+    pagesScraped,
     errors,
     durationMs: duration,
   });
@@ -153,6 +159,7 @@ async function runStateScrapeLoop(
     errors,
     duration,
     skippedExisting,
+    pagesScraped,
   };
 }
 

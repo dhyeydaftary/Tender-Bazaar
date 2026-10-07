@@ -49,6 +49,7 @@ export class CpppScraper extends BaseScraper {
     let updatedTenders = 0;
     let errors = 0;
     let skippedExisting = 0;
+    let pagesScraped = 0;
 
     this.logger.info('Starting CPPP tender scraping run');
 
@@ -62,6 +63,9 @@ export class CpppScraper extends BaseScraper {
       });
 
       const listings = this.parseTenderList(firstPageHtml);
+      // Fetched and parsed into listings, so page 1 counts as scraped.
+      // fetchPage() throws on failure, so a failed fetch never reaches here.
+      if (listings.length > 0) pagesScraped++;
       totalFound += listings.length;
 
       this.logger.info(`Found ${listings.length} tenders on page 1`);
@@ -142,6 +146,7 @@ export class CpppScraper extends BaseScraper {
           });
 
           const pageListings = this.parseTenderList(pageHtml);
+          if (pageListings.length > 0) pagesScraped++;
           totalFound += pageListings.length;
 
           const pagePartition = await this.partitionListings(pageListings);
@@ -222,6 +227,7 @@ export class CpppScraper extends BaseScraper {
       newTenders,
       updatedTenders,
       skippedExisting,
+      pagesScraped,
       errors,
       durationMs: duration,
     });
@@ -234,6 +240,7 @@ export class CpppScraper extends BaseScraper {
       errors,
       duration,
       skippedExisting,
+      pagesScraped,
     };
   }
 

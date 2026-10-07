@@ -276,6 +276,7 @@ export class GemScraper extends BaseScraper {
     let updatedTenders = 0;
     let errors = 0;
     let skippedExisting = 0;
+    let pagesScraped = 0;
 
     this.logger.info('Starting GeM bid scraping run', {
       maxPages: this.maxPages,
@@ -308,6 +309,10 @@ export class GemScraper extends BaseScraper {
           }
 
           const listings = this.mapDocsToListings(docs);
+          // This page was fetched and its bids parsed, so it counts as scraped.
+          // Reached only past the code!==200 throw and the empty-docs break, so
+          // failed and empty pages are excluded.
+          pagesScraped++;
           totalFound += listings.length;
           this.logger.info(`Page ${page}: ${listings.length} bids (numFound=${solr?.numFound ?? '?'})`);
 
@@ -383,6 +388,7 @@ export class GemScraper extends BaseScraper {
       newTenders,
       updatedTenders,
       skippedExisting,
+      pagesScraped,
       errors,
       durationMs: duration,
     });
@@ -395,6 +401,7 @@ export class GemScraper extends BaseScraper {
       errors,
       duration,
       skippedExisting,
+      pagesScraped,
     };
   }
 

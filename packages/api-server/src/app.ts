@@ -77,6 +77,29 @@ app.get('/health', async (_req, res) => {
     health.status = 'degraded';
   }
 
+  // Check Elasticsearch.
+  //
+  // GET /api/v1/tenders reads exclusively from Elasticsearch, so without this
+  // check /health reported "ok" while the primary tender-listing endpoint was
+  // failing — which is exactly how the original index_not_found outage stayed
+  // invisible. Both the cluster and the tenders index are checked, because a
+  // reachable cluster with no index is still a broken search.
+  try {
+    const { esClient } = await import('./config/elasticsearch');
+    const { TENDER_INDEX } = await import('./config/elasticsearch-setup');
+    await esClient.cluster.health({});
+    const indexExists = await esClient.indices.exists({ index: TENDER_INDEX });
+    if (indexExists) {
+      health.services.elasticsearch = 'healthy';
+    } else {
+      health.services.elasticsearch = `index "${TENDER_INDEX}" missing`;
+      health.status = 'degraded';
+    }
+  } catch {
+    health.services.elasticsearch = 'unhealthy';
+    health.status = 'degraded';
+  }
+
   res.status(health.status === 'ok' ? 200 : 503).json(health);
 });
 
@@ -119,6 +142,21 @@ app.get('/api/v1/search/suggestions', async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+// 404 for unmatched API routes.
+//
+// Without this, an unknown /api/... path fell through to Express's default
+// handler, which replies with an HTML error page. Every other response from this
+// server is JSON in the { success, error: { code, message } } shape, so a client
+// that parsed the body (the web app's axios instance included) broke on the one
+// case it was most likely to hit — a wrong or renamed endpoint. Scoped to /api
+// so any non-API route keeps its current behaviour.
+app.use('/api', (_req, res) => {
+  res.status(404).json({
+    success: false,
+    error: { code: 'NOT_FOUND', message: 'Endpoint not found' },
+  });
 });
 
 // Sentry error tracking (before error handler)

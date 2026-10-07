@@ -74,6 +74,18 @@ export interface ScrapeResult {
   duration: number;
   /** Known tenders whose detail page was deliberately not fetched (new-only mode). */
   skippedExisting?: number;
+  /**
+   * Listing pages actually fetched AND processed in this run.
+   *
+   * Counts real work done, not the budget: pages that failed to fetch and empty
+   * pages that terminate pagination are excluded. The requested budget is
+   * recorded separately as ScrapingRun.maxPages, so this must never be derived
+   * from maxPages.
+   *
+   * Optional so a scraper that does not report it keeps compiling; the runner
+   * falls back to 0.
+   */
+  pagesScraped?: number;
 }
 
 /**
