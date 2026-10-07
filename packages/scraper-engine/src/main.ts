@@ -130,7 +130,7 @@ async function main() {
         updatedTenders: result.updatedTenders,
         duplicates: 0,
         errors: result.errors,
-        pagesScraped: 0,
+        pagesScraped: result.pagesScraped ?? 0,
       });
 
       scraperEvents.emit('run:complete', {
@@ -142,7 +142,7 @@ async function main() {
         duplicates: 0,
         errors: result.errors,
         duration: result.duration,
-        pagesScraped: 0,
+        pagesScraped: result.pagesScraped ?? 0,
         timestamp: new Date(),
       });
 

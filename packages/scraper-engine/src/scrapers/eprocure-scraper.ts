@@ -60,6 +60,7 @@ export class EProcureScraper extends BaseScraper {
     let updatedTenders = 0;
     let errors = 0;
     let skippedExisting = 0;
+    let pagesScraped = 0;
 
     this.logger.info('Starting eProcure tender scraping run');
 
@@ -76,6 +77,9 @@ export class EProcureScraper extends BaseScraper {
       const viewState = this.extractViewState(firstPageHtml);
 
       const listings = this.parseTenderList(firstPageHtml);
+      // Fetched and parsed into listings, so page 1 counts as scraped.
+      // fetchPage() throws on failure, so a failed fetch never reaches here.
+      if (listings.length > 0) pagesScraped++;
       totalFound += listings.length;
 
       this.logger.info(`Found ${listings.length} tenders on page 1`);
@@ -131,6 +135,7 @@ export class EProcureScraper extends BaseScraper {
           });
 
           const pageListings = this.parseTenderList(pageHtml);
+          if (pageListings.length > 0) pagesScraped++;
           const pagePartition = await this.partitionListings(pageListings);
           skippedExisting += pagePartition.skipped.length;
           if (pageListings.length === 0) {
@@ -194,6 +199,7 @@ export class EProcureScraper extends BaseScraper {
       newTenders,
       updatedTenders,
       skippedExisting,
+      pagesScraped,
       errors,
       durationMs: duration,
     });
@@ -206,6 +212,7 @@ export class EProcureScraper extends BaseScraper {
       errors,
       duration,
       skippedExisting,
+      pagesScraped,
     };
   }
 
