@@ -1,5 +1,6 @@
 import { prisma } from '../../../config/database';
 import { AppError } from '../../../shared/middleware/error-handler';
+import { enqueueScrapeJob } from '../../../queue/scraper-job-publisher';
 
 export const scrapersService = {
   async getScraperList() {
@@ -84,25 +85,30 @@ export const scrapersService = {
       throw new AppError('Scraper is disabled', 400, 'SCRAPER_DISABLED');
     }
 
-    // Create a new scraping run entry
-    const run = await prisma.scrapingRun.create({
-      data: {
-        portalName,
-        status: 'PENDING',
-        triggeredBy: 'manual',
-        priority: 10,
-        metadata: { triggeredByAdmin: adminId },
-      },
-    });
-
-    // In production, this would enqueue a BullMQ job
-    // For now, simulate by setting the run as "queued"
+    // Publish onto the shared 'scraper-jobs' BullMQ queue; the scraper engine's
+    // worker consumes it and performs the scrape for real.
+    //
+    // This previously created a ScrapingRun with status PENDING and then did
+    // nothing ("In production, this would enqueue a BullMQ job"), so the admin
+    // was told the scrape had been triggered while the row sat PENDING forever.
+    //
+    // No ScrapingRun is created here on purpose: executeScrapeRun() in the
+    // engine owns the full lifecycle (PENDING -> RUNNING -> COMPLETED/FAILED).
+    // Creating one here too would leave a second, orphaned row per trigger.
+    //
+    // maxPages is intentionally omitted so the engine applies the portal's own
+    // configured budget from PORTAL_CONFIGS.
+    const { jobId, registryKey } = await enqueueScrapeJob(portalName);
 
     return {
       message: `Scraper for "${portalName}" triggered successfully`,
-      runId: run.id,
+      // runId is no longer available synchronously: the engine mints the run when
+      // its worker picks the job up. jobId identifies the queued request.
+      jobId,
+      registryKey,
       portalName,
-      triggeredAt: run.createdAt,
+      triggeredBy: adminId,
+      triggeredAt: new Date(),
     };
   },
 

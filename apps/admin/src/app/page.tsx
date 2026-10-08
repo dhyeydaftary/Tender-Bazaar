@@ -336,21 +336,23 @@ export default function AdminDashboard() {
                 >
                   <span
                     className={`w-2.5 h-2.5 rounded-full shrink-0 ${
-                      scraper.status === 'healthy'
+                      scraper.status === 'HEALTHY'
                         ? 'bg-emerald-400'
-                        : scraper.status === 'slow'
+                        : scraper.status === 'DEGRADED'
                         ? 'bg-amber-400'
+                        : scraper.status === 'DISABLED'
+                        ? 'bg-muted-foreground'
                         : 'bg-red-400'
                     }`}
                   />
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-foreground truncate">
-                      {scraper.portal || scraper.name}
+                      {scraper.portalName}
                     </p>
                     <p className="text-xs text-muted-foreground flex items-center gap-1">
                       <Clock className="w-3 h-3" />
-                      {scraper.lastRun
-                        ? new Date(scraper.lastRun).toLocaleString('en-IN', {
+                      {scraper.lastRunAt
+                        ? new Date(scraper.lastRunAt).toLocaleString('en-IN', {
                             hour: '2-digit',
                             minute: '2-digit',
                           })

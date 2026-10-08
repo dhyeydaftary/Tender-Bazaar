@@ -377,8 +377,21 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     }
   }, [isAuthenticated, isLoading, isLoginPage, router]);
 
-  if (isLoading) return <LoadingScreen />;
+  // The login page is checked BEFORE isLoading on purpose.
+  //
+  // The auth store reuses one global `isLoading` for both app-boot rehydration
+  // and each login request, flipping it true while the request is in flight.
+  // With the old order the login page was swapped out for <LoadingScreen/> on
+  // submit, which unmounted it and destroyed its local email/password/error
+  // state; the failed-login catch then called setError() on a dead component
+  // and a fresh, empty one mounted in its place — so invalid credentials
+  // produced no visible feedback at all.
+  //
+  // The login page has its own local isLoading for the button spinner and
+  // disabled inputs, so it never needed the global screen. Every other route
+  // still gets the boot LoadingScreen below.
   if (isLoginPage) return <>{children}</>;
+  if (isLoading) return <LoadingScreen />;
   if (!isAuthenticated) return <LoadingScreen />;
 
   return (
