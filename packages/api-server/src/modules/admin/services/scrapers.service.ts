@@ -16,11 +16,18 @@ export const scrapersService = {
       orderBy: { createdAt: 'desc' },
       distinct: ['portalName'],
       select: {
+        // id/triggeredBy let the admin UI key a run and show how it started;
+        // duplicates/pagesScraped were previously absent, which forced the
+        // scrapers page to render a hardcoded 0 next to real counters.
+        id: true,
         portalName: true,
         status: true,
+        triggeredBy: true,
         totalFound: true,
         newTenders: true,
         updatedTenders: true,
+        duplicates: true,
+        pagesScraped: true,
         errors: true,
         duration: true,
         startedAt: true,

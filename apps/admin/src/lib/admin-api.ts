@@ -8,6 +8,8 @@ import type {
   UserListResponse,
   PlanConfig,
   Period,
+  ScraperHealthEntry,
+  ScraperRun,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -110,8 +112,35 @@ export async function getUserGrowthAnalytics(period: Period = '30d') {
 // Scrapers
 // ---------------------------------------------------------------------------
 
-export async function getScraperHealth() {
-  return unwrap(api.get('/admin/scrapers'));
+/**
+ * All registered scraper portals with their health and most recent run.
+ *
+ * This is the authoritative portal list — 13 entries, ordered by portalName.
+ * `portalName` is the exact identifier the trigger and runs endpoints expect
+ * (case-sensitive: 'TamilNadu', not 'Tamil Nadu'), so callers must pass it
+ * through verbatim rather than deriving a display name from it.
+ */
+export async function getScraperHealth(): Promise<ScraperHealthEntry[]> {
+  return unwrap<ScraperHealthEntry[]>(api.get('/admin/scrapers'));
+}
+
+/**
+ * Paginated run history for one portal.
+ *
+ * `portalName` must be the exact ScraperHealth.portalName; the backend looks
+ * the portal up by that value and returns 404 for anything else. `limit` is
+ * capped at 100 server-side.
+ *
+ * The endpoint also returns the scraper's health row under `meta.scraper`,
+ * which `unwrap` discards — use getScraperHealth() when that is needed.
+ */
+export async function getScraperRuns(
+  portalName: string,
+  params: { page?: number; limit?: number } = {},
+): Promise<ScraperRun[]> {
+  return unwrap<ScraperRun[]>(
+    api.get(`/admin/scrapers/${encodeURIComponent(portalName)}/runs`, { params }),
+  );
 }
 
 /**
