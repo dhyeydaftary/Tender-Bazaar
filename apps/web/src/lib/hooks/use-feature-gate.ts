@@ -90,6 +90,7 @@ const MIN_PLAN_FOR_FEATURE: Record<BooleanFeature, string> = {
 
 export function useFeatureGate(feature: BooleanFeature) {
   const currentPlan = useSubscriptionStore((s) => s.currentPlan);
+  const subscriptionStatus = useSubscriptionStore((s) => s.subscriptionStatus);
 
   return useMemo(() => {
     const hasAccess = currentPlan ? !!(currentPlan as any)[feature] : false;
@@ -98,12 +99,16 @@ export function useFeatureGate(feature: BooleanFeature) {
 
     return {
       hasAccess,
+      // True when entitlements could not be verified. Callers should show a
+      // "couldn't check" state rather than an upgrade prompt — the user may
+      // well be on a paid plan. hasAccess stays false, so nothing is granted.
+      isUnavailable: subscriptionStatus === 'error' && !currentPlan,
       featureName: label,
       requiredPlan: minPlan,
       currentPlan: currentPlan?.name || 'Free',
       currentPlanSlug: currentPlan?.slug || 'free',
     };
-  }, [currentPlan, feature]);
+  }, [currentPlan, subscriptionStatus, feature]);
 }
 
 /* ------------------------------------------------------------------ */
@@ -113,6 +118,7 @@ export function useFeatureGate(feature: BooleanFeature) {
 export function useLimitGate(limitName: NumericLimit) {
   const currentPlan = useSubscriptionStore((s) => s.currentPlan);
   const usage = useSubscriptionStore((s) => s.usage);
+  const subscriptionStatus = useSubscriptionStore((s) => s.subscriptionStatus);
 
   return useMemo(() => {
     const limit = currentPlan ? ((currentPlan as any)[limitName] as number) : 0;
@@ -126,6 +132,9 @@ export function useLimitGate(limitName: NumericLimit) {
 
     return {
       hasCapacity,
+      // Entitlements could not be verified — do not claim the user is out of
+      // capacity on their plan when we simply do not know what their plan is.
+      isUnavailable: subscriptionStatus === 'error' && !currentPlan,
       isUnlimited,
       limit,
       used,
@@ -135,7 +144,7 @@ export function useLimitGate(limitName: NumericLimit) {
       currentPlan: currentPlan?.name || 'Free',
       currentPlanSlug: currentPlan?.slug || 'free',
     };
-  }, [currentPlan, usage, limitName]);
+  }, [currentPlan, usage, subscriptionStatus, limitName]);
 }
 
 /* ------------------------------------------------------------------ */

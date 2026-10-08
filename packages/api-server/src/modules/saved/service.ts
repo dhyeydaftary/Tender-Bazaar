@@ -6,10 +6,15 @@ export const savedService = {
     const tender = await prisma.tender.findUnique({ where: { id: tenderId } });
     if (!tender) throw new AppError('Tender not found', 404, 'TENDER_NOT_FOUND');
 
+    // Idempotent: saving an already-saved tender returns the existing record
+    // instead of failing. The unique constraint on (userId, tenderId) still
+    // guarantees no duplicate row is ever created, and a repeated click or a
+    // retried request can no longer surface as an error.
     const existing = await prisma.savedTender.findUnique({
       where: { userId_tenderId: { userId, tenderId } },
+      include: { tender: true },
     });
-    if (existing) throw new AppError('Tender already saved', 409, 'ALREADY_SAVED');
+    if (existing) return existing;
 
     return prisma.savedTender.create({
       data: { userId, tenderId },
@@ -18,8 +23,10 @@ export const savedService = {
   },
 
   async unsaveTender(userId: string, tenderId: string) {
-    await prisma.savedTender.delete({
-      where: { userId_tenderId: { userId, tenderId } },
+    // Idempotent: deleteMany matches zero rows instead of throwing P2025 when
+    // the tender was already unsaved.
+    await prisma.savedTender.deleteMany({
+      where: { userId, tenderId },
     });
     return { message: 'Tender unsaved' };
   },

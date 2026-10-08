@@ -259,20 +259,69 @@ export function useSimilarTenders(id: string | undefined) {
 
 export function useSavedTenders() {
   const [saved, setSaved] = useState<Set<string>>(new Set());
+  const [error, setError] = useState<string | null>(null);
+
+  // Hydrate from the server.
+  //
+  // This set used to start empty and was never loaded, so an already-saved
+  // tender always rendered as unsaved. Clicking its bookmark then POSTed a
+  // duplicate save, the API answered 409 ALREADY_SAVED, and the old empty
+  // `catch {}` discarded it — so saving appeared to do nothing at all.
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const res = await api.get('/saved', { params: { limit: 200 } });
+        if (cancelled) return;
+        const items = res.data?.data?.tenders ?? [];
+        setSaved(new Set(items.map((i: { tenderId: string }) => i.tenderId)));
+      } catch {
+        // Not signed in, or the list could not be loaded. Leave the set empty
+        // rather than guessing; toggleSave below still reports real failures.
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const toggleSave = async (tenderId: string) => {
+    const wasSaved = saved.has(tenderId);
+    setError(null);
+
+    // Optimistic, reverted below if the request fails.
+    setSaved((prev) => {
+      const next = new Set(prev);
+      if (wasSaved) next.delete(tenderId);
+      else next.add(tenderId);
+      return next;
+    });
+
     try {
-      if (saved.has(tenderId)) {
-        await api.delete(`/saved/${tenderId}`);
-        setSaved((prev) => { const n = new Set(prev); n.delete(tenderId); return n; });
-      } else {
-        await api.post(`/saved/${tenderId}`);
-        setSaved((prev) => new Set(prev).add(tenderId));
-      }
-    } catch {
-      // User might not be authenticated
+      if (wasSaved) await api.delete(`/saved/${tenderId}`);
+      else await api.post(`/saved/${tenderId}`);
+    } catch (err: unknown) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+
+      // 409 on save and 404 on unsave both mean the server already agrees with
+      // the state we just moved to, so keep it instead of reverting.
+      if ((!wasSaved && status === 409) || (wasSaved && status === 404)) return;
+
+      setSaved((prev) => {
+        const next = new Set(prev);
+        if (wasSaved) next.add(tenderId);
+        else next.delete(tenderId);
+        return next;
+      });
+
+      const message =
+        (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error
+          ?.message || 'Could not update your saved tenders.';
+      setError(message);
     }
   };
 
-  return { saved, toggleSave };
+  return { saved, toggleSave, error };
 }

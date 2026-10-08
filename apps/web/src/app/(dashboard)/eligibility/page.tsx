@@ -159,7 +159,10 @@ export default function EligibilityDashboardPage() {
     try {
       setLoading(true);
       setError(null);
-      const { data: res } = await api.get('/api/v1/eligibility');
+      // The axios client's baseURL already ends in /api/v1, so the old
+      // '/api/v1/eligibility' resolved to /api/v1/api/v1/eligibility and 404'd.
+      // The history list lives at GET /eligibility/history.
+      const { data: res } = await api.get('/eligibility/history');
       if (res.success && Array.isArray(res.data)) {
         const mapped: EligibilityCheck[] = res.data.map((item: any) => {
           const score = item.score ?? 0;
