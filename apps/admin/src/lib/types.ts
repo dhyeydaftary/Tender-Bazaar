@@ -140,6 +140,94 @@ export interface ScraperHealth {
   avgDuration: number;
 }
 
+/** Prisma `ScraperHealthStatus`. */
+export type ScraperHealthStatus = 'HEALTHY' | 'DEGRADED' | 'UNHEALTHY' | 'DISABLED';
+
+/** Prisma `ScrapingRunStatus`. */
+export type ScrapingRunStatus = 'PENDING' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED';
+
+/**
+ * One row from `GET /api/v1/admin/scrapers/:portalName/runs` — a full
+ * `ScrapingRun`. Dates arrive as ISO strings, not Date objects.
+ */
+export interface ScraperRun {
+  id: string;
+  portalName: string;
+  status: ScrapingRunStatus;
+  /** 'schedule' | 'manual' | 'retry' — a free-text column, not an enum. */
+  triggeredBy: string;
+  priority: number;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** Milliseconds; null while the run is still in flight. */
+  duration: number | null;
+  totalFound: number;
+  newTenders: number;
+  updatedTenders: number;
+  duplicates: number;
+  errors: number;
+  pagesScraped: number;
+  maxPages: number | null;
+  errorMessage: string | null;
+  errorStack: string | null;
+  metadata: unknown;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * The `latestRun` object embedded in each `GET /api/v1/admin/scrapers` entry.
+ *
+ * A strict subset of {@link ScraperRun}: the backend projects only these
+ * columns, so anything outside this list (maxPages, errorMessage, createdAt…)
+ * must be read from the runs endpoint instead.
+ */
+export type ScraperLatestRun = Pick<
+  ScraperRun,
+  | 'id'
+  | 'portalName'
+  | 'status'
+  | 'triggeredBy'
+  | 'totalFound'
+  | 'newTenders'
+  | 'updatedTenders'
+  | 'duplicates'
+  | 'pagesScraped'
+  | 'errors'
+  | 'duration'
+  | 'startedAt'
+  | 'completedAt'
+>;
+
+/**
+ * One entry of `GET /api/v1/admin/scrapers` — a `ScraperHealth` row plus its
+ * most recent run. `portalName` is the authoritative portal identifier and is
+ * what the trigger and runs endpoints expect, case-sensitively.
+ */
+export interface ScraperHealthEntry {
+  id: string;
+  portalName: string;
+  status: ScraperHealthStatus;
+  enabled: boolean;
+  cronExpression: string | null;
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  totalRuns: number;
+  totalSuccessRuns: number;
+  totalFailedRuns: number;
+  consecutiveFailures: number;
+  totalTendersFound: number;
+  totalTendersNew: number;
+  avgDurationMs: number;
+  errorRate: number;
+  lastError: string | null;
+  /** null when the portal has never run. */
+  latestRun: ScraperLatestRun | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
 // ── Plan Config ────────────────────────────────────────────────────────────
 
 export interface PlanConfig {
