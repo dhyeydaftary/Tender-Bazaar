@@ -113,3 +113,18 @@ export async function getUserGrowthAnalytics(period: Period = '30d') {
 export async function getScraperHealth() {
   return unwrap(api.get('/admin/scrapers'));
 }
+
+/**
+ * Trigger a real scraping run for one portal.
+ *
+ * `portalName` must be the exact ScraperHealth.portalName the backend registers
+ * (e.g. 'GeM', 'CPPP', 'Maharashtra') — the endpoint looks the portal up by that
+ * value and returns 404 for anything else.
+ *
+ * The backend queues the run and returns immediately; it does not wait for the
+ * scrape to finish. Callers should refetch getScraperHealth() to read real
+ * results rather than predicting them.
+ */
+export async function triggerScraper(portalName: string) {
+  return unwrap(api.post(`/admin/scrapers/${encodeURIComponent(portalName)}/trigger`));
+}

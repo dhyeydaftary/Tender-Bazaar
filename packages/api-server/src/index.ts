@@ -12,6 +12,7 @@ import {
   startTenderIndexWorker,
   stopTenderIndexWorker,
 } from './queue/tender-index-queue';
+import { closeScraperJobPublisher } from './queue/scraper-job-publisher';
 
 const PORT = env.PORT || 4000;
 
@@ -59,6 +60,7 @@ async function bootstrap() {
       try {
         server.close();
         await stopTenderIndexWorker();
+        await closeScraperJobPublisher();
         await prisma.$disconnect();
       } catch (error) {
         console.error('Error during shutdown:', error);

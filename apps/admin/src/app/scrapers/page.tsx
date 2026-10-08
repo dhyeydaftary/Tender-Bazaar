@@ -1,10 +1,12 @@
 'use client';
 
 import { useState, useCallback } from 'react';
+import { triggerScraper, getScraperHealth } from '@/lib/admin-api';
 import {
   Bot,
   Play,
   RefreshCw,
+  AlertCircle,
   Search,
   Clock,
   CheckCircle2,
@@ -29,6 +31,12 @@ import {
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
+// Completion polling for a manually triggered run: check the real scraper-health
+// endpoint every 3s for up to 60s. GeM's real runs take ~12-45s, so this window
+// covers them without hanging the UI indefinitely.
+const POLL_INTERVAL_MS = 3000;
+const POLL_TIMEOUT_MS = 60000;
+
 type ScraperStatus = 'IDLE' | 'RUNNING' | 'FAILED' | 'DISABLED';
 
 interface Portal {
@@ -213,6 +221,8 @@ export default function ScrapersPage() {
   const [runningAll, setRunningAll] = useState(false);
   const [runningFailed, setRunningFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  // Surfaces a failed trigger instead of silently showing a fake success.
+  const [runError, setRunError] = useState<string | null>(null);
   const [runningPortals, setRunningPortals] = useState<Set<string>>(new Set());
   const [showScheduleEditor, setShowScheduleEditor] = useState(false);
   const [scheduleForm, setScheduleForm] = useState({ portalId: '', interval: '' });
@@ -243,62 +253,167 @@ export default function ScrapersPage() {
   });
 
   // Actions
-  const simulateRun = useCallback((portalId: string) => {
-    setRunningPortals((prev) => new Set(prev).add(portalId));
-    setPortals((prev) =>
-      prev.map((p) => (p.id === portalId ? { ...p, status: 'RUNNING' as ScraperStatus } : p))
-    );
 
-    setTimeout(() => {
-      const found = Math.floor(Math.random() * 200) + 20;
-      const newT = Math.floor(found * 0.25);
+  /**
+   * Pull the authoritative scraper health from the API and fold the real numbers
+   * for one portal into the row. Only values the backend reports are written —
+   * nothing here is invented.
+   */
+  const syncPortalFromApi = useCallback(async (
+    portalId: string,
+    portalName: string,
+  ): Promise<string | null> => {
+    try {
+      const health = (await getScraperHealth()) as any[];
+      const entry = Array.isArray(health)
+        ? health.find((h) => h.portalName === portalName)
+        : undefined;
+      if (!entry) return null;
+
       setPortals((prev) =>
         prev.map((p) =>
           p.id === portalId
             ? {
                 ...p,
-                status: 'IDLE' as ScraperStatus,
-                lastRun: new Date(),
-                tendersFound: found,
-                newTenders: newT,
-                duplicates: found - newT,
-                errors: 0,
+                status: (entry.status === 'HEALTHY'
+                  ? 'IDLE'
+                  : entry.status === 'DISABLED'
+                  ? 'DISABLED'
+                  : entry.status === 'UNHEALTHY'
+                  ? 'FAILED'
+                  : p.status) as ScraperStatus,
+                lastRun: entry.lastRunAt ? new Date(entry.lastRunAt) : p.lastRun,
+                // Once a real run exists, every counter comes from it. Fields the
+                // API does not project (duplicates is absent from its latestRun
+                // select) resolve to 0 rather than keeping a placeholder value —
+                // showing a stale number next to real ones would be misleading.
+                tendersFound: entry.latestRun ? entry.latestRun.totalFound ?? 0 : p.tendersFound,
+                newTenders: entry.latestRun ? entry.latestRun.newTenders ?? 0 : p.newTenders,
+                duplicates: entry.latestRun ? entry.latestRun.duplicates ?? 0 : p.duplicates,
+                errors: entry.latestRun ? entry.latestRun.errors ?? 0 : p.errors,
+                enabled: entry.enabled ?? p.enabled,
               }
             : p
         )
       );
-      setRunningPortals((prev) => {
-        const next = new Set(prev);
-        next.delete(portalId);
-        return next;
-      });
-      const portal = INITIAL_PORTALS.find((p) => p.id === portalId);
-      setActivity((prev) => [
-        {
-          id: Date.now().toString(),
-          timestamp: new Date(),
-          portalName: portal?.name || portalId,
-          status: 'success',
-          tendersFound: found,
-          duration: Math.floor(Math.random() * 60) + 20,
-          message: `Successfully scraped ${found} tenders, ${newT} new.`,
-        },
-        ...prev,
-      ]);
-    }, 3000);
+
+      const latest = entry.latestRun;
+      if (latest) {
+        setActivity((prev) => [
+          {
+            id: `${portalName}-${latest.completedAt ?? Date.now()}`,
+            timestamp: latest.completedAt ? new Date(latest.completedAt) : new Date(),
+            portalName,
+            status: latest.errors > 0 ? 'warning' : 'success',
+            tendersFound: latest.totalFound,
+            duration: latest.duration ? Math.round(latest.duration / 1000) : 0,
+            message: `${latest.status}: ${latest.totalFound} found, ${latest.newTenders} new, ${latest.errors} error(s).`,
+          },
+          ...prev,
+        ]);
+      }
+
+      // Hand the run status back so the poller knows when to stop.
+      return latest?.status ?? null;
+    } catch {
+      // Health refresh is best-effort; the trigger itself already succeeded.
+      return null;
+    }
   }, []);
 
-  const runAll = useCallback(() => {
-    setRunningAll(true);
-    portals.filter((p) => p.enabled).forEach((p) => simulateRun(p.id));
-    setTimeout(() => setRunningAll(false), 3500);
-  }, [portals, simulateRun]);
+  /**
+   * Trigger a REAL scraping run via POST /admin/scrapers/:portalName/trigger.
+   *
+   * Replaces an earlier setTimeout + Math.random() simulation that invented
+   * found/new/duplicate/error counts and never contacted the backend, so the
+   * UI reported successful scrapes that never happened.
+   *
+   * The backend queues the run and returns immediately, so this shows a running
+   * state, then reads the real numbers back from getScraperHealth(). It never
+   * predicts or fabricates results.
+   */
+  const runPortal = useCallback(
+    async (portalId: string, portalName: string) => {
+      // UI-side guard: ignore a second click while this portal's run is still
+      // being processed. The scraper engine's Redis lock does not currently
+      // block manual triggers, so without this a repeated click would stack
+      // duplicate jobs. (Hardening the engine lock is a separate follow-up.)
+      if (runningPortals.has(portalId)) return;
 
-  const runFailed = useCallback(() => {
+      setRunError(null);
+      setRunningPortals((prev) => new Set(prev).add(portalId));
+      setPortals((prev) =>
+        prev.map((p) => (p.id === portalId ? { ...p, status: 'RUNNING' as ScraperStatus } : p))
+      );
+
+      try {
+        await triggerScraper(portalName);
+
+        // The engine runs the scrape asynchronously off the queue, so poll the
+        // real scraper-health endpoint until its run reaches a terminal state.
+        // Nothing is predicted or fabricated: every value shown comes from the
+        // backend, and a timeout is reported as "still running" rather than
+        // being marked complete.
+        const deadline = Date.now() + POLL_TIMEOUT_MS;
+        let terminal = false;
+
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+
+          const status = await syncPortalFromApi(portalId, portalName);
+          if (status === 'COMPLETED' || status === 'FAILED') {
+            terminal = true;
+            break;
+          }
+        }
+
+        if (!terminal) {
+          setRunError(
+            `${portalName}: Scraper is still running. Check the run history for the latest status.`
+          );
+        }
+      } catch (err: unknown) {
+        const message =
+          err instanceof Error ? err.message : 'Could not start the scraper. Please try again.';
+        setRunError(`${portalName}: ${message}`);
+        setPortals((prev) =>
+          prev.map((p) => (p.id === portalId ? { ...p, status: 'FAILED' as ScraperStatus } : p))
+        );
+      } finally {
+        // Re-enable the button once the run is terminal or polling timed out.
+        setRunningPortals((prev) => {
+          const next = new Set(prev);
+          next.delete(portalId);
+          return next;
+        });
+      }
+    },
+    [runningPortals, syncPortalFromApi]
+  );
+
+  const runAll = useCallback(async () => {
+    setRunningAll(true);
+    try {
+      // Sequential on purpose: the backend queues each run, and firing 13 at
+      // once would stampede the portals.
+      for (const p of portals.filter((x) => x.enabled)) {
+        await runPortal(p.id, p.name);
+      }
+    } finally {
+      setRunningAll(false);
+    }
+  }, [portals, runPortal]);
+
+  const runFailed = useCallback(async () => {
     setRunningFailed(true);
-    portals.filter((p) => p.status === 'FAILED').forEach((p) => simulateRun(p.id));
-    setTimeout(() => setRunningFailed(false), 3500);
-  }, [portals, simulateRun]);
+    try {
+      for (const p of portals.filter((x) => x.status === 'FAILED')) {
+        await runPortal(p.id, p.name);
+      }
+    } finally {
+      setRunningFailed(false);
+    }
+  }, [portals, runPortal]);
 
   const clearFailed = useCallback(() => {
     setPortals((prev) =>
@@ -433,9 +548,16 @@ export default function ScrapersPage() {
       {/* ---------------------------------------------------------------- */}
       {/* 5. Manual Actions */}
       {/* ---------------------------------------------------------------- */}
+      {runError && (
+        <div className="flex items-start gap-3 rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
+          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>{runError}</span>
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-3">
         <button
-          onClick={runAll}
+          onClick={() => void runAll()}
           disabled={runningAll}
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-primary-500 hover:bg-primary-600 text-foreground text-sm font-medium transition-colors disabled:opacity-50"
         >
@@ -443,7 +565,7 @@ export default function ScrapersPage() {
           Run All Scrapers
         </button>
         <button
-          onClick={runFailed}
+          onClick={() => void runFailed()}
           disabled={runningFailed || portals.filter((p) => p.status === 'FAILED').length === 0}
           className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-red-500/15 text-red-400 border border-red-500/30 hover:bg-red-500/25 text-sm font-medium transition-colors disabled:opacity-30"
         >
@@ -619,7 +741,7 @@ export default function ScrapersPage() {
                     <div className="flex items-center justify-end gap-1">
                       {/* Run Now */}
                       <button
-                        onClick={() => simulateRun(portal.id)}
+                        onClick={() => runPortal(portal.id, portal.name)}
                         disabled={!portal.enabled || runningPortals.has(portal.id)}
                         className="p-1.5 rounded-md hover:bg-muted text-muted-foreground hover:text-foreground transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
                         title="Run Now"
