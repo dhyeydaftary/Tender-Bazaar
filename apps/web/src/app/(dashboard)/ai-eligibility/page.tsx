@@ -228,11 +228,15 @@ export default function AIEligibilityCheckPage() {
     try {
       setTendersLoading(true);
       setTendersError(null);
-      const { data: res } = await api.get('/api/v1/tenders', {
+      // baseURL already includes /api/v1 — the old '/api/v1/tenders' 404'd.
+      // The endpoint also returns { tenders, total, page, limit, aggregations },
+      // not a bare array, so the list has to be read off .tenders.
+      const { data: res } = await api.get('/tenders', {
         params: { status: 'ACTIVE', limit: 10 },
       });
-      if (res.success && Array.isArray(res.data)) {
-        const mapped: Tender[] = res.data.map((t: any) => ({
+      const tenderList = res?.data?.tenders;
+      if (res.success && Array.isArray(tenderList)) {
+        const mapped: Tender[] = tenderList.map((t: any) => ({
           id: t.id,
           title: t.title ?? 'Untitled Tender',
           organization: t.organization ?? 'Unknown Organization',
@@ -275,7 +279,9 @@ export default function AIEligibilityCheckPage() {
     setCheckError(null);
     setIsAnalyzing(true);
     try {
-      const { data: res } = await api.post('/api/v1/eligibility/check', {
+      // baseURL already includes /api/v1, and the check endpoint is
+      // POST /eligibility — there is no /eligibility/check route.
+      const { data: res } = await api.post('/eligibility', {
         tenderId: selectedTender.id,
       });
       if (res.success && res.data) {

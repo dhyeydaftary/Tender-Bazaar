@@ -619,7 +619,9 @@ function CreateAlertForm({
           Cancel
         </button>
         <button
-          disabled={!name.trim() || isSaving}
+          // keywords is required by the API (min 1); without this the form
+          // submitted an empty list and the 400 came back invisibly.
+          disabled={!name.trim() || keywords.length === 0 || isSaving}
           onClick={async () => {
             setIsSaving(true);
             try {
@@ -728,16 +730,30 @@ export default function AlertsPage() {
   /* ─── Create / Update Alert ─── */
 
   const handleSaveAlert = async (payload: any, id?: string) => {
-    if (id) {
-      const res = await api.patch(`/alerts/${id}`, payload);
-      const updated = normaliseAlert(res.data.data);
-      setAlerts((prev) => prev.map((a) => (a.id === id ? updated : a)));
-      toast.success('Alert updated');
-    } else {
-      const res = await api.post('/alerts', payload);
-      const created = normaliseAlert(res.data.data);
-      setAlerts((prev) => [created, ...prev]);
-      toast.success('Alert created');
+    // The caller's catch assumed this function toasted its own errors, but it
+    // never did — so a 403 (plan limit) or a 400 (validation) rejected into an
+    // empty catch and the user saw nothing happen at all. Report the real
+    // server message, then rethrow so the form keeps itself open.
+    try {
+      if (id) {
+        const res = await api.patch(`/alerts/${id}`, payload);
+        const updated = normaliseAlert(res.data.data);
+        setAlerts((prev) => prev.map((a) => (a.id === id ? updated : a)));
+        toast.success('Alert updated');
+      } else {
+        const res = await api.post('/alerts', payload);
+        const created = normaliseAlert(res.data.data);
+        setAlerts((prev) => [created, ...prev]);
+        toast.success('Alert created');
+      }
+    } catch (err: any) {
+      const detail = err?.response?.data?.error?.details?.[0]?.message;
+      toast.error(
+        detail ||
+          err?.response?.data?.error?.message ||
+          (id ? 'Failed to update alert' : 'Failed to create alert'),
+      );
+      throw err;
     }
   };
 
@@ -751,7 +767,10 @@ export default function AlertsPage() {
       prev.map((a) => (a.id === id ? { ...a, isActive: !a.isActive } : a)),
     );
     try {
-      await api.patch(`/alerts/${id}`, { isActive: !target.isActive });
+      // Must be the dedicated toggle route: updateAlertSchema has no isActive
+      // field, so PATCH /alerts/:id silently stripped it and the toggle never
+      // persisted — it only ever looked like it worked, until a refresh.
+      await api.patch(`/alerts/${id}/toggle`, { isActive: !target.isActive });
     } catch (err: any) {
       // Revert on failure
       setAlerts((prev) =>
@@ -808,8 +827,17 @@ export default function AlertsPage() {
 
   return (
     <div>
+      {/* Subscription could not be checked — say so instead of guessing that
+          the user needs to upgrade; they may already be on a paid plan. */}
+      {alertLimit.isUnavailable && (
+        <div className="mb-6 rounded-lg border border-border bg-muted/40 px-4 py-3 text-body-sm text-muted-foreground">
+          We couldn&apos;t verify your subscription, so alert limits are unavailable right now.
+          Please refresh and try again.
+        </div>
+      )}
+
       {/* Limit banner */}
-      {!alertLimit.hasCapacity && !alertLimit.isUnlimited && (
+      {!alertLimit.isUnavailable && !alertLimit.hasCapacity && !alertLimit.isUnlimited && (
         <div className="mb-6">
           <UpgradeBanner
             feature="Tender Alerts"
@@ -826,7 +854,9 @@ export default function AlertsPage() {
           <h1 className="text-heading-lg text-foreground font-display">Smart Alerts</h1>
           <p className="text-body-sm text-muted-foreground mt-0.5">
             <span className="font-mono font-semibold text-foreground">{activeCount}</span> active alerts
-            {!alertLimit.isUnlimited && (
+            {/* Hidden when the plan is unknown — "/ 0 max" would be asserting
+                a limit we could not actually read. */}
+            {!alertLimit.isUnlimited && !alertLimit.isUnavailable && (
               <span> / {alertLimit.limit} max</span>
             )}
             {' '}&middot;{' '}
