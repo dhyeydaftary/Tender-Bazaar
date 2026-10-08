@@ -598,7 +598,7 @@ export default function SubscriptionPage() {
                       }
                     }}
                     className={cn(
-                      'relative inline-flex h-6 w-10 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors',
+                      'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none',
                       subscription.autoRenew
                         ? 'bg-accent-500'
                         : 'bg-muted-foreground/30'
@@ -608,10 +608,10 @@ export default function SubscriptionPage() {
                   >
                     <span
                       className={cn(
-                        'pointer-events-none block h-4 w-4 rounded-full bg-white shadow-sm transition-transform',
+                        'pointer-events-none block h-5 w-5 rounded-full bg-white shadow-md transition-transform duration-200 ease-in-out',
                         subscription.autoRenew
-                          ? 'translate-x-4.5'
-                          : 'translate-x-0.5'
+                          ? 'translate-x-5'
+                          : 'translate-x-0'
                       )}
                     />
                   </button>

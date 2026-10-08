@@ -75,6 +75,14 @@ function FilterSection({ title, open, onToggle, children }: { title: string; ope
 
 const ITEMS_PER_PAGE = 20;
 
+const VALUE_RANGES: Record<string, { min?: number; max?: number }> = {
+  'Under 10L': { max: 1000000 },
+  '10L-1Cr': { min: 1000000, max: 10000000 },
+  '1Cr-10Cr': { min: 10000000, max: 100000000 },
+  '10Cr-100Cr': { min: 100000000, max: 1000000000 },
+  '100Cr+': { min: 1000000000 },
+};
+
 export default function TendersPage() {
   const [searchInput, setSearchInput] = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
@@ -83,7 +91,13 @@ export default function TendersPage() {
   const [showMobileFilters, setShowMobileFilters] = useState(false);
   const [selectedStates, setSelectedStates] = useState<Set<string>>(new Set());
   const [stateSearch, setStateSearch] = useState('');
-  const [openSections, setOpenSections] = useState({ category: true, state: true, value: false, special: false });
+  const [selectedValueRange, setSelectedValueRange] = useState<string | null>(null);
+  const [specialFilters, setSpecialFilters] = useState<{
+    msme: boolean;
+    startup: boolean;
+    emdExempt: boolean;
+  }>({ msme: false, startup: false, emdExempt: false });
+  const [openSections, setOpenSections] = useState({ category: true, state: true, value: true, special: true });
 
   const sortOption = SORT_OPTIONS.find((o) => o.value === sortKey) || SORT_OPTIONS[0];
 
@@ -133,25 +147,69 @@ export default function TendersPage() {
     });
   };
 
+  const handleValueRangeSelect = (range: string) => {
+    if (selectedValueRange === range) {
+      setSelectedValueRange(null);
+      updateFilters({ minValue: undefined, maxValue: undefined });
+    } else {
+      setSelectedValueRange(range);
+      const conf = VALUE_RANGES[range];
+      updateFilters({ minValue: conf.min, maxValue: conf.max });
+    }
+  };
+
+  const toggleSpecialFilter = (key: 'msme' | 'startup' | 'emdExempt') => {
+    setSpecialFilters((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      updateFilters({
+        reservedForMSME: next.msme ? true : undefined,
+        reservedForStartups: next.startup ? true : undefined,
+        emdExemptMSME: next.emdExempt ? true : undefined,
+      });
+      return next;
+    });
+  };
+
   const goToPage = (page: number) => {
     if (page < 1 || page > totalPages) return;
     updateFilters({ page });
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   };
 
   const activeFilters = [
     ...(activeCategory !== 'All' ? [{ key: 'cat', label: activeCategory }] : []),
     ...Array.from(selectedStates).map((s) => ({ key: `state-${s}`, label: s })),
+    ...(selectedValueRange ? [{ key: 'range', label: selectedValueRange }] : []),
+    ...(specialFilters.msme ? [{ key: 'sp-msme', label: 'MSME Reserved' }] : []),
+    ...(specialFilters.startup ? [{ key: 'sp-startup', label: 'Startup Reserved' }] : []),
+    ...(specialFilters.emdExempt ? [{ key: 'sp-emd', label: 'EMD Exempt' }] : []),
   ];
 
   const clearFilter = (key: string) => {
     if (key === 'cat') handleCategoryChange(activeCategory);
     else if (key.startsWith('state-')) toggleState(key.replace('state-', ''));
+    else if (key === 'range') handleValueRangeSelect(selectedValueRange!);
+    else if (key === 'sp-msme') toggleSpecialFilter('msme');
+    else if (key === 'sp-startup') toggleSpecialFilter('startup');
+    else if (key === 'sp-emd') toggleSpecialFilter('emdExempt');
   };
 
   const clearAllFilters = () => {
     setActiveCategory('All');
     setSelectedStates(new Set());
-    updateFilters({ categories: undefined, states: undefined });
+    setSelectedValueRange(null);
+    setSpecialFilters({ msme: false, startup: false, emdExempt: false });
+    updateFilters({
+      categories: undefined,
+      states: undefined,
+      minValue: undefined,
+      maxValue: undefined,
+      reservedForMSME: undefined,
+      reservedForStartups: undefined,
+      emdExemptMSME: undefined,
+    });
   };
 
   const filteredStatesList = STATES.filter((s) => s.toLowerCase().includes(stateSearch.toLowerCase()));
@@ -164,7 +222,7 @@ export default function TendersPage() {
           <Filter className="w-4 h-4 text-primary-500" /> Filters
         </h3>
         {activeFilters.length > 0 && (
-          <button onClick={clearAllFilters} className="text-caption text-primary-500 hover:text-primary-600 font-medium">
+          <button onClick={clearAllFilters} className="text-caption text-primary-500 hover:text-primary-600 font-medium cursor-pointer">
             Clear all
           </button>
         )}
@@ -172,7 +230,7 @@ export default function TendersPage() {
       <FilterSection title="Category" open={openSections.category} onToggle={() => toggleSection('category')}>
         {['Works', 'Goods', 'Services', 'Consultancy'].map((cat) => (
           <label key={cat} className="flex items-center gap-2.5 py-1 cursor-pointer group">
-            <input type="checkbox" checked={activeCategory === cat} onChange={() => handleCategoryChange(cat)} className="w-4 h-4 rounded border-border text-primary-500 focus:ring-primary-500 bg-transparent" />
+            <input type="checkbox" checked={activeCategory === cat} onChange={() => handleCategoryChange(cat)} className="w-4 h-4 rounded border-border text-primary-500 focus:ring-primary-500 bg-transparent cursor-pointer" />
             <span className="text-body-sm text-muted-foreground group-hover:text-foreground transition-colors flex-1">{cat}</span>
           </label>
         ))}
@@ -182,7 +240,7 @@ export default function TendersPage() {
         <div className="max-h-40 overflow-y-auto no-scrollbar space-y-0.5">
           {filteredStatesList.map((state) => (
             <label key={state} className="flex items-center gap-2.5 py-1 cursor-pointer group">
-              <input type="checkbox" checked={selectedStates.has(state)} onChange={() => toggleState(state)} className="w-4 h-4 rounded border-border text-primary-500 focus:ring-primary-500 bg-transparent" />
+              <input type="checkbox" checked={selectedStates.has(state)} onChange={() => toggleState(state)} className="w-4 h-4 rounded border-border text-primary-500 focus:ring-primary-500 bg-transparent cursor-pointer" />
               <span className="text-body-sm text-muted-foreground group-hover:text-foreground transition-colors flex-1">{state}</span>
             </label>
           ))}
@@ -190,18 +248,58 @@ export default function TendersPage() {
       </FilterSection>
       <FilterSection title="Value Range" open={openSections.value} onToggle={() => toggleSection('value')}>
         <div className="flex flex-wrap gap-1.5">
-          {['Under 10L', '10L-1Cr', '1Cr-10Cr', '10Cr-100Cr', '100Cr+'].map((range) => (
-            <button key={range} className="text-[11px] px-2.5 py-1 rounded-full bg-muted/50 text-muted-foreground hover:bg-primary-500/10 hover:text-primary-500 border border-border hover:border-primary-500/30 transition-all">{range}</button>
-          ))}
+          {Object.keys(VALUE_RANGES).map((range) => {
+            const isSelected = selectedValueRange === range;
+            return (
+              <button
+                key={range}
+                type="button"
+                onClick={() => handleValueRangeSelect(range)}
+                className={cn(
+                  'text-[11px] px-2.5 py-1 rounded-full border transition-all cursor-pointer',
+                  isSelected
+                    ? 'bg-primary-500 text-white border-primary-500 font-semibold shadow-sm'
+                    : 'bg-muted/50 text-muted-foreground hover:bg-primary-500/10 hover:text-primary-500 border-border hover:border-primary-500/30'
+                )}
+              >
+                {range}
+              </button>
+            );
+          })}
         </div>
       </FilterSection>
       <FilterSection title="Special Filters" open={openSections.special} onToggle={() => toggleSection('special')}>
-        {['MSME Reserved', 'Startup Reserved', 'EMD Exempt'].map((f) => (
-          <label key={f} className="flex items-center justify-between py-1 cursor-pointer group">
-            <span className="text-body-sm text-muted-foreground group-hover:text-foreground transition-colors">{f}</span>
-            <div className="relative w-9 h-5 bg-muted rounded-full cursor-pointer"><span className="absolute top-0.5 left-0.5 w-4 h-4 bg-foreground/30 rounded-full" /></div>
-          </label>
-        ))}
+        {[
+          { key: 'msme' as const, label: 'MSME Reserved' },
+          { key: 'startup' as const, label: 'Startup Reserved' },
+          { key: 'emdExempt' as const, label: 'EMD Exempt' },
+        ].map((f) => {
+          const isActive = specialFilters[f.key];
+          return (
+            <div
+              key={f.key}
+              onClick={() => toggleSpecialFilter(f.key)}
+              className="flex items-center justify-between py-1.5 cursor-pointer group"
+            >
+              <span className={cn('text-body-sm transition-colors', isActive ? 'text-foreground font-medium' : 'text-muted-foreground group-hover:text-foreground')}>
+                {f.label}
+              </span>
+              <div
+                className={cn(
+                  'relative w-9 h-5 rounded-full transition-colors duration-200 cursor-pointer',
+                  isActive ? 'bg-primary-500' : 'bg-muted'
+                )}
+              >
+                <span
+                  className={cn(
+                    'absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 shadow-sm',
+                    isActive ? 'left-[18px]' : 'left-0.5'
+                  )}
+                />
+              </div>
+            </div>
+          );
+        })}
       </FilterSection>
     </>
   );

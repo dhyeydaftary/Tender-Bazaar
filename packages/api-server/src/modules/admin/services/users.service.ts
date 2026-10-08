@@ -19,32 +19,43 @@ export const usersService = {
     const { page, limit, search, plan, role, status, sortBy, sortOrder } = filters;
     const skip = (page - 1) * limit;
 
-    const where: any = {};
+    const andConditions: any[] = [];
 
     if (search) {
-      where.OR = [
-        { name: { contains: search, mode: 'insensitive' } },
-        { email: { contains: search, mode: 'insensitive' } },
-        { phone: { contains: search } },
-        { companyProfile: { companyName: { contains: search, mode: 'insensitive' } } },
-      ];
+      andConditions.push({
+        OR: [
+          { name: { contains: search, mode: 'insensitive' } },
+          { email: { contains: search, mode: 'insensitive' } },
+          { phone: { contains: search } },
+          { companyProfile: { companyName: { contains: search, mode: 'insensitive' } } },
+        ],
+      });
     }
 
-    if (role) where.role = role;
+    if (role) andConditions.push({ role });
 
-    if (status === 'active') where.isEmailVerified = true;
-    else if (status === 'inactive') where.isEmailVerified = false;
+    if (status === 'active') andConditions.push({ isEmailVerified: true });
+    else if (status === 'inactive') andConditions.push({ isEmailVerified: false });
 
     if (plan) {
-      if (plan === 'free') {
-        where.subscription = null;
+      if (plan.toLowerCase() === 'free') {
+        andConditions.push({
+          OR: [
+            { subscription: null },
+            { subscription: { plan: { slug: 'free' } } },
+          ],
+        });
       } else {
-        where.subscription = {
-          plan: { slug: plan },
-          status: 'ACTIVE',
-        };
+        andConditions.push({
+          subscription: {
+            plan: { slug: plan.toLowerCase() },
+            status: 'ACTIVE',
+          },
+        });
       }
     }
+
+    const where = andConditions.length > 0 ? { AND: andConditions } : {};
 
     const orderBy: any = {};
     orderBy[sortBy] = sortOrder;
@@ -92,6 +103,9 @@ export const usersService = {
         phone: u.phone,
         role: u.role,
         isActive: u.isEmailVerified,
+        status: u.isEmailVerified ? 'Active' : 'Inactive',
+        isEmailVerified: u.isEmailVerified,
+        isPhoneVerified: u.isPhoneVerified,
         createdAt: u.createdAt,
         updatedAt: u.updatedAt,
         plan: u.subscription?.plan?.name || 'Free',
@@ -99,6 +113,7 @@ export const usersService = {
         subscriptionStatus: u.subscription?.status || null,
         subscriptionEnd: u.subscription?.endDate || null,
         billingCycle: u.subscription?.billingCycle || null,
+        company: u.companyProfile?.companyName || null,
         companyName: u.companyProfile?.companyName || null,
         companyType: u.companyProfile?.companyType || null,
         statesOperated: u.companyProfile?.statesOperated || [],

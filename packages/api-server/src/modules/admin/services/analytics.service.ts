@@ -82,11 +82,17 @@ export const analyticsService = {
       })),
       tendersByCategory: tendersByCategory.map((c) => ({
         category: c.category,
-        count: c._count,
+        count: (c._count as any)?._all ?? (c._count as any)?.category ?? (typeof c._count === 'number' ? c._count : 0),
         avgValue: Math.round(c._avg.estimatedValue || 0),
       })),
-      tendersByState: tendersByState.map((s) => ({ state: s.state, count: s._count })),
-      tendersByPortal: tendersByPortal.map((p) => ({ portal: p.sourcePortal, count: p._count })),
+      tendersByState: tendersByState.map((s) => ({
+        state: s.state,
+        count: (s._count as any)?._all ?? (s._count as any)?.state ?? (typeof s._count === 'number' ? s._count : 0),
+      })),
+      tendersByPortal: tendersByPortal.map((p) => ({
+        portal: p.sourcePortal,
+        count: (p._count as any)?._all ?? (p._count as any)?.sourcePortal ?? (typeof p._count === 'number' ? p._count : 0),
+      })),
       usersByState,
     };
   },
@@ -338,8 +344,14 @@ export const analyticsService = {
     }
 
     return {
-      topSearches: topSearches.map((s) => ({ query: s.query, count: s._count })),
-      trendingSearches: recentSearches.map((s) => ({ query: s.query, count: s._count })),
+      topSearches: topSearches.map((s) => ({
+        query: s.query,
+        count: (s._count as any)?._all ?? (s._count as any)?.query ?? (typeof s._count === 'number' ? s._count : 0),
+      })),
+      trendingSearches: recentSearches.map((s) => ({
+        query: s.query,
+        count: (s._count as any)?._all ?? (s._count as any)?.query ?? (typeof s._count === 'number' ? s._count : 0),
+      })),
       dailyVolume: Array.from(dailyVolume.entries()).map(([date, count]) => ({ date, count })),
       totalSearches: await prisma.searchHistory.count(),
       redisKeywords,

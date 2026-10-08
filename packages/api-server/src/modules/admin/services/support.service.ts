@@ -232,8 +232,14 @@ export const supportService = {
       byStatus: { open, inProgress, waiting, resolved, closed },
       newLast24h,
       newLast7d,
-      byPriority: byPriority.map((p) => ({ priority: p.priority, count: p._count })),
-      byCategory: byCategory.map((c) => ({ category: c.category || 'uncategorized', count: c._count })),
+      byPriority: byPriority.map((p) => ({
+        priority: p.priority,
+        count: (p._count as any)?._all ?? (p._count as any)?.priority ?? (typeof p._count === 'number' ? p._count : 0),
+      })),
+      byCategory: byCategory.map((c) => ({
+        category: c.category || 'uncategorized',
+        count: (c._count as any)?._all ?? (c._count as any)?.category ?? (typeof c._count === 'number' ? c._count : 0),
+      })),
       avgResolutionHours,
     };
   },

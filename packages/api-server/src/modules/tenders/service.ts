@@ -18,6 +18,9 @@ interface SearchFilters {
   publishedTo?: string;
   deadlineFrom?: string;
   deadlineTo?: string;
+  reservedForMSME?: boolean;
+  reservedForStartups?: boolean;
+  emdExemptMSME?: boolean;
   page?: number;
   limit?: number;
   sortBy?: string;
@@ -34,10 +37,28 @@ export const tenderService = {
     const filter: any[] = [];
 
     // Full-text search
-    if (filters.query) {
+    const STATES = [
+      'Andhra Pradesh','Arunachal Pradesh','Assam','Bihar','Chhattisgarh','Goa','Gujarat',
+      'Haryana','Himachal Pradesh','Jharkhand','Karnataka','Kerala','Madhya Pradesh',
+      'Maharashtra','Manipur','Meghalaya','Mizoram','Nagaland','Odisha','Punjab','Rajasthan',
+      'Sikkim','Tamil Nadu','Telangana','Tripura','Uttar Pradesh','Uttarakhand','West Bengal',
+      'Delhi','Jammu and Kashmir','Ladakh','Chandigarh','Puducherry',
+    ];
+
+    let textQuery = filters.query?.trim();
+    const matchedState = textQuery
+      ? STATES.find((s) => s.toLowerCase() === textQuery!.toLowerCase())
+      : undefined;
+
+    if (matchedState) {
+      filters.states = [...new Set([...(filters.states || []), matchedState])];
+      textQuery = undefined;
+    }
+
+    if (textQuery) {
       must.push({
         multi_match: {
-          query: filters.query,
+          query: textQuery,
           fields: [
             'title^3',
             'description',
@@ -67,6 +88,9 @@ export const tenderService = {
     if (filters.status?.length) filter.push({ terms: { status: filters.status } });
     if (filters.organizations?.length) filter.push({ terms: { 'organization.keyword': filters.organizations } });
     if (filters.sourcePortals?.length) filter.push({ terms: { sourcePortal: filters.sourcePortals } });
+    if (filters.reservedForMSME) filter.push({ term: { reservedForMSME: true } });
+    if (filters.reservedForStartups) filter.push({ term: { reservedForStartups: true } });
+    if (filters.emdExemptMSME) filter.push({ term: { emdExemptMSME: true } });
 
     // Range filters
     if (filters.minValue || filters.maxValue) {
@@ -200,6 +224,9 @@ export const tenderService = {
     if (filters.status?.length) where.status = { in: filters.status };
     if (filters.minValue) where.estimatedValue = { ...where.estimatedValue, gte: filters.minValue };
     if (filters.maxValue) where.estimatedValue = { ...where.estimatedValue, lte: filters.maxValue };
+    if (filters.reservedForMSME) where.reservedForMSME = true;
+    if (filters.reservedForStartups) where.reservedForStartups = true;
+    if (filters.emdExemptMSME) where.emdExemptMSME = true;
 
     const orderBy: any = {};
     if (filters.sortBy === 'estimatedValue') orderBy.estimatedValue = filters.sortOrder || 'desc';

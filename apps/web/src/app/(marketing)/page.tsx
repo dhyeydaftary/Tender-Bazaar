@@ -173,18 +173,21 @@ const FEATURES = [
     title: 'Tender Results',
     description:
       'Track awarded tenders, analyze winners, and learn from competition.',
+    accent: 'from-amber-500/20 to-transparent',
   },
   {
     icon: Download,
     title: 'Document Downloads',
     description:
       'Download NITs, BOQs, and tender documents with one click.',
+    accent: 'from-emerald-500/20 to-transparent',
   },
   {
     icon: Smartphone,
     title: 'Mobile App',
     description:
       'Full-featured iOS and Android app. Manage tenders on the go.',
+    accent: 'from-purple-500/20 to-transparent',
   },
 ];
 

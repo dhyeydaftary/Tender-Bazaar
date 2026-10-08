@@ -184,6 +184,32 @@ export const authService = {
   },
 
   async googleAuth(idToken: string) {
+    // SECURITY GATE
+    //
+    // The decode path below does NOT verify the token's signature, so anyone
+    // who can reach this endpoint could otherwise present a self-made token
+    // claiming any email address — including an existing admin's — and receive
+    // a real session with that account's role.
+    //
+    // It is therefore refused unless BOTH hold:
+    //   * the operator explicitly opted in (ALLOW_DEMO_GOOGLE_AUTH=true), and
+    //   * this is a development server (NODE_ENV=development).
+    //
+    // The second condition means a production deployment cannot enable the
+    // unsafe path by configuration alone. Replace this whole branch with a real
+    // OAuth2Client.verifyIdToken() check before offering Google sign-in to
+    // users; google-auth-library is already a dependency.
+    const demoGoogleAuthEnabled =
+      env.ALLOW_DEMO_GOOGLE_AUTH === 'true' && env.NODE_ENV === 'development';
+
+    if (!demoGoogleAuthEnabled) {
+      throw new AppError(
+        'Google sign-in is not available on this server',
+        503,
+        'GOOGLE_AUTH_DISABLED',
+      );
+    }
+
     // For development, decode the token without Google verification
     // In production, use google-auth-library to verify:
     // const { OAuth2Client } = require('google-auth-library');

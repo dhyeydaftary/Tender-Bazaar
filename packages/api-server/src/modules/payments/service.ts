@@ -14,6 +14,37 @@ function calculatePriceWithGST(basePrice: number) {
   return { baseAmount: basePrice, gstAmount, totalAmount: basePrice + gstAmount };
 }
 
+/**
+ * Whether this server is running against placeholder / unconfigured Razorpay
+ * credentials and should therefore mint and accept mock orders.
+ *
+ * SECURITY: this is derived ONLY from trusted server-side configuration and
+ * must never consider request input.
+ *
+ * An earlier version of verifyPayment() also treated an order as mock when the
+ * CALLER-SUPPLIED ids began with `order_mock_` / `pay_mock_`. Because
+ * `razorpayPaymentId` is attacker-controlled and otherwise unvalidated, sending
+ * `pay_mock_anything` alongside a genuine pending order id skipped HMAC
+ * verification entirely and activated the subscription without payment.
+ *
+ * The placeholder strings below match the values shipped in `.env.example`
+ * (`rzp_test_xxxxxxxxxxxx`, `your-razorpay-secret`) so that a developer who has
+ * not configured Razorpay still gets a working mock checkout.
+ */
+function isRazorpayMockMode(): boolean {
+  const keyId = env.RAZORPAY_KEY_ID;
+  const keySecret = env.RAZORPAY_KEY_SECRET;
+
+  return (
+    !keyId ||
+    keyId.includes('xxxx') ||
+    keyId === 'your-razorpay-key-id' ||
+    !keySecret ||
+    keySecret === 'your-razorpay-secret' ||
+    keySecret.includes('xxxx')
+  );
+}
+
 /** Plan display order for upgrade/downgrade detection */
 const PLAN_ORDER: Record<string, number> = {
   free: 0,
@@ -67,25 +98,32 @@ export const paymentService = {
 
     let razorpayOrderId: string;
 
-    if (!env.RAZORPAY_KEY_ID) {
-      // Dev mode: create mock order
+    const isMockMode = isRazorpayMockMode();
+
+    if (isMockMode) {
+      // Dev / Test mode: create mock order
       razorpayOrderId = `order_mock_${crypto.randomBytes(8).toString('hex')}`;
     } else {
-      const order = await razorpay.orders.create({
-        amount: amountInPaise,
-        currency: 'INR',
-        receipt: `rcpt_${userId.slice(-8)}_${Date.now()}`,
-        notes: {
-          userId,
-          planSlug,
-          billingCycle,
-          baseAmount: String(baseAmount),
-          gstAmount: String(gstAmount),
-          gstRate: '18%',
-          prorationCredit: String(prorationCredit),
-        },
-      });
-      razorpayOrderId = order.id;
+      try {
+        const order = await razorpay.orders.create({
+          amount: amountInPaise,
+          currency: 'INR',
+          receipt: `rcpt_${userId.slice(-8)}_${Date.now()}`,
+          notes: {
+            userId,
+            planSlug,
+            billingCycle,
+            baseAmount: String(baseAmount),
+            gstAmount: String(gstAmount),
+            gstRate: '18%',
+            prorationCredit: String(prorationCredit),
+          },
+        });
+        razorpayOrderId = order.id;
+      } catch (err: any) {
+        console.warn('Razorpay order creation failed, falling back to mock order:', err?.error?.description || err?.message);
+        razorpayOrderId = `order_mock_${crypto.randomBytes(8).toString('hex')}`;
+      }
     }
 
     const payment = await prisma.payment.create({
@@ -232,8 +270,20 @@ export const paymentService = {
     if (!payment) throw new AppError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
     if (payment.status === 'SUCCESS') throw new AppError('Payment already verified', 400, 'PAYMENT_ALREADY_VERIFIED');
 
-    // Verify HMAC signature
-    if (env.RAZORPAY_KEY_SECRET) {
+    // Verify the HMAC signature.
+    //
+    // SECURITY: whether verification runs is decided ONLY by server
+    // configuration (see isRazorpayMockMode). The caller-supplied
+    // `razorpayOrderId` / `razorpayPaymentId` deliberately play no part in that
+    // decision — letting them do so allowed a client to skip verification on a
+    // real order by sending an id prefixed `pay_mock_`.
+    //
+    // Consequence by design: when real credentials are configured, EVERY
+    // verification must present a valid signature. A `order_mock_*` row that
+    // only exists because a live Razorpay call failed represents a payment that
+    // never reached Razorpay, so it correctly fails here rather than silently
+    // activating a subscription.
+    if (!isRazorpayMockMode()) {
       const expectedSignature = crypto
         .createHmac('sha256', env.RAZORPAY_KEY_SECRET)
         .update(`${razorpayOrderId}|${razorpayPaymentId}`)
@@ -427,21 +477,28 @@ export const paymentService = {
     const amountInPaise = Math.round(payment.amount * 100);
     let razorpayOrderId: string;
 
-    if (!env.RAZORPAY_KEY_ID) {
+    const isMockMode = isRazorpayMockMode();
+
+    if (isMockMode) {
       razorpayOrderId = `order_mock_${crypto.randomBytes(8).toString('hex')}`;
     } else {
-      const order = await razorpay.orders.create({
-        amount: amountInPaise,
-        currency: 'INR',
-        receipt: `retry_${userId.slice(-8)}_${Date.now()}`,
-        notes: {
-          userId,
-          planSlug: payment.planSlug || '',
-          billingCycle: payment.billingCycle || '',
-          retryOf: payment.id,
-        },
-      });
-      razorpayOrderId = order.id;
+      try {
+        const order = await razorpay.orders.create({
+          amount: amountInPaise,
+          currency: 'INR',
+          receipt: `retry_${userId.slice(-8)}_${Date.now()}`,
+          notes: {
+            userId,
+            planSlug: payment.planSlug || '',
+            billingCycle: payment.billingCycle || '',
+            retryOf: payment.id,
+          },
+        });
+        razorpayOrderId = order.id;
+      } catch (err: any) {
+        console.warn('Razorpay retry order creation failed, falling back to mock order:', err?.error?.description || err?.message);
+        razorpayOrderId = `order_mock_${crypto.randomBytes(8).toString('hex')}`;
+      }
     }
 
     // Create new payment record linked to the retry

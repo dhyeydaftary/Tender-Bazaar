@@ -278,32 +278,7 @@ export default function OrganizationPage({
   const tenders = getMockOrgTenders(org);
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Nav */}
-      <nav className="sticky top-0 z-40 border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
-        <div className="container mx-auto px-4">
-          <div className="flex items-center justify-between h-14">
-            <Link href="/" className="font-bold text-xl text-primary-500">
-              TenderBazaar
-            </Link>
-            <div className="flex items-center gap-4">
-              <Link
-                href="/login"
-                className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
-              >
-                Log in
-              </Link>
-              <Link
-                href="/register"
-                className="inline-flex items-center justify-center rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600 transition-colors"
-              >
-                Sign up free
-              </Link>
-            </div>
-          </div>
-        </div>
-      </nav>
-
+    <div className="min-h-screen bg-background pt-16 sm:pt-20">
       <div className="container mx-auto px-4 py-8">
         {/* Breadcrumb */}
         <nav aria-label="Breadcrumb" className="mb-6">

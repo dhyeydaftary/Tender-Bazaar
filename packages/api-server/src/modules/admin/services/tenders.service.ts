@@ -210,10 +210,22 @@ export const tendersService = {
       active: activeTenders,
       closed: closedTenders,
       addedThisMonth: tendersThisMonth,
-      byCategory: byCategory.map((c) => ({ category: c.category, count: c._count })),
-      byStatus: byStatus.map((s) => ({ status: s.status, count: s._count })),
-      byState: byState.map((s) => ({ state: s.state, count: s._count })),
-      byPortal: byPortal.map((p) => ({ portal: p.sourcePortal, count: p._count })),
+      byCategory: byCategory.map((c) => ({
+        category: c.category,
+        count: (c._count as any)?._all ?? (c._count as any)?.category ?? (typeof c._count === "number" ? c._count : 0),
+      })),
+      byStatus: byStatus.map((s) => ({
+        status: s.status,
+        count: (s._count as any)?._all ?? (s._count as any)?.status ?? (typeof s._count === "number" ? s._count : 0),
+      })),
+      byState: byState.map((s) => ({
+        state: s.state,
+        count: (s._count as any)?._all ?? (s._count as any)?.state ?? (typeof s._count === "number" ? s._count : 0),
+      })),
+      byPortal: byPortal.map((p) => ({
+        portal: p.sourcePortal,
+        count: (p._count as any)?._all ?? (p._count as any)?.sourcePortal ?? (typeof p._count === "number" ? p._count : 0),
+      })),
       valueStats: {
         average: avgValue._avg.estimatedValue || 0,
         max: avgValue._max.estimatedValue || 0,

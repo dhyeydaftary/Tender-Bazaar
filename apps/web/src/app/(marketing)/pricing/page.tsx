@@ -246,7 +246,7 @@ function BillingToggle({ isYearly, onToggle }: { isYearly: boolean; onToggle: ()
         aria-checked={isYearly}
         aria-label="Toggle yearly billing"
       >
-        <span className={cn('pointer-events-none block h-5 w-5 rounded-full bg-white shadow-lg ring-0 transition-transform', isYearly ? 'translate-x-5.5' : 'translate-x-0.5')} />
+        <span className={cn('pointer-events-none block h-5 w-5 rounded-full bg-white shadow-md ring-0 transition-transform duration-200 ease-in-out', isYearly ? 'translate-x-5' : 'translate-x-0')} />
       </button>
       <span className={cn('text-sm font-medium transition-colors', isYearly ? 'text-foreground' : 'text-muted-foreground')}>
         Yearly

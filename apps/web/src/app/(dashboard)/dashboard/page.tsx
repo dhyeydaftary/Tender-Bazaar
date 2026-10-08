@@ -23,6 +23,7 @@ import {
   IndianRupee,
 } from 'lucide-react';
 import { cn, formatCurrency, formatDate, getDeadlineInfo, getGreeting, getCategoryInfo, formatIndianNumber } from '@/lib/utils';
+import { useAuthStore } from '@/stores/auth-store';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    HOOKS
@@ -199,6 +200,7 @@ function UsageBar({ used, limit, label }: { used: number; limit: number; label: 
    ═══════════════════════════════════════════════════════════════════════════ */
 
 export default function DashboardPage() {
+  const { user } = useAuthStore();
   const now = new Date();
   const greeting = getGreeting();
   const dateStr = now.toLocaleDateString('en-IN', {
@@ -208,11 +210,13 @@ export default function DashboardPage() {
     year: 'numeric',
   });
 
+  const displayName = user?.name || 'User';
+
   return (
     <div className="space-y-6">
       {/* ── Greeting ──────────────────────────────────────────────── */}
       <div>
-        <h1 className="text-heading-lg text-foreground font-display">{greeting}, User</h1>
+        <h1 className="text-heading-lg text-foreground font-display">{greeting}, {displayName}</h1>
         <p className="text-body-sm text-muted-foreground mt-0.5">{dateStr}</p>
       </div>
 

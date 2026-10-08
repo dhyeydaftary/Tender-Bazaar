@@ -31,6 +31,7 @@ export const updateProfileSchema = z.object({
     )
     .optional()
     .nullable(),
+  avatarUrl: z.string().optional().nullable(),
 });
 
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;

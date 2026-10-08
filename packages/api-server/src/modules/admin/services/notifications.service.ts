@@ -105,7 +105,7 @@ export const notificationsService = {
     const last24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const last7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-    const [total, sentLast24h, sentLast7d, byType, byChannel, readRate] = await Promise.all([
+    const [total, sentLast24h, sentLast7d, byType, byChannel, readCount] = await Promise.all([
       prisma.notification.count(),
       prisma.notification.count({ where: { createdAt: { gte: last24h } } }),
       prisma.notification.count({ where: { createdAt: { gte: last7d } } }),
@@ -119,9 +119,8 @@ export const notificationsService = {
         _count: true,
         orderBy: { _count: { channel: 'desc' } },
       }),
-      prisma.notification.aggregate({
+      prisma.notification.count({
         where: { isRead: true },
-        _count: true,
       }),
     ]);
 
@@ -129,9 +128,15 @@ export const notificationsService = {
       total,
       sentLast24h,
       sentLast7d,
-      readRate: total > 0 ? Math.round((readRate._count / total) * 100) : 0,
-      byType: byType.map((t) => ({ type: t.type, count: t._count })),
-      byChannel: byChannel.map((c) => ({ channel: c.channel, count: c._count })),
+      readRate: total > 0 ? Math.round((readCount / total) * 100) : 0,
+      byType: byType.map((t) => ({
+        type: t.type,
+        count: (t._count as any)?._all ?? (t._count as any)?.type ?? (typeof t._count === 'number' ? t._count : 0),
+      })),
+      byChannel: byChannel.map((c) => ({
+        channel: c.channel,
+        count: (c._count as any)?._all ?? (c._count as any)?.channel ?? (typeof c._count === 'number' ? c._count : 0),
+      })),
     };
   },
 };

@@ -28,9 +28,25 @@ interface AuthState {
   setUser: (user: User | null) => void;
 }
 
+function getInitialUser(): User | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem('tb_user');
+    if (!raw) return null;
+    const user = JSON.parse(raw);
+    const storedAvatar = localStorage.getItem('tb_user_avatar');
+    if (storedAvatar && !user.avatarUrl) {
+      user.avatarUrl = storedAvatar;
+    }
+    return user;
+  } catch {
+    return null;
+  }
+}
+
 export const useAuthStore = create<AuthState>((set) => ({
-  user: null,
-  isAuthenticated: false,
+  user: getInitialUser(),
+  isAuthenticated: typeof window !== 'undefined' ? !!localStorage.getItem('accessToken') : false,
   isLoading: false,
 
   login: async (email, password) => {
@@ -40,6 +56,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       const { user, accessToken, refreshToken } = res.data.data;
       localStorage.setItem('accessToken', accessToken);
       localStorage.setItem('refreshToken', refreshToken);
+      localStorage.setItem('tb_user', JSON.stringify(user));
       set({ user, isAuthenticated: true, isLoading: false });
     } catch (error) {
       set({ isLoading: false });
@@ -54,6 +71,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       const { user, accessToken, refreshToken } = res.data.data;
       localStorage.setItem('accessToken', accessToken);
       localStorage.setItem('refreshToken', refreshToken);
+      localStorage.setItem('tb_user', JSON.stringify(user));
       set({ user, isAuthenticated: true, isLoading: false });
     } catch (error) {
       set({ isLoading: false });
@@ -68,6 +86,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       const { user, accessToken, refreshToken } = res.data.data;
       localStorage.setItem('accessToken', accessToken);
       localStorage.setItem('refreshToken', refreshToken);
+      localStorage.setItem('tb_user', JSON.stringify(user));
       set({ user, isAuthenticated: true, isLoading: false });
     } catch (error) {
       set({ isLoading: false });
@@ -86,6 +105,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       const { user, accessToken, refreshToken } = res.data.data;
       localStorage.setItem('accessToken', accessToken);
       localStorage.setItem('refreshToken', refreshToken);
+      localStorage.setItem('tb_user', JSON.stringify(user));
       set({ user, isAuthenticated: true, isLoading: false });
     } catch (error) {
       set({ isLoading: false });
@@ -113,6 +133,8 @@ export const useAuthStore = create<AuthState>((set) => ({
     } finally {
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');
+      localStorage.removeItem('tb_user');
+      localStorage.removeItem('tb_user_avatar');
       set({ user: null, isAuthenticated: false });
     }
   },
@@ -120,15 +142,39 @@ export const useAuthStore = create<AuthState>((set) => ({
   fetchUser: async () => {
     try {
       const token = localStorage.getItem('accessToken');
-      if (!token) return;
+      if (!token) {
+        const storedAvatar = typeof window !== 'undefined' ? localStorage.getItem('tb_user_avatar') : null;
+        if (storedAvatar) {
+          set((state) => ({
+            user: state.user ? { ...state.user, avatarUrl: storedAvatar } : state.user,
+          }));
+        }
+        return;
+      }
       const res = await api.get('/auth/me');
-      set({ user: res.data.data.user, isAuthenticated: true });
+      const fetchedUser = res.data.data.user;
+      const storedAvatar = typeof window !== 'undefined' ? localStorage.getItem('tb_user_avatar') : null;
+      if (storedAvatar && !fetchedUser.avatarUrl) {
+        fetchedUser.avatarUrl = storedAvatar;
+      }
+      localStorage.setItem('tb_user', JSON.stringify(fetchedUser));
+      set({ user: fetchedUser, isAuthenticated: true });
     } catch {
       localStorage.removeItem('accessToken');
       localStorage.removeItem('refreshToken');
+      localStorage.removeItem('tb_user');
       set({ user: null, isAuthenticated: false });
     }
   },
 
-  setUser: (user) => set({ user, isAuthenticated: !!user }),
+  setUser: (user) => {
+    if (typeof window !== 'undefined') {
+      if (user) {
+        localStorage.setItem('tb_user', JSON.stringify(user));
+      } else {
+        localStorage.removeItem('tb_user');
+      }
+    }
+    set({ user, isAuthenticated: !!user });
+  },
 }));

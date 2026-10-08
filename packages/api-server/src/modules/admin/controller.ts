@@ -114,7 +114,12 @@ export const adminController = {
       const result = await usersService.getUserList(filters);
       res.json({
         success: true,
-        data: result.users,
+        data: {
+          users: result.users,
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+        },
         meta: { page: result.page, limit: result.limit, total: result.total },
       });
     } catch (error) {
@@ -183,7 +188,12 @@ export const adminController = {
       const result = await tendersService.getTenderList(filters);
       res.json({
         success: true,
-        data: result.tenders,
+        data: {
+          tenders: result.tenders,
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+        },
         meta: { page: result.page, limit: result.limit, total: result.total },
       });
     } catch (error) {
@@ -240,7 +250,12 @@ export const adminController = {
       const result = await subscriptionsService.getSubscriptionList(filters);
       res.json({
         success: true,
-        data: result.subscriptions,
+        data: {
+          subscriptions: result.subscriptions,
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+        },
         meta: { page: result.page, limit: result.limit, total: result.total },
       });
     } catch (error) {
