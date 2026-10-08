@@ -135,7 +135,7 @@ export const subscriptionsService = {
       planDistribution = byPlan.map((p) => ({
         plan: planMap.get(p.planId)?.name || 'Unknown',
         slug: planMap.get(p.planId)?.slug || 'unknown',
-        count: p._count,
+        count: (p._count as any)?._all ?? (p._count as any)?.planId ?? (typeof p._count === 'number' ? p._count : 0),
       }));
     }
 
@@ -152,8 +152,8 @@ export const subscriptionsService = {
     ]);
 
     const mrr =
-      activeMonthly.reduce((sum, s) => sum + s.plan.monthlyPrice, 0) +
-      activeYearly.reduce((sum, s) => sum + s.plan.yearlyPrice / 12, 0);
+      activeMonthly.reduce((sum, s) => sum + (s.plan?.monthlyPrice || 0), 0) +
+      activeYearly.reduce((sum, s) => sum + (s.plan?.yearlyPrice || 0) / 12, 0);
 
     const arr = mrr * 12;
 
@@ -165,7 +165,7 @@ export const subscriptionsService = {
       planDistribution,
       billingCycleDistribution: byBillingCycle.map((b) => ({
         cycle: b.billingCycle,
-        count: b._count,
+        count: (b._count as any)?._all ?? (b._count as any)?.billingCycle ?? (typeof b._count === 'number' ? b._count : 0),
       })),
       expiringNext7Days,
       mrr: Math.round(mrr * 100) / 100,

@@ -244,6 +244,32 @@ function statusBadge(status: ScraperStatus) {
   }
 }
 
+function activityStatusBadge(status: 'success' | 'failure' | 'warning') {
+  switch (status) {
+    case 'success':
+      return (
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/20">
+          <CheckCircle2 className="w-3.5 h-3.5" />
+          Success
+        </span>
+      );
+    case 'failure':
+      return (
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-red-500/15 text-red-400 border border-red-500/20">
+          <XCircle className="w-3.5 h-3.5" />
+          Failed
+        </span>
+      );
+    case 'warning':
+      return (
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/20">
+          <AlertTriangle className="w-3.5 h-3.5" />
+          Warning
+        </span>
+      );
+  }
+}
+
 function activityStatusIcon(status: 'success' | 'failure' | 'warning') {
   switch (status) {
     case 'success':
@@ -267,6 +293,8 @@ export default function ScrapersPage() {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | ScraperStatus>('all');
   const [activityFilter, setActivityFilter] = useState('all');
+  const [activityStatusFilter, setActivityStatusFilter] = useState('all');
+  const [activitySearch, setActivitySearch] = useState('');
   const [runningAll, setRunningAll] = useState(false);
   const [runningFailed, setRunningFailed] = useState(false);
   const [refreshing, setRefreshing] = useState(false);

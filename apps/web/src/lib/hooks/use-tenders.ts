@@ -11,6 +11,9 @@ interface TenderFilters {
   status?: string[];
   minValue?: number;
   maxValue?: number;
+  reservedForMSME?: boolean;
+  reservedForStartups?: boolean;
+  emdExemptMSME?: boolean;
   sortBy?: string;
   sortOrder?: string;
   page?: number;
@@ -70,8 +73,11 @@ export function useTenderSearch(initialFilters: TenderFilters = {}) {
       if (activeFilters.states?.length) params.states = activeFilters.states.join(',');
       if (activeFilters.tenderTypes?.length) params.tenderTypes = activeFilters.tenderTypes.join(',');
       if (activeFilters.status?.length) params.status = activeFilters.status.join(',');
-      if (activeFilters.minValue) params.minValue = String(activeFilters.minValue);
-      if (activeFilters.maxValue) params.maxValue = String(activeFilters.maxValue);
+      if (activeFilters.minValue !== undefined) params.minValue = String(activeFilters.minValue);
+      if (activeFilters.maxValue !== undefined) params.maxValue = String(activeFilters.maxValue);
+      if (activeFilters.reservedForMSME !== undefined) params.reservedForMSME = String(activeFilters.reservedForMSME);
+      if (activeFilters.reservedForStartups !== undefined) params.reservedForStartups = String(activeFilters.reservedForStartups);
+      if (activeFilters.emdExemptMSME !== undefined) params.emdExemptMSME = String(activeFilters.emdExemptMSME);
       if (activeFilters.sortBy) params.sortBy = activeFilters.sortBy;
       if (activeFilters.sortOrder) params.sortOrder = activeFilters.sortOrder;
       params.page = String(activeFilters.page || 1);
@@ -91,7 +97,8 @@ export function useTenderSearch(initialFilters: TenderFilters = {}) {
   }, []);
 
   const updateFilters = (newFilters: Partial<TenderFilters>) => {
-    const updated = { ...filters, ...newFilters, page: 1 };
+    const page = newFilters.page !== undefined ? newFilters.page : 1;
+    const updated = { ...filters, ...newFilters, page };
     setFilters(updated);
     search(updated);
   };

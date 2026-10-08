@@ -9,6 +9,9 @@
 @layer base {
   /* ── Light Mode (Polished, professional) ─────────────────────────── */
   :root {
+    --font-jakarta: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-inter: 'Inter', system-ui, -apple-system, sans-serif;
+    --font-jetbrains: 'JetBrains Mono', 'Fira Code', monospace;
     --background: 220 14% 96%;
     --foreground: 222 47% 11%;
     --card: 0 0% 100%;
@@ -94,6 +97,14 @@
   :focus-visible {
     outline: 2px solid hsl(var(--ring));
     outline-offset: 2px;
+  }
+
+  /* ── Data Density Modifiers ─────────────────────────────────────── */
+  html[data-density="compact"] {
+    font-size: 14.5px;
+  }
+  html[data-density="spacious"] {
+    font-size: 16.5px;
   }
 }
 

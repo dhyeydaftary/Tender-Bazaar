@@ -2,7 +2,7 @@
 
 import { useState, useEffect, createContext, useContext } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
   Search,
@@ -31,6 +31,7 @@ import {
 import { cn } from '@/lib/utils';
 import { NotificationBell } from '@/components/notifications/notification-bell';
 import { useTheme } from 'next-themes';
+import { useAuthStore } from '@/stores/auth-store';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SIDEBAR CONTEXT
@@ -103,11 +104,27 @@ const NAV_GROUPS: NavGroup[] = [
 
 function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
   const { collapsed, toggle } = useContext(SidebarContext);
+  const { user, logout, fetchUser } = useAuthStore();
   const [mounted, setMounted] = useState(false);
 
-  useEffect(() => setMounted(true), []);
+  useEffect(() => {
+    setMounted(true);
+    fetchUser();
+  }, [fetchUser]);
+
   if (!mounted) return null;
+
+  const displayName = user?.name || 'User';
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } finally {
+      router.push('/login');
+    }
+  };
 
   return (
     <aside
@@ -182,6 +199,17 @@ function Sidebar() {
                   </Link>
                 );
               })}
+              {group.title === 'Account' && (
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  title={collapsed ? 'Log Out' : undefined}
+                  className="group/item flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 relative w-full text-left text-muted-foreground hover:bg-destructive/10 hover:text-destructive cursor-pointer"
+                >
+                  <LogOut className="w-[18px] h-[18px] shrink-0 text-muted-foreground group-hover/item:text-destructive transition-colors" />
+                  {!collapsed && <span className="flex-1 truncate">Log Out</span>}
+                </button>
+              )}
             </div>
           </div>
         ))}
@@ -190,16 +218,37 @@ function Sidebar() {
       {/* User + Collapse */}
       <div className="border-t border-border p-2 space-y-1">
         {/* User */}
-        {!collapsed && (
+        {!collapsed ? (
           <div className="flex items-center gap-3 px-3 py-2">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500/30 to-accent-500/30 flex items-center justify-center shrink-0">
-              <User className="w-4 h-4 text-primary-500" />
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500/30 to-accent-500/30 flex items-center justify-center shrink-0 overflow-hidden border border-border">
+              {user?.avatarUrl ? (
+                <img src={user.avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+              ) : (
+                <User className="w-4 h-4 text-primary-500" />
+              )}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-foreground truncate">User</p>
-              <p className="text-[10px] text-muted-foreground">Free Plan</p>
+              <p className="text-sm font-medium text-foreground truncate">{displayName}</p>
+              <p className="text-[10px] text-muted-foreground">{user?.role || 'Free Plan'}</p>
             </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              title="Log Out"
+              className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
           </div>
+        ) : (
+          <button
+            type="button"
+            onClick={handleLogout}
+            title="Log Out"
+            className="flex items-center justify-center p-2 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors w-full cursor-pointer"
+          >
+            <LogOut className="w-[18px] h-[18px]" />
+          </button>
         )}
         {/* Collapse toggle */}
         <button
@@ -228,11 +277,21 @@ function TopBar() {
   const { theme, setTheme } = useTheme();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pathname = usePathname();
+  const router = useRouter();
+  const { logout } = useAuthStore();
 
   // Close mobile menu on route change
   useEffect(() => {
     setMobileMenuOpen(false);
   }, [pathname]);
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } finally {
+      router.push('/login');
+    }
+  };
 
   return (
     <>
@@ -321,6 +380,19 @@ function TopBar() {
                       </Link>
                     );
                   })}
+                  {group.title === 'Account' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        handleLogout();
+                      }}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-destructive/10 hover:text-destructive w-full text-left cursor-pointer"
+                    >
+                      <LogOut className="w-[18px] h-[18px] shrink-0" />
+                      <span className="flex-1">Log Out</span>
+                    </button>
+                  )}
                 </div>
               ))}
             </nav>
@@ -341,6 +413,24 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('tb_data_density');
+      if (saved) {
+        document.documentElement.setAttribute('data-density', saved);
+      }
+    } catch {}
+
+    const handleDensityChange = (e: any) => {
+      const d = e.detail || localStorage.getItem('tb_data_density');
+      if (d) {
+        document.documentElement.setAttribute('data-density', d);
+      }
+    };
+    window.addEventListener('tb_density_changed', handleDensityChange);
+    return () => window.removeEventListener('tb_density_changed', handleDensityChange);
+  }, []);
 
   return (
     <SidebarContext.Provider value={{ collapsed, toggle: () => setCollapsed((c) => !c) }}>

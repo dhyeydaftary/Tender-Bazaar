@@ -449,7 +449,7 @@ export default function CategoryPage({
   // 404-style message if slug doesn't match
   if (!category) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center pt-16">
         <div className="text-center max-w-md mx-auto px-4">
           <div className="w-20 h-20 rounded-full bg-muted flex items-center justify-center mx-auto mb-6">
             <Package className="w-10 h-10 text-muted-foreground" />
@@ -504,7 +504,7 @@ export default function CategoryPage({
     }));
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background pt-16 sm:pt-20">
       {/* Breadcrumb */}
       <div className="border-b border-border bg-card">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">

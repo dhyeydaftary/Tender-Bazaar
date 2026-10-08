@@ -25,9 +25,226 @@ import {
   Loader2,
   Menu,
   X,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { useState, useEffect, createContext, useContext } from 'react';
 import { useAuthStore } from '@/lib/auth';
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   APPEARANCE & THEME MANAGEMENT
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+export interface AppearanceContextType {
+  isDark: boolean;
+  toggleTheme: () => void;
+  font: string;
+  setFont: (font: string) => void;
+  primaryColor: string;
+  setPrimaryColor: (color: string) => void;
+}
+
+export const AppearanceContext = createContext<AppearanceContextType>({
+  isDark: true,
+  toggleTheme: () => {},
+  font: 'plus-jakarta-sans',
+  setFont: () => {},
+  primaryColor: '#FF6B35',
+  setPrimaryColor: () => {},
+});
+
+export const useAppearance = () => useContext(AppearanceContext);
+
+const FONT_MAP: Record<string, string> = {
+  'plus-jakarta-sans': "'Plus Jakarta Sans', system-ui, sans-serif",
+  'inter': "'Inter', system-ui, sans-serif",
+  'poppins': "'Poppins', system-ui, sans-serif",
+  'dm-sans': "'DM Sans', system-ui, sans-serif",
+};
+
+export function hexToHsl(hex: string): string {
+  let c = hex.replace('#', '');
+  if (c.length === 3) c = c.split('').map((x) => x + x).join('');
+  const r = parseInt(c.substring(0, 2), 16) / 255;
+  const g = parseInt(c.substring(2, 4), 16) / 255;
+  const b = parseInt(c.substring(4, 6), 16) / 255;
+  const max = Math.max(r, g, b),
+    min = Math.min(r, g, b);
+  let h = 0,
+    s = 0;
+  const l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    switch (max) {
+      case r:
+        h = (g - b) / d + (g < b ? 6 : 0);
+        break;
+      case g:
+        h = (b - r) / d + 2;
+        break;
+      case b:
+        h = (r - g) / d + 4;
+        break;
+    }
+    h /= 6;
+  }
+  return `${Math.round(h * 360)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%`;
+}
+
+export function adjustHex(color: string, amount: number): string {
+  return (
+    '#' +
+    color
+      .replace(/^#/, '')
+      .replace(/../g, (c) =>
+        ('0' + Math.min(255, Math.max(0, parseInt(c, 16) + amount)).toString(16)).substr(-2),
+      )
+  );
+}
+
+export function applyAppearanceSettings({
+  isDark,
+  font,
+  primaryColor,
+  secondaryColor,
+  accentColor,
+}: {
+  isDark?: boolean;
+  font?: string;
+  primaryColor?: string;
+  secondaryColor?: string;
+  accentColor?: string;
+}) {
+  if (typeof window === 'undefined') return;
+  const root = document.documentElement;
+
+  if (isDark !== undefined) {
+    if (isDark) {
+      root.classList.add('dark');
+      localStorage.setItem('tb_admin_theme', 'dark');
+    } else {
+      root.classList.remove('dark');
+      localStorage.setItem('tb_admin_theme', 'light');
+    }
+  }
+
+  if (font && FONT_MAP[font]) {
+    root.style.setProperty('--font-family', FONT_MAP[font]);
+    document.body.style.fontFamily = FONT_MAP[font];
+    localStorage.setItem('tb_admin_font', font);
+  }
+
+  if (primaryColor) {
+    root.style.setProperty('--color-primary-500', primaryColor);
+    root.style.setProperty('--color-primary-600', adjustHex(primaryColor, -20));
+    try {
+      const hsl = hexToHsl(primaryColor);
+      root.style.setProperty('--primary', hsl);
+      root.style.setProperty('--ring', hsl);
+    } catch (e) {}
+  }
+
+  if (secondaryColor) {
+    root.style.setProperty('--color-secondary-900', secondaryColor);
+  }
+
+  if (accentColor) {
+    root.style.setProperty('--color-accent-500', accentColor);
+    try {
+      root.style.setProperty('--accent', hexToHsl(accentColor));
+    } catch (e) {}
+  }
+
+  if (primaryColor || secondaryColor || accentColor) {
+    try {
+      const existing = JSON.parse(localStorage.getItem('tb_admin_colors') || '{}');
+      localStorage.setItem(
+        'tb_admin_colors',
+        JSON.stringify({
+          primary: primaryColor || existing.primary || '#FF6B35',
+          secondary: secondaryColor || existing.secondary || '#1B2845',
+          accent: accentColor || existing.accent || '#00D4AA',
+        }),
+      );
+    } catch (e) {}
+  }
+
+  window.dispatchEvent(new CustomEvent('tb_appearance_changed'));
+}
+
+export function AppearanceProvider({ children }: { children: any }) {
+  const [isDark, setIsDark] = useState(true);
+  const [font, setFontState] = useState('plus-jakarta-sans');
+  const [primaryColor, setPrimaryColorState] = useState('#FF6B35');
+
+  useEffect(() => {
+    try {
+      const savedTheme = localStorage.getItem('tb_admin_theme');
+      const darkVal = savedTheme ? savedTheme !== 'light' : true;
+      setIsDark(darkVal);
+
+      const savedFont = localStorage.getItem('tb_admin_font') || 'plus-jakarta-sans';
+      setFontState(savedFont);
+
+      const savedColors = JSON.parse(localStorage.getItem('tb_admin_colors') || '{}');
+      const pColor = savedColors.primary || '#FF6B35';
+      const sColor = savedColors.secondary || '#1B2845';
+      const aColor = savedColors.accent || '#00D4AA';
+      setPrimaryColorState(pColor);
+
+      applyAppearanceSettings({
+        isDark: darkVal,
+        font: savedFont,
+        primaryColor: pColor,
+        secondaryColor: sColor,
+        accentColor: aColor,
+      });
+    } catch (e) {}
+
+    const handleSync = () => {
+      try {
+        const theme = localStorage.getItem('tb_admin_theme');
+        setIsDark(theme !== 'light');
+        const f = localStorage.getItem('tb_admin_font');
+        if (f) setFontState(f);
+        const c = JSON.parse(localStorage.getItem('tb_admin_colors') || '{}');
+        if (c.primary) setPrimaryColorState(c.primary);
+      } catch (e) {}
+    };
+
+    window.addEventListener('tb_appearance_changed', handleSync);
+    window.addEventListener('storage', handleSync);
+    return () => {
+      window.removeEventListener('tb_appearance_changed', handleSync);
+      window.removeEventListener('storage', handleSync);
+    };
+  }, []);
+
+  const toggleTheme = () => {
+    const next = !isDark;
+    setIsDark(next);
+    applyAppearanceSettings({ isDark: next });
+  };
+
+  const setFont = (newFont: string) => {
+    setFontState(newFont);
+    applyAppearanceSettings({ font: newFont });
+  };
+
+  const setPrimaryColor = (newColor: string) => {
+    setPrimaryColorState(newColor);
+    applyAppearanceSettings({ primaryColor: newColor });
+  };
+
+  return (
+    <AppearanceContext.Provider
+      value={{ isDark, toggleTheme, font, setFont, primaryColor, setPrimaryColor }}
+    >
+      {children}
+    </AppearanceContext.Provider>
+  );
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SIDEBAR CONTEXT — shared collapsed state between Sidebar & Main
@@ -166,7 +383,7 @@ function Sidebar() {
           <div className="flex items-center gap-3 px-3 py-2">
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500/30 to-accent-500/30 flex items-center justify-center shrink-0">
               <span className="text-xs font-bold text-primary-500">
-                {user.name.split(' ').map(n => n[0]).join('')}
+                {(user.name || '').split(' ').filter(Boolean).map(n => n[0]).join('') || 'A'}
               </span>
             </div>
             <div className="min-w-0 flex-1">
@@ -181,7 +398,7 @@ function Sidebar() {
           <div className="flex justify-center py-2" title={`${user.name} (${user.role})`}>
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500/30 to-accent-500/30 flex items-center justify-center">
               <span className="text-xs font-bold text-primary-500">
-                {user.name.split(' ').map(n => n[0]).join('')}
+                {(user.name || '').split(' ').filter(Boolean).map(n => n[0]).join('') || 'A'}
               </span>
             </div>
           </div>
@@ -222,6 +439,7 @@ function Sidebar() {
 
 function TopBar() {
   const { user } = useAuthStore();
+  const { isDark, toggleTheme } = useAppearance();
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -266,6 +484,20 @@ function TopBar() {
             <Search className="w-4 h-4" />
             <span>Search...</span>
             <kbd className="text-[10px] font-mono bg-background/50 border border-border rounded px-1.5 py-0.5 text-muted-foreground ml-2">Ctrl+K</kbd>
+          </button>
+
+          {/* Theme toggle */}
+          <button
+            onClick={toggleTheme}
+            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors border border-border"
+            title={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            aria-label="Toggle theme"
+          >
+            {isDark ? (
+              <Sun className="w-4 h-4 text-amber-400" />
+            ) : (
+              <Moon className="w-4 h-4 text-indigo-500" />
+            )}
           </button>
 
           {/* Role badge */}
@@ -384,7 +616,7 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
   // With the old order the login page was swapped out for <LoadingScreen/> on
   // submit, which unmounted it and destroyed its local email/password/error
   // state; the failed-login catch then called setError() on a dead component
-  // and a fresh, empty one mounted in its place — so invalid credentials
+  // and a fresh, empty one mounted in its place � so invalid credentials
   // produced no visible feedback at all.
   //
   // The login page has its own local isLoading for the button spinner and
@@ -419,17 +651,60 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <title>TenderBazaar Admin</title>
         <meta name="description" content="TenderBazaar Administration Dashboard" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
-          href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+          href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&display=swap"
           rel="stylesheet"
+        />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  var theme = localStorage.getItem('tb_admin_theme');
+                  if (theme === 'light') {
+                    document.documentElement.classList.remove('dark');
+                  } else {
+                    document.documentElement.classList.add('dark');
+                  }
+                  var font = localStorage.getItem('tb_admin_font');
+                  var fontMap = {
+                    'plus-jakarta-sans': "'Plus Jakarta Sans', system-ui, sans-serif",
+                    'inter': "'Inter', system-ui, sans-serif",
+                    'poppins': "'Poppins', system-ui, sans-serif",
+                    'dm-sans': "'DM Sans', system-ui, sans-serif"
+                  };
+                  if (font && fontMap[font]) {
+                    document.documentElement.style.setProperty('--font-family', fontMap[font]);
+                  }
+                  var colors = localStorage.getItem('tb_admin_colors');
+                  if (colors) {
+                    var parsed = JSON.parse(colors);
+                    if (parsed.primary) {
+                      document.documentElement.style.setProperty('--color-primary-500', parsed.primary);
+                    }
+                    if (parsed.secondary) {
+                      document.documentElement.style.setProperty('--color-secondary-900', parsed.secondary);
+                    }
+                    if (parsed.accent) {
+                      document.documentElement.style.setProperty('--color-accent-500', parsed.accent);
+                    }
+                  }
+                } catch(e) {}
+              })();
+            `,
+          }}
         />
       </head>
       <body className="antialiased bg-background text-foreground font-sans">
-        <AuthGuard>{children}</AuthGuard>
+        <AppearanceProvider>
+          <AuthGuard>{children}</AuthGuard>
+        </AppearanceProvider>
       </body>
     </html>
   );

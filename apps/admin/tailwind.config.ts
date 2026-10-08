@@ -1,6 +1,7 @@
 import type { Config } from 'tailwindcss';
 
 const config: Config = {
+  darkMode: 'class',
   content: ['./src/**/*.{js,ts,jsx,tsx,mdx}'],
   theme: {
     extend: {
@@ -35,8 +36,8 @@ const config: Config = {
           200: '#FFC5A8',
           300: '#FFA071',
           400: '#FF7F47',
-          500: '#FF6B35',
-          600: '#F04E15',
+          500: 'var(--color-primary-500, #FF6B35)',
+          600: 'var(--color-primary-600, #F04E15)',
           700: '#C73A0D',
           800: '#9E3013',
           900: '#7F2B14',
@@ -46,12 +47,12 @@ const config: Config = {
           DEFAULT: 'hsl(var(--secondary))',
           foreground: 'hsl(var(--secondary-foreground))',
           800: '#2A3249',
-          900: '#1B2845',
+          900: 'var(--color-secondary-900, #1B2845)',
         },
         accent: {
           DEFAULT: 'hsl(var(--accent))',
           foreground: 'hsl(var(--accent-foreground))',
-          500: '#00D4AA',
+          500: 'var(--color-accent-500, #00D4AA)',
         },
         sidebar: {
           DEFAULT: 'hsl(var(--sidebar))',
@@ -76,7 +77,7 @@ const config: Config = {
 
       /* ── Typography ───────────────────────────────────────────────── */
       fontFamily: {
-        sans: ['Plus Jakarta Sans', 'system-ui', '-apple-system', 'sans-serif'],
+        sans: ['var(--font-family, "Plus Jakarta Sans")', 'system-ui', '-apple-system', 'sans-serif'],
         mono: ['Fira Code', 'monospace'],
       },
       fontSize: {

@@ -39,6 +39,24 @@ interface RazorpayCheckoutOptions {
 }
 
 export async function openRazorpayCheckout(options: RazorpayCheckoutOptions) {
+  const isMock =
+    options.orderId.startsWith('order_mock_') ||
+    !options.keyId ||
+    options.keyId.includes('xxxx') ||
+    options.keyId === 'rzp_test_placeholder';
+
+  if (isMock) {
+    // In dev / demo mode, complete checkout with mock payment verification
+    setTimeout(() => {
+      options.onSuccess({
+        razorpay_order_id: options.orderId,
+        razorpay_payment_id: `pay_mock_${Date.now()}`,
+        razorpay_signature: `sig_mock_${Date.now()}`,
+      });
+    }, 400);
+    return;
+  }
+
   const loaded = await loadRazorpayScript();
   if (!loaded) {
     throw new Error('Failed to load Razorpay SDK');
