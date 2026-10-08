@@ -14,6 +14,37 @@ function calculatePriceWithGST(basePrice: number) {
   return { baseAmount: basePrice, gstAmount, totalAmount: basePrice + gstAmount };
 }
 
+/**
+ * Whether this server is running against placeholder / unconfigured Razorpay
+ * credentials and should therefore mint and accept mock orders.
+ *
+ * SECURITY: this is derived ONLY from trusted server-side configuration and
+ * must never consider request input.
+ *
+ * An earlier version of verifyPayment() also treated an order as mock when the
+ * CALLER-SUPPLIED ids began with `order_mock_` / `pay_mock_`. Because
+ * `razorpayPaymentId` is attacker-controlled and otherwise unvalidated, sending
+ * `pay_mock_anything` alongside a genuine pending order id skipped HMAC
+ * verification entirely and activated the subscription without payment.
+ *
+ * The placeholder strings below match the values shipped in `.env.example`
+ * (`rzp_test_xxxxxxxxxxxx`, `your-razorpay-secret`) so that a developer who has
+ * not configured Razorpay still gets a working mock checkout.
+ */
+function isRazorpayMockMode(): boolean {
+  const keyId = env.RAZORPAY_KEY_ID;
+  const keySecret = env.RAZORPAY_KEY_SECRET;
+
+  return (
+    !keyId ||
+    keyId.includes('xxxx') ||
+    keyId === 'your-razorpay-key-id' ||
+    !keySecret ||
+    keySecret === 'your-razorpay-secret' ||
+    keySecret.includes('xxxx')
+  );
+}
+
 /** Plan display order for upgrade/downgrade detection */
 const PLAN_ORDER: Record<string, number> = {
   free: 0,
@@ -67,13 +98,7 @@ export const paymentService = {
 
     let razorpayOrderId: string;
 
-    const isMockMode =
-      !env.RAZORPAY_KEY_ID ||
-      env.RAZORPAY_KEY_ID.includes('xxxx') ||
-      env.RAZORPAY_KEY_ID === 'your-razorpay-key-id' ||
-      !env.RAZORPAY_KEY_SECRET ||
-      env.RAZORPAY_KEY_SECRET === 'your-razorpay-secret' ||
-      env.RAZORPAY_KEY_SECRET.includes('xxxx');
+    const isMockMode = isRazorpayMockMode();
 
     if (isMockMode) {
       // Dev / Test mode: create mock order
@@ -245,12 +270,20 @@ export const paymentService = {
     if (!payment) throw new AppError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
     if (payment.status === 'SUCCESS') throw new AppError('Payment already verified', 400, 'PAYMENT_ALREADY_VERIFIED');
 
-    // Verify HMAC signature only for real Razorpay orders
-    const isMockOrder =
-      razorpayOrderId.startsWith('order_mock_') ||
-      razorpayPaymentId.startsWith('pay_mock_');
-
-    if (!isMockOrder && env.RAZORPAY_KEY_SECRET && !env.RAZORPAY_KEY_SECRET.includes('your-razorpay-secret') && !env.RAZORPAY_KEY_SECRET.includes('xxxx')) {
+    // Verify the HMAC signature.
+    //
+    // SECURITY: whether verification runs is decided ONLY by server
+    // configuration (see isRazorpayMockMode). The caller-supplied
+    // `razorpayOrderId` / `razorpayPaymentId` deliberately play no part in that
+    // decision — letting them do so allowed a client to skip verification on a
+    // real order by sending an id prefixed `pay_mock_`.
+    //
+    // Consequence by design: when real credentials are configured, EVERY
+    // verification must present a valid signature. A `order_mock_*` row that
+    // only exists because a live Razorpay call failed represents a payment that
+    // never reached Razorpay, so it correctly fails here rather than silently
+    // activating a subscription.
+    if (!isRazorpayMockMode()) {
       const expectedSignature = crypto
         .createHmac('sha256', env.RAZORPAY_KEY_SECRET)
         .update(`${razorpayOrderId}|${razorpayPaymentId}`)
@@ -444,13 +477,7 @@ export const paymentService = {
     const amountInPaise = Math.round(payment.amount * 100);
     let razorpayOrderId: string;
 
-    const isMockMode =
-      !env.RAZORPAY_KEY_ID ||
-      env.RAZORPAY_KEY_ID.includes('xxxx') ||
-      env.RAZORPAY_KEY_ID === 'your-razorpay-key-id' ||
-      !env.RAZORPAY_KEY_SECRET ||
-      env.RAZORPAY_KEY_SECRET === 'your-razorpay-secret' ||
-      env.RAZORPAY_KEY_SECRET.includes('xxxx');
+    const isMockMode = isRazorpayMockMode();
 
     if (isMockMode) {
       razorpayOrderId = `order_mock_${crypto.randomBytes(8).toString('hex')}`;

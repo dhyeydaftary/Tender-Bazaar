@@ -12,6 +12,12 @@ const envSchema = z.object({
   JWT_REFRESH_EXPIRY: z.string().default('7d'),
   GOOGLE_CLIENT_ID: z.string().default(''),
   GOOGLE_CLIENT_SECRET: z.string().default(''),
+  /**
+   * Opt in to the DEVELOPMENT-ONLY Google sign-in path, which accepts an
+   * unsigned, client-generated ID token. Disabled by default, and ignored
+   * outside NODE_ENV=development (see modules/auth/service.ts).
+   */
+  ALLOW_DEMO_GOOGLE_AUTH: z.enum(['true', 'false']).default('false'),
   FRONTEND_URL: z.string().default('http://localhost:3000'),
   AI_SERVICE_URL: z.string().default('http://localhost:5000'),
   RAZORPAY_KEY_ID: z.string().default(''),

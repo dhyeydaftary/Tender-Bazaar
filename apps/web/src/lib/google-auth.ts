@@ -15,12 +15,43 @@
  * Do NOT use this mock in production.
  * ============================================================================
  */
+
+/**
+ * Is the demo Google sign-in flow explicitly enabled for this build?
+ *
+ * Disabled by default. A developer opts in for local work by setting
+ *
+ *   NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH=true
+ *
+ * in their `.env`. The value is inlined at build time by Next.js, so a
+ * production build made without the flag cannot be talked into enabling the
+ * flow at runtime — no user input, query string or stored preference can turn
+ * it on.
+ *
+ * The API server enforces the same decision independently (see
+ * ALLOW_DEMO_GOOGLE_AUTH in packages/api-server/src/config/env.ts): this client
+ * gate only hides the UI, it is not the security boundary on its own.
+ */
+export function isDemoGoogleAuthEnabled(): boolean {
+  return process.env.NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH === 'true';
+}
+
 export function createGoogleIdToken(payload: {
   email: string;
   name?: string;
   picture?: string;
   sub?: string;
 }): string {
+  // Refuse to mint a token at all unless the demo flow was explicitly enabled.
+  // Belt-and-braces with the UI gate: if this ever gets called from another
+  // code path in a normal build, it fails loudly instead of producing a
+  // forged credential.
+  if (!isDemoGoogleAuthEnabled()) {
+    throw new Error(
+      'Demo Google sign-in is disabled. Set NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH=true for local development.',
+    );
+  }
+
   const header = { alg: 'RS256', typ: 'JWT', kid: 'tb-google-key' };
 
   const derivedName =

@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/stores/auth-store';
-import { createGoogleIdToken } from '@/lib/google-auth';
+import { createGoogleIdToken, isDemoGoogleAuthEnabled } from '@/lib/google-auth';
 import { toast } from 'sonner';
 import { Loader2, X, User, ArrowRight, ShieldCheck } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -21,6 +21,17 @@ export function GoogleSignInButton({
   className,
   onSuccess,
 }: GoogleSignInButtonProps) {
+  // This component drives the DEMO Google flow, which mints an unsigned
+  // client-side token (see @/lib/google-auth). It is disabled unless a
+  // developer explicitly opts in, so a production build renders nothing here
+  // and the account chooser, the custom-email field and the token generator
+  // are all unreachable. Email/password sign-in is unaffected.
+  //
+  // Read here, but acted on only after every hook below has run, so the rules
+  // of hooks hold. The flag is inlined at build time, so the branch is constant
+  // for a given build.
+  const demoAuthEnabled = isDemoGoogleAuthEnabled();
+
   const router = useRouter();
   const { googleAuth } = useAuthStore();
   const [loading, setLoading] = useState(false);
@@ -84,6 +95,9 @@ export function GoogleSignInButton({
       setShowPicker(true);
     }
   };
+
+  // All hooks above have run; safe to bail out now.
+  if (!demoAuthEnabled) return null;
 
   return (
     <>
