@@ -139,12 +139,10 @@ export default function TendersPage() {
   };
 
   const toggleState = (state: string) => {
-    setSelectedStates((prev) => {
-      const next = new Set(prev);
-      if (next.has(state)) next.delete(state); else next.add(state);
-      updateFilters({ states: next.size > 0 ? Array.from(next) : undefined });
-      return next;
-    });
+    const next = new Set(selectedStates);
+    if (next.has(state)) next.delete(state); else next.add(state);
+    setSelectedStates(next);
+    updateFilters({ states: next.size > 0 ? Array.from(next) : undefined });
   };
 
   const handleValueRangeSelect = (range: string) => {
@@ -159,14 +157,12 @@ export default function TendersPage() {
   };
 
   const toggleSpecialFilter = (key: 'msme' | 'startup' | 'emdExempt') => {
-    setSpecialFilters((prev) => {
-      const next = { ...prev, [key]: !prev[key] };
-      updateFilters({
-        reservedForMSME: next.msme ? true : undefined,
-        reservedForStartups: next.startup ? true : undefined,
-        emdExemptMSME: next.emdExempt ? true : undefined,
-      });
-      return next;
+    const next = { ...specialFilters, [key]: !specialFilters[key] };
+    setSpecialFilters(next);
+    updateFilters({
+      reservedForMSME: next.msme ? true : undefined,
+      reservedForStartups: next.startup ? true : undefined,
+      emdExemptMSME: next.emdExempt ? true : undefined,
     });
   };
 
@@ -325,7 +321,13 @@ export default function TendersPage() {
       <div className="flex gap-6">
         {/* Desktop sidebar */}
         <aside className="w-[260px] shrink-0 hidden md:block">
-          <div className="bg-card border border-border rounded-xl p-4 sticky top-20">{filterContent}</div>
+          {/* Bounded height with internal scrolling: with the Category, State
+              and Value sections expanded the panel exceeds the viewport, and a
+              sticky element taller than the screen cannot be scrolled, leaving
+              the lower filters unreachable. */}
+          <div className="bg-card border border-border rounded-xl p-4 sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto overscroll-contain">
+            {filterContent}
+          </div>
         </aside>
 
         {/* Mobile filter drawer */}

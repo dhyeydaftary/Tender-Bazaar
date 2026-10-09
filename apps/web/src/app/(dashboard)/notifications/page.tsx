@@ -26,6 +26,8 @@ interface Notification {
   message: string;
   isRead: boolean;
   createdAt: string;
+  /** Stored as the `data` column; `metadata` kept as a fallback alias. */
+  data?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
 }
 
@@ -71,7 +73,7 @@ function getNotificationIcon(type: string) {
 }
 
 function getNotificationRoute(notification: Notification): string | null {
-  const meta = notification.metadata as Record<string, string> | undefined;
+  const meta = (notification.data ?? notification.metadata) as Record<string, string> | undefined;
   switch (notification.type) {
     case 'ALERT_MATCH':
     case 'ALERT':
@@ -111,9 +113,15 @@ export default function NotificationsPage() {
       const res = await api.get('/notifications', {
         params: { page, limit, unreadOnly },
       });
-      const data = res.data.data;
-      setNotifications(data.notifications ?? []);
-      setTotal(data.total ?? data.meta?.total ?? 0);
+      // GET /notifications returns the notifications array directly on `data`,
+      // with pagination on the sibling `meta` object. Reading
+      // `data.notifications` always yielded undefined, so the page rendered
+      // "No notifications yet" even when records existed, and `total` stayed 0
+      // which also disabled pagination.
+      const payload = res.data.data;
+      const list = Array.isArray(payload) ? payload : payload?.notifications ?? [];
+      setNotifications(list);
+      setTotal(res.data.meta?.total ?? payload?.meta?.total ?? list.length);
     } catch (err: any) {
       toast.error(err.response?.data?.error?.message || 'Failed to load notifications');
     } finally {
