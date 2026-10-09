@@ -23,6 +23,8 @@ interface Notification {
   message: string;
   isRead: boolean;
   createdAt: string;
+  /** Stored as the `data` column; `metadata` kept as a fallback alias. */
+  data?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
 }
 
@@ -64,7 +66,7 @@ function getNotificationIcon(type: string) {
 }
 
 function getNotificationRoute(notification: Notification): string | null {
-  const meta = notification.metadata as Record<string, string> | undefined;
+  const meta = (notification.data ?? notification.metadata) as Record<string, string> | undefined;
   switch (notification.type) {
     case 'ALERT_MATCH':
     case 'ALERT':
@@ -114,7 +116,12 @@ export function NotificationBell() {
     setIsLoading(true);
     try {
       const res = await api.get('/notifications', { params: { page: 1, limit: 10 } });
-      setNotifications(res.data.data?.notifications ?? []);
+      // The API returns the array directly on `data` (pagination lives on
+      // `meta`). Reading `data.notifications` always yielded undefined, so the
+      // dropdown rendered "No notifications yet" even when the badge showed a
+      // count.
+      const payload = res.data.data;
+      setNotifications(Array.isArray(payload) ? payload : payload?.notifications ?? []);
     } catch {
       // Silent fail
     } finally {

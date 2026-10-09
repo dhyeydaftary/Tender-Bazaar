@@ -61,6 +61,18 @@ export const searchController = {
     }
   },
 
+  async getSearchHistory(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = (req as any).user?.id;
+      if (!userId) throw new AppError('Not authenticated', 401, 'NOT_AUTHENTICATED');
+
+      const history = await searchService.getSearchHistory(userId);
+      res.json({ success: true, data: history });
+    } catch (error) {
+      next(error);
+    }
+  },
+
   async getRecentSearches(req: Request, res: Response, next: NextFunction) {
     try {
       const userId = (req as any).user?.id;
