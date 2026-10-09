@@ -33,12 +33,25 @@ import { NotificationBell } from '@/components/notifications/notification-bell';
 import { useTheme } from 'next-themes';
 import { useAuthStore } from '@/stores/auth-store';
 import { useSubscriptionStore } from '@/stores/subscription-store';
+import { useDashboardStore } from '@/stores/dashboard-store';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SIDEBAR CONTEXT
    ═══════════════════════════════════════════════════════════════════════════ */
 
 const SidebarContext = createContext({ collapsed: false, toggle: () => {} });
+
+/**
+ * Compact count for the sidebar badge (1247 -> "1.2K"), which previously
+ * displayed a hard-coded "12.4K" regardless of how many tenders existed.
+ * Returns null while the count is still loading so no badge is rendered.
+ */
+function formatBadgeCount(count: number | undefined | null): string | null {
+  if (count === undefined || count === null) return null;
+  if (count < 1000) return String(count);
+  if (count < 100_000) return `${(count / 1000).toFixed(count < 10_000 ? 1 : 0)}K`;
+  return `${(count / 100_000).toFixed(1)}L`;
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    NAVIGATION
@@ -50,6 +63,8 @@ interface NavItem {
   icon: React.ElementType;
   badge?: string;
   badgeColor?: string;
+  /** Resolved at render time from live data instead of a hard-coded string. */
+  badgeKey?: 'activeTenders';
 }
 
 interface NavGroup {
@@ -62,7 +77,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'Discover',
     items: [
       { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      { href: '/tenders', label: 'All Tenders', icon: FileText, badge: '12.4K' },
+      { href: '/tenders', label: 'All Tenders', icon: FileText, badgeKey: 'activeTenders' },
       { href: '/search', label: 'Search', icon: Search },
     ],
   },
@@ -108,12 +123,17 @@ function Sidebar() {
   const router = useRouter();
   const { collapsed, toggle } = useContext(SidebarContext);
   const { user, logout, fetchUser } = useAuthStore();
+  const { data: dashboard, fetchDashboard } = useDashboardStore();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     setMounted(true);
     fetchUser();
-  }, [fetchUser]);
+    // Supplies the live tender count for the "All Tenders" badge. The store is
+    // TTL-guarded and de-duplicates concurrent callers, so this shares one
+    // request with the dashboard page rather than adding another.
+    fetchDashboard();
+  }, [fetchUser, fetchDashboard]);
 
   if (!mounted) return null;
 
@@ -164,6 +184,9 @@ function Sidebar() {
                     ? pathname === '/dashboard'
                     : pathname.startsWith(item.href);
                 const Icon = item.icon;
+                const badge = item.badgeKey
+                  ? formatBadgeCount(dashboard?.stats.activeTenders)
+                  : item.badge;
 
                 return (
                   <Link
@@ -185,14 +208,14 @@ function Sidebar() {
                     {!collapsed && (
                       <>
                         <span className="flex-1 truncate">{item.label}</span>
-                        {item.badge && (
+                        {badge && (
                           <span
                             className={cn(
                               'text-[10px] px-1.5 py-0.5 rounded-full font-semibold',
                               item.badgeColor ?? 'bg-muted text-muted-foreground',
                             )}
                           >
-                            {item.badge}
+                            {badge}
                           </span>
                         )}
                       </>
@@ -280,6 +303,7 @@ function TopBar() {
   const pathname = usePathname();
   const router = useRouter();
   const { logout } = useAuthStore();
+  const { data: dashboard } = useDashboardStore();
 
   // Close mobile menu on route change
   useEffect(() => {
@@ -359,6 +383,9 @@ function TopBar() {
                   {group.items.map((item) => {
                     const isActive = pathname.startsWith(item.href);
                     const Icon = item.icon;
+                    const badge = item.badgeKey
+                      ? formatBadgeCount(dashboard?.stats.activeTenders)
+                      : item.badge;
                     return (
                       <Link
                         key={item.href}
@@ -373,9 +400,9 @@ function TopBar() {
                       >
                         <Icon className="w-[18px] h-[18px]" />
                         <span className="flex-1">{item.label}</span>
-                        {item.badge && (
+                        {badge && (
                           <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-semibold', item.badgeColor ?? 'bg-muted text-muted-foreground')}>
-                            {item.badge}
+                            {badge}
                           </span>
                         )}
                       </Link>

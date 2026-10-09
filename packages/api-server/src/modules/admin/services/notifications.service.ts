@@ -1,4 +1,5 @@
 import { prisma } from '../../../config/database';
+import { invalidateUnreadCount } from '../../notifications/service';
 
 interface BroadcastPayload {
   title: string;
@@ -91,6 +92,7 @@ export const notificationsService = {
     }));
 
     await prisma.notification.createMany({ data: notifications });
+    await invalidateUnreadCount(notifications.map((n) => n.userId));
 
     return {
       sent: users.length,

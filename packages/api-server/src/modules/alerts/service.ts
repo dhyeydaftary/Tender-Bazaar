@@ -1,6 +1,7 @@
 import { prisma } from '../../config/database';
 import { AppError } from '../../shared/middleware/error-handler';
 import { AlertFrequency, Prisma } from '@prisma/client';
+import { invalidateUnreadCount } from '../notifications/service';
 
 // Plan limits for max alerts
 const PLAN_ALERT_LIMITS: Record<string, number> = {
@@ -198,6 +199,7 @@ export const alertService = {
         }));
 
         await prisma.notification.createMany({ data: notificationData });
+        await invalidateUnreadCount(notificationData.map((n) => n.userId));
 
         // Update alert's lastMatchedAt and matchCount
         await prisma.alert.update({
