@@ -13,6 +13,8 @@ import {
   stopTenderIndexWorker,
 } from './queue/tender-index-queue';
 import { closeScraperJobPublisher } from './queue/scraper-job-publisher';
+import { startAlertScheduler, stopAlertScheduler } from './queue/alert-scheduler';
+import { closeNotificationPublisher } from './queue/notification-publisher';
 
 const PORT = env.PORT || 4000;
 
@@ -45,6 +47,10 @@ async function bootstrap() {
     // process was down, so it should settle before incremental jobs drain.
     startTenderIndexWorker();
 
+    // Periodic alert evaluation. `matchTendersToAlerts` previously had no
+    // caller at all, so saved alerts were never matched and never notified.
+    startAlertScheduler();
+
     // Start API server
     const server = app.listen(PORT, () => {
       console.log(`API Server running on port ${PORT}`);
@@ -60,6 +66,8 @@ async function bootstrap() {
       try {
         server.close();
         await stopTenderIndexWorker();
+        await stopAlertScheduler();
+        await closeNotificationPublisher();
         await closeScraperJobPublisher();
         await prisma.$disconnect();
       } catch (error) {

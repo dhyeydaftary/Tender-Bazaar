@@ -34,6 +34,7 @@ import { useTheme } from 'next-themes';
 import { useAuthStore } from '@/stores/auth-store';
 import { useSubscriptionStore } from '@/stores/subscription-store';
 import { useDashboardStore } from '@/stores/dashboard-store';
+import { NavPlanBadge, type NavGate } from '@/components/subscription';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SIDEBAR CONTEXT
@@ -65,6 +66,12 @@ interface NavItem {
   badgeColor?: string;
   /** Resolved at render time from live data instead of a hard-coded string. */
   badgeKey?: 'activeTenders';
+  /**
+   * Entitlement this item depends on. When the user's plan does not grant it,
+   * an upgrade badge naming the minimum plan is shown beside the label.
+   * Only set on items that are genuinely gated — Discover's items are not.
+   */
+  gate?: NavGate;
 }
 
 interface NavGroup {
@@ -84,10 +91,13 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: 'My Workspace',
     items: [
-      { href: '/saved', label: 'Saved Tenders', icon: Bookmark },
-      { href: '/alerts', label: 'My Alerts', icon: Bell },
+      // Gates reflect the real plan data: Free grants maxSavedTenders 0 and
+      // maxAlerts 0, so both need Starter. Eligibility Checks is NOT gated —
+      // Free includes 1 lifetime AI check — so it carries no badge.
+      { href: '/saved', label: 'Saved Tenders', icon: Bookmark, gate: { kind: 'limit', name: 'maxSavedTenders' } },
+      { href: '/alerts', label: 'My Alerts', icon: Bell, gate: { kind: 'limit', name: 'maxAlerts' } },
       { href: '/eligibility', label: 'Eligibility Checks', icon: Shield },
-      { href: '/calendar', label: 'Tender Calendar', icon: CalendarDays },
+      { href: '/calendar', label: 'Tender Calendar', icon: CalendarDays, gate: { kind: 'feature', name: 'tenderCalendar' } },
     ],
   },
   {
@@ -95,7 +105,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: '/ai-eligibility', label: 'AI Eligibility', icon: Sparkles, badge: 'NEW', badgeColor: 'bg-accent-500/10 text-accent-500' },
       { href: '/bid-assistant', label: 'Bid Assistant', icon: FileCheck, badge: 'PRO', badgeColor: 'bg-primary-500/10 text-primary-500' },
-      { href: '/compare', label: 'Tender Comparison', icon: Columns3 },
+      { href: '/compare', label: 'Tender Comparison', icon: Columns3, gate: { kind: 'feature', name: 'tenderComparison' } },
     ],
   },
   {
@@ -218,6 +228,7 @@ function Sidebar() {
                             {badge}
                           </span>
                         )}
+                        {item.gate && <NavPlanBadge gate={item.gate} />}
                       </>
                     )}
                   </Link>
@@ -405,6 +416,7 @@ function TopBar() {
                             {badge}
                           </span>
                         )}
+                        {item.gate && <NavPlanBadge gate={item.gate} />}
                       </Link>
                     );
                   })}

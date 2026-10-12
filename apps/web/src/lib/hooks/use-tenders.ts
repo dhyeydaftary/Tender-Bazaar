@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '@/lib/api';
+import { useDashboardStore } from '@/stores/dashboard-store';
 
 interface TenderFilters {
   query?: string;
@@ -341,6 +342,7 @@ export function useSimilarTenders(id: string | undefined) {
 export function useSavedTenders() {
   const [saved, setSaved] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const adjustSavedCount = useDashboardStore((s) => s.adjustSavedCount);
 
   // Hydrate from the server.
   //
@@ -383,12 +385,20 @@ export function useSavedTenders() {
     try {
       if (wasSaved) await api.delete(`/saved/${tenderId}`);
       else await api.post(`/saved/${tenderId}`);
+
+      // Sync the dashboard stat immediately so the saved-tenders card
+      // reflects the change without needing a page refresh.
+      adjustSavedCount(wasSaved ? -1 : 1);
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status;
 
       // 409 on save and 404 on unsave both mean the server already agrees with
       // the state we just moved to, so keep it instead of reverting.
-      if ((!wasSaved && status === 409) || (wasSaved && status === 404)) return;
+      if ((!wasSaved && status === 409) || (wasSaved && status === 404)) {
+        // Server already in target state — still sync the dashboard count.
+        adjustSavedCount(wasSaved ? -1 : 1);
+        return;
+      }
 
       setSaved((prev) => {
         const next = new Set(prev);

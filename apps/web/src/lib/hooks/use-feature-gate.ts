@@ -119,6 +119,11 @@ export function useLimitGate(limitName: NumericLimit) {
   const currentPlan = useSubscriptionStore((s) => s.currentPlan);
   const usage = useSubscriptionStore((s) => s.usage);
   const subscriptionStatus = useSubscriptionStore((s) => s.subscriptionStatus);
+  // Used to derive the minimum plan that grants this limit. There is no static
+  // map for numeric limits (unlike MIN_PLAN_FOR_FEATURE), and hardcoding one
+  // would drift from the real plan data — so it is computed from the plans the
+  // API actually returned.
+  const plans = useSubscriptionStore((s) => s.plans);
 
   return useMemo(() => {
     const limit = currentPlan ? ((currentPlan as any)[limitName] as number) : 0;
@@ -141,10 +146,23 @@ export function useLimitGate(limitName: NumericLimit) {
       remaining,
       percentage,
       featureName: label,
+      /**
+       * Cheapest plan whose allowance for this limit is non-zero, by
+       * displayOrder. `-1` means unlimited and therefore also counts as
+       * granting access. Null when the plan list has not loaded, so callers can
+       * stay silent instead of naming a plan they cannot verify.
+       */
+      requiredPlan:
+        [...plans]
+          .sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0))
+          .find((p) => {
+            const value = (p as any)[limitName] as number | undefined;
+            return typeof value === 'number' && value !== 0;
+          })?.name ?? null,
       currentPlan: currentPlan?.name || 'Free',
       currentPlanSlug: currentPlan?.slug || 'free',
     };
-  }, [currentPlan, usage, subscriptionStatus, limitName]);
+  }, [currentPlan, usage, subscriptionStatus, limitName, plans]);
 }
 
 /* ------------------------------------------------------------------ */

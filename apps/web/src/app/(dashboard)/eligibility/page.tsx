@@ -22,6 +22,7 @@ import {
 } from 'lucide-react';
 import { cn, getScoreStrokeColor } from '@/lib/utils';
 import api from '@/lib/api';
+import { useLimitGate } from '@/lib/hooks/use-feature-gate';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TYPES
@@ -123,9 +124,8 @@ function ScoreCircle({ score, size = 40 }: { score: number; size?: number }) {
    COMPUTED STATS
    ═══════════════════════════════════════════════════════════════════════════ */
 
-function computeStats(checks: EligibilityCheck[]) {
+function computeStats(checks: EligibilityCheck[], planLimit: number, isUnlimited: boolean) {
   const totalUsed = checks.length;
-  const planLimit = 5; // Starter plan
   const avgScore = checks.length > 0
     ? Math.round(checks.reduce((sum, c) => sum + c.score, 0) / checks.length)
     : 0;
@@ -138,9 +138,13 @@ function computeStats(checks: EligibilityCheck[]) {
     }
   });
   const topIssueEntry = Object.entries(issueCounts).sort((a, b) => b[1] - a[1])[0];
-  const mostCommonIssue = topIssueEntry ? topIssueEntry[0] : 'None found';
+  const mostCommonIssue = topIssueEntry
+    ? topIssueEntry[0]
+    : checks.length > 0
+      ? 'No criteria issues'
+      : 'None detected';
 
-  return { totalUsed, planLimit, avgScore, mostCommonIssue };
+  return { totalUsed, planLimit, isUnlimited, avgScore, mostCommonIssue };
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -155,14 +159,18 @@ export default function EligibilityDashboardPage() {
   const [page, setPage] = useState(1);
   const limit = 10;
 
+  // Entitlement gate for AI eligibility checks
+  const aiCheckLimit = useLimitGate('maxAiChecks');
+  const isUnlimited = aiCheckLimit.isUnlimited;
+  const planLimit = isUnlimited ? -1 : (aiCheckLimit.limit || 5);
+
   const fetchChecks = useCallback(async () => {
     try {
       setLoading(true);
       setError(null);
-      // The axios client's baseURL already ends in /api/v1, so the old
-      // '/api/v1/eligibility' resolved to /api/v1/api/v1/eligibility and 404'd.
-      // The history list lives at GET /eligibility/history.
-      const { data: res } = await api.get('/eligibility/history');
+      const { data: res } = await api.get('/eligibility/history', {
+        params: { page: 1, limit: 100 },
+      });
       if (res.success && Array.isArray(res.data)) {
         const mapped: EligibilityCheck[] = res.data.map((item: any) => {
           const score = item.score ?? 0;
@@ -170,14 +178,21 @@ export default function EligibilityDashboardPage() {
           if (item.isEligible === true || score >= 70) status = 'eligible';
           else if (score >= 40) status = 'partial';
 
-          // Extract the top issue from criteria JSON
+          // Extract the top issue from criteria JSON (supports both object and array)
           let topIssue: string | null = null;
           if (item.criteria && typeof item.criteria === 'object') {
-            const criteriaEntries = Object.values(item.criteria) as any[];
+            const criteriaEntries = Array.isArray(item.criteria)
+              ? item.criteria
+              : Object.values(item.criteria);
             const failing = criteriaEntries.find(
-              (c: any) => c.status === 'fail' || c.status === 'partial'
+              (c: any) =>
+                c.status === 'fail' ||
+                c.status === 'partial' ||
+                c.status === 'NOT_MET' ||
+                c.status === 'PARTIALLY_MET' ||
+                c.met === false
             );
-            if (failing) topIssue = failing.detail || failing.name || null;
+            if (failing) topIssue = failing.detail || failing.name || failing.criterion || null;
           }
 
           return {
@@ -204,7 +219,7 @@ export default function EligibilityDashboardPage() {
     fetchChecks();
   }, [fetchChecks]);
 
-  const stats = computeStats(checks);
+  const stats = computeStats(checks, planLimit, isUnlimited);
 
   /* ─── Filtered ─── */
 
@@ -254,12 +269,12 @@ export default function EligibilityDashboardPage() {
         <div>
           <h1 className="text-heading-lg text-foreground font-display">Eligibility Dashboard</h1>
           <p className="text-body-sm text-muted-foreground mt-0.5">
-            Track your AI eligibility checks and scores
+            Track your AI eligibility checks, match scores, and criteria compliance
           </p>
         </div>
         <Link
-          href="/tenders"
-          className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary-500 hover:bg-primary-600 text-white font-medium rounded-lg transition-colors shrink-0"
+          href="/ai-eligibility"
+          className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary-500 hover:bg-primary-600 text-white font-medium rounded-lg transition-colors shrink-0 shadow-sm"
         >
           <Zap className="h-4 w-4" />
           Check a New Tender
@@ -269,72 +284,92 @@ export default function EligibilityDashboardPage() {
       {/* Stats Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
         {/* Total Checks */}
-        <div className="bg-card border border-border rounded-xl p-5">
+        <div className="bg-card border border-border rounded-xl p-5 shadow-sm">
           <div className="flex items-center gap-3 mb-3">
             <div className="h-9 w-9 rounded-lg bg-primary-50 dark:bg-primary-950/30 flex items-center justify-center">
               <Shield className="h-5 w-5 text-primary-500" />
             </div>
-            <span className="text-caption text-muted-foreground">Total Checks Used</span>
+            <span className="text-caption text-muted-foreground font-medium">Total Checks Used</span>
           </div>
-          <div className="flex items-baseline gap-1">
+          <div className="flex items-baseline gap-1.5">
             <p className="text-display-sm font-mono text-foreground font-bold">{stats.totalUsed}</p>
-            <span className="text-body-sm text-muted-foreground font-mono">/ {stats.planLimit}</span>
+            <span className="text-body-sm text-muted-foreground font-mono">
+              / {stats.isUnlimited ? '∞' : stats.planLimit}
+            </span>
           </div>
-          <div className="mt-2">
+          <div className="mt-3">
             <div className="h-1.5 bg-muted rounded-full overflow-hidden">
               <div
                 className={cn(
                   'h-full rounded-full transition-all duration-700',
-                  stats.totalUsed / stats.planLimit > 0.8 ? 'bg-amber-500' : 'bg-primary-500',
+                  stats.isUnlimited
+                    ? 'bg-accent-500'
+                    : stats.planLimit > 0 && stats.totalUsed / stats.planLimit > 0.8
+                      ? 'bg-amber-500'
+                      : 'bg-primary-500',
                 )}
-                style={{ width: `${Math.min(100, (stats.totalUsed / stats.planLimit) * 100)}%` }}
+                style={{
+                  width: stats.isUnlimited
+                    ? '100%'
+                    : `${Math.min(100, Math.max(0, (stats.totalUsed / (stats.planLimit || 1)) * 100))}%`,
+                }}
               />
             </div>
-            <p className="text-[11px] text-muted-foreground mt-1">
-              {stats.planLimit - stats.totalUsed > 0
-                ? `${stats.planLimit - stats.totalUsed} remaining this month`
-                : 'Limit reached — upgrade for more'}
+            <p className="text-[11px] text-muted-foreground mt-1.5 font-medium">
+              {stats.isUnlimited
+                ? 'Unlimited AI checks on your active plan'
+                : stats.planLimit - stats.totalUsed > 0
+                  ? `${stats.planLimit - stats.totalUsed} checks remaining this month`
+                  : 'Limit reached — upgrade for more checks'}
             </p>
           </div>
         </div>
 
         {/* Average Score */}
-        <div className="bg-card border border-border rounded-xl p-5">
+        <div className="bg-card border border-border rounded-xl p-5 shadow-sm">
           <div className="flex items-center gap-3 mb-3">
             <div className="h-9 w-9 rounded-lg bg-accent-50 dark:bg-accent-950/30 flex items-center justify-center">
               <TrendingUp className="h-5 w-5 text-accent-500" />
             </div>
-            <span className="text-caption text-muted-foreground">Average Score</span>
+            <span className="text-caption text-muted-foreground font-medium">Average Score</span>
           </div>
           <div className="flex items-center gap-3">
             <p className={cn(
               'text-display-sm font-mono font-bold',
-              stats.avgScore >= 70
-                ? 'text-accent-500'
-                : stats.avgScore >= 40
-                  ? 'text-amber-500'
-                  : 'text-red-500',
+              checks.length === 0
+                ? 'text-muted-foreground'
+                : stats.avgScore >= 70
+                  ? 'text-accent-500'
+                  : stats.avgScore >= 40
+                    ? 'text-amber-500'
+                    : 'text-red-500',
             )}>
-              {stats.avgScore}%
+              {checks.length === 0 ? '—' : `${stats.avgScore}%`}
             </p>
-            <ScoreCircle score={stats.avgScore} size={44} />
+            <ScoreCircle score={checks.length === 0 ? 0 : stats.avgScore} size={44} />
           </div>
-          <p className="text-[11px] text-muted-foreground mt-2">
-            Based on {checks.length} check{checks.length !== 1 ? 's' : ''}
+          <p className="text-[11px] text-muted-foreground mt-2 font-medium">
+            {checks.length === 0
+              ? 'No checks run yet'
+              : `Based on ${checks.length} evaluated tender${checks.length !== 1 ? 's' : ''}`}
           </p>
         </div>
 
         {/* Most Common Issue */}
-        <div className="bg-card border border-border rounded-xl p-5">
+        <div className="bg-card border border-border rounded-xl p-5 shadow-sm">
           <div className="flex items-center gap-3 mb-3">
             <div className="h-9 w-9 rounded-lg bg-amber-50 dark:bg-amber-950/30 flex items-center justify-center">
               <AlertTriangle className="h-5 w-5 text-amber-500" />
             </div>
-            <span className="text-caption text-muted-foreground">Most Common Issue</span>
+            <span className="text-caption text-muted-foreground font-medium">Top Critical Issue</span>
           </div>
-          <p className="text-body-sm font-medium text-foreground line-clamp-2">{stats.mostCommonIssue}</p>
-          <p className="text-[11px] text-muted-foreground mt-2">
-            Appears in {checks.filter((c) => c.topIssue === stats.mostCommonIssue).length} check{checks.filter((c) => c.topIssue === stats.mostCommonIssue).length !== 1 ? 's' : ''}
+          <p className="text-body-sm font-medium text-foreground line-clamp-2 min-h-[40px]">
+            {checks.length === 0 ? 'None detected' : stats.mostCommonIssue}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-2 font-medium">
+            {checks.length === 0
+              ? 'Run checks to analyze tenders'
+              : `Affects ${checks.filter((c) => c.topIssue === stats.mostCommonIssue).length} of ${checks.length} check${checks.length !== 1 ? 's' : ''}`}
           </p>
         </div>
       </div>
@@ -386,10 +421,17 @@ export default function EligibilityDashboardPage() {
                 <tr>
                   <td colSpan={5} className="text-center py-16">
                     <Shield className="h-10 w-10 text-muted-foreground/30 mx-auto mb-3" />
-                    <p className="text-body-sm text-muted-foreground">No eligibility checks found</p>
-                    <p className="text-caption text-muted-foreground mt-1">
-                      Check eligibility from any tender detail page
+                    <p className="text-body-sm text-foreground font-medium">No eligibility checks found</p>
+                    <p className="text-caption text-muted-foreground mt-1 mb-4">
+                      Run AI eligibility checks on any active tender to see detailed compatibility reports
                     </p>
+                    <Link
+                      href="/ai-eligibility"
+                      className="inline-flex items-center gap-2 px-4 py-2 bg-primary-500 hover:bg-primary-600 text-white font-medium text-caption rounded-lg transition-colors shadow-sm"
+                    >
+                      <Zap className="h-3.5 w-3.5" />
+                      Run AI Check Now
+                    </Link>
                   </td>
                 </tr>
               ) : (

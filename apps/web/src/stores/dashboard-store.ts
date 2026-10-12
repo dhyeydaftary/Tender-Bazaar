@@ -77,6 +77,8 @@ interface DashboardState {
   error: string | null;
   lastFetchedAt: number | null;
   fetchDashboard: (options?: { force?: boolean }) => Promise<void>;
+  /** Adjust savedCount immediately after a save/unsave without a refetch. */
+  adjustSavedCount: (delta: number) => void;
 }
 
 /**
@@ -95,6 +97,20 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
   isLoading: false,
   error: null,
   lastFetchedAt: null,
+
+  adjustSavedCount: (delta: number) => {
+    const { data } = get();
+    if (!data) return;
+    set({
+      data: {
+        ...data,
+        stats: {
+          ...data.stats,
+          savedCount: Math.max(0, data.stats.savedCount + delta),
+        },
+      },
+    });
+  },
 
   fetchDashboard: async (options) => {
     const { lastFetchedAt, data } = get();

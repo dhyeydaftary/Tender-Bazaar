@@ -52,7 +52,17 @@ async function main() {
       paginationAllowed: false,
       advancedFilters: false,
       // Alerts
-      maxAlerts: 0,
+      //
+      // CLAUDE.md documents the Free plan as allowing 1 alert; this seed said 0,
+      // so `requireLimit('maxAlerts')` rejected every Free-user alert creation
+      // with "limit for maxAlerts (0/0)" before the handler ran — which is why
+      // My Alerts appeared broken for Free accounts. Aligned with the documented
+      // product rule.
+      //
+      // NOTE: the live database row still has maxAlerts = 0. Seeds only apply to
+      // a fresh/reseeded database, so existing environments keep the old value
+      // until that row is updated separately (deliberately not done here).
+      maxAlerts: 1,
       emailAlerts: false,
       pushAlerts: false,
       whatsappAlerts: false,
