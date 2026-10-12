@@ -28,6 +28,7 @@ import { cn, formatCurrency, getDeadlineInfo, getCategoryInfo } from '@/lib/util
 import api from '@/lib/api';
 import { useLimitGate } from '@/lib/hooks/use-feature-gate';
 import { UpgradeBanner } from '@/components/subscription';
+import { useDashboardStore } from '@/stores/dashboard-store';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TYPES
@@ -257,6 +258,7 @@ export default function SavedTendersPage() {
   // Plan limit gate
   const savedLimit = useLimitGate('maxSavedTenders');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const adjustSavedCount = useDashboardStore((s) => s.adjustSavedCount);
 
   /* ─── Fetch saved tenders from API ─── */
 
@@ -367,6 +369,8 @@ export default function SavedTendersPage() {
         next.delete(id);
         return next;
       });
+      // Keep dashboard stat in sync without a page refresh.
+      adjustSavedCount(-1);
     } catch {
       // Silently fail — tender stays in list
     } finally {
@@ -384,11 +388,14 @@ export default function SavedTendersPage() {
 
     setRemovingIds(new Set(idsToRemove));
     try {
-      await Promise.allSettled(
+      const results = await Promise.allSettled(
         tendersToRemove.map((t) => api.delete(`/saved/${t.tenderId}`))
       );
+      // Count how many actually succeeded so the dashboard stays accurate.
+      const removedCount = results.filter((r) => r.status === 'fulfilled').length;
       setTenders((prev) => prev.filter((t) => !selectedIds.has(t.id)));
       setSelectedIds(new Set());
+      if (removedCount > 0) adjustSavedCount(-removedCount);
     } catch {
       // Partial failures are handled by allSettled
     } finally {

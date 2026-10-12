@@ -3,6 +3,7 @@ import { prisma } from '../../config/database';
 import redis from '../../config/redis';
 import { AppError } from '../../shared/middleware/error-handler';
 import { env } from '../../config/env';
+import { aiEligibilityResponseSchema } from './validation';
 
 // Plan limits for AI eligibility checks per month
 const PLAN_ELIGIBILITY_LIMITS: Record<string, number> = {
@@ -214,23 +215,59 @@ export const eligibilityService = {
             reservedForMSME: tender.reservedForMSME,
             reservedForStartups: tender.reservedForStartups,
             emdExemptMSME: tender.emdExemptMSME,
-            aiEligibilityText: tender.aiEligibilityText,
+            // The AI service's TenderInfo model calls this `eligibilityText`.
+            // Sending it as `aiEligibilityText` meant Pydantic silently dropped
+            // it, so the engine's LLM stage — which is gated on this field being
+            // present — was skipped even when the tender had eligibility text.
+            eligibilityText: tender.aiEligibilityText,
           },
         },
         { timeout: 30000 }
       );
 
-      aiResult = response.data;
+      // Validate the model service's reply against a schema instead of
+      // trusting it. An unparseable or partial payload must not be persisted
+      // as a real analysis — previously a missing `score` became 0, which
+      // reads to the user as "not eligible".
+      const parsed = aiEligibilityResponseSchema.safeParse(response.data);
+      if (!parsed.success) {
+        throw new Error(
+          `AI eligibility response failed validation: ${parsed.error.issues
+            .map((i) => `${i.path.join('.')}: ${i.message}`)
+            .join('; ')}`,
+        );
+      }
+
+      // Identity check: if the service echoes a tender id it must be the one
+      // we asked about. This is what stops a mismatched or cross-wired
+      // response being stored against the wrong tender.
+      if (parsed.data.tenderId && parsed.data.tenderId !== tender.id) {
+        throw new Error(
+          `AI eligibility response is for a different tender (expected ${tender.id}, got ${parsed.data.tenderId})`,
+        );
+      }
+
+      aiResult = parsed.data;
     } catch (error) {
-      // AI service unavailable — use basic fallback
-      console.warn('AI service unavailable, using fallback eligibility check:', (error as any)?.message);
+      // AI service unavailable, malformed, or answering about another tender.
+      // Fall back to the deterministic rule-based check and mark it, so the
+      // result is never presented as AI analysis it is not.
+      console.warn('AI eligibility unavailable or rejected, using rule-based fallback:', (error as any)?.message);
       aiResult = basicFallbackCheck(companyProfile, tender);
       aiResult._fallback = true;
+      // The AI service was never reached (or its reply was rejected), so no
+      // LLM stage ran. Recorded explicitly rather than left to inference.
+      aiResult.llmAnalysed = false;
+      aiResult.llmStatus = 'UNAVAILABLE';
+      aiResult.llmError = 'The analysis service could not be reached.';
+      aiResult.ruleChecksCompleted = true;
     }
 
-    const score = aiResult.score ?? 0;
-    const isEligible = aiResult.isEligible ?? score >= 50;
-    const criteria = aiResult.criteria ?? {};
+    // `basicFallbackCheck` is fully typed and the AI path is schema-validated,
+    // so these are present by construction on both paths.
+    const score = aiResult.score;
+    const isEligible = aiResult.isEligible;
+    const criteria = aiResult.criteria;
     const suggestions = aiResult.suggestions ?? [];
 
     // Upsert eligibility check record
@@ -258,6 +295,17 @@ export const eligibilityService = {
     // Increment usage counter
     await incrementUsage(userId);
 
+    // Provenance, forwarded from the service rather than inferred here.
+    //
+    // `isFallback` alone was misleading: it only said whether THIS server
+    // reached the AI service. When the service answered 200 but its own LLM
+    // call had failed (an invalid key, for instance), isFallback was false and
+    // the result looked like a completed AI analysis. `llmAnalysed` is the
+    // field that actually answers "did a model analyse this tender", and it is
+    // true only when the service reported SUCCESS.
+    const llmStatus: string = aiResult.llmStatus ?? 'UNAVAILABLE';
+    const llmAnalysed = aiResult.llmAnalysed === true && llmStatus === 'SUCCESS';
+
     return {
       eligibilityCheck,
       result: {
@@ -265,7 +313,12 @@ export const eligibilityService = {
         isEligible,
         criteria,
         suggestions,
+        /** Kept for existing clients: true when this server fell back locally. */
         isFallback: aiResult._fallback ?? false,
+        ruleChecksCompleted: aiResult.ruleChecksCompleted !== false,
+        llmAnalysed,
+        llmStatus,
+        llmError: aiResult.llmError ?? null,
       },
     };
   },
