@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, createContext, useContext } from 'react';
+import { useState, useEffect, createContext, useContext, useMemo } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
@@ -28,17 +28,28 @@ import {
   FileText,
   Command,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, formatCompact } from '@/lib/utils';
 import { NotificationBell } from '@/components/notifications/notification-bell';
 import { useTheme } from 'next-themes';
 import { useAuthStore } from '@/stores/auth-store';
 import { useSubscriptionStore } from '@/stores/subscription-store';
+import { useTenderCount } from '@/lib/hooks/use-tenders';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SIDEBAR CONTEXT
    ═══════════════════════════════════════════════════════════════════════════ */
 
-const SidebarContext = createContext({ collapsed: false, toggle: () => {} });
+interface SidebarContextType {
+  collapsed: boolean;
+  toggle: () => void;
+  tenderCount: number | null;
+}
+
+const SidebarContext = createContext<SidebarContextType>({
+  collapsed: false,
+  toggle: () => {},
+  tenderCount: null,
+});
 
 /* ═══════════════════════════════════════════════════════════════════════════
    NAVIGATION
@@ -57,47 +68,54 @@ interface NavGroup {
   items: NavItem[];
 }
 
-const NAV_GROUPS: NavGroup[] = [
-  {
-    title: 'Discover',
-    items: [
-      { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      { href: '/tenders', label: 'All Tenders', icon: FileText, badge: '12.4K' },
-      { href: '/search', label: 'Search', icon: Search },
-    ],
-  },
-  {
-    title: 'My Workspace',
-    items: [
-      { href: '/saved', label: 'Saved Tenders', icon: Bookmark },
-      { href: '/alerts', label: 'My Alerts', icon: Bell },
-      { href: '/eligibility', label: 'Eligibility Checks', icon: Shield },
-      { href: '/calendar', label: 'Tender Calendar', icon: CalendarDays },
-    ],
-  },
-  {
-    title: 'AI Tools',
-    items: [
-      { href: '/ai-eligibility', label: 'AI Eligibility', icon: Sparkles, badge: 'NEW', badgeColor: 'bg-accent-500/10 text-accent-500' },
-      { href: '/bid-assistant', label: 'Bid Assistant', icon: FileCheck, badge: 'PRO', badgeColor: 'bg-primary-500/10 text-primary-500' },
-      { href: '/compare', label: 'Tender Comparison', icon: Columns3 },
-    ],
-  },
-  {
-    title: 'Analytics',
-    items: [
-      { href: '/analytics', label: 'My Analytics', icon: BarChart3 },
-      { href: '/results', label: 'Tender Results', icon: Trophy },
-    ],
-  },
-  {
-    title: 'Account',
-    items: [
-      { href: '/subscription', label: 'Subscription', icon: CreditCard },
-      { href: '/settings', label: 'Settings', icon: Settings },
-    ],
-  },
-];
+function getNavGroups(tenderCount: number | null): NavGroup[] {
+  return [
+    {
+      title: 'Discover',
+      items: [
+        { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+        {
+          href: '/tenders',
+          label: 'All Tenders',
+          icon: FileText,
+          badge: tenderCount != null ? formatCompact(tenderCount) : undefined,
+        },
+        { href: '/search', label: 'Search', icon: Search },
+      ],
+    },
+    {
+      title: 'My Workspace',
+      items: [
+        { href: '/saved', label: 'Saved Tenders', icon: Bookmark },
+        { href: '/alerts', label: 'My Alerts', icon: Bell },
+        { href: '/eligibility', label: 'Eligibility Checks', icon: Shield },
+        { href: '/calendar', label: 'Tender Calendar', icon: CalendarDays },
+      ],
+    },
+    {
+      title: 'AI Tools',
+      items: [
+        { href: '/ai-eligibility', label: 'AI Eligibility', icon: Sparkles, badge: 'NEW', badgeColor: 'bg-accent-500/10 text-accent-500' },
+        { href: '/bid-assistant', label: 'Bid Assistant', icon: FileCheck, badge: 'PRO', badgeColor: 'bg-primary-500/10 text-primary-500' },
+        { href: '/compare', label: 'Tender Comparison', icon: Columns3 },
+      ],
+    },
+    {
+      title: 'Analytics',
+      items: [
+        { href: '/analytics', label: 'My Analytics', icon: BarChart3 },
+        { href: '/results', label: 'Tender Results', icon: Trophy },
+      ],
+    },
+    {
+      title: 'Account',
+      items: [
+        { href: '/subscription', label: 'Subscription', icon: CreditCard },
+        { href: '/settings', label: 'Settings', icon: Settings },
+      ],
+    },
+  ];
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SIDEBAR
@@ -106,9 +124,10 @@ const NAV_GROUPS: NavGroup[] = [
 function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
-  const { collapsed, toggle } = useContext(SidebarContext);
+  const { collapsed, toggle, tenderCount } = useContext(SidebarContext);
   const { user, logout, fetchUser } = useAuthStore();
   const [mounted, setMounted] = useState(false);
+  const navGroups = useMemo(() => getNavGroups(tenderCount), [tenderCount]);
 
   useEffect(() => {
     setMounted(true);
@@ -150,7 +169,7 @@ function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 py-3 px-2 overflow-y-auto no-scrollbar">
-        {NAV_GROUPS.map((group) => (
+        {navGroups.map((group) => (
           <div key={group.title} className="mb-4">
             {!collapsed && (
               <p className="text-overline text-muted-foreground uppercase tracking-widest px-3 mb-1.5 text-[10px]">
@@ -276,10 +295,17 @@ function Sidebar() {
 
 function TopBar() {
   const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
   const { logout } = useAuthStore();
+  const { tenderCount } = useContext(SidebarContext);
+  const navGroups = useMemo(() => getNavGroups(tenderCount), [tenderCount]);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Close mobile menu on route change
   useEffect(() => {
@@ -325,10 +351,14 @@ function TopBar() {
           {/* Theme toggle */}
           <button
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors min-w-[36px] min-h-[36px] flex items-center justify-center"
             aria-label="Toggle theme"
           >
-            {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            {mounted ? (
+              theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />
+            ) : (
+              <span className="w-4 h-4 block" />
+            )}
           </button>
 
           {/* Notifications */}
@@ -351,7 +381,7 @@ function TopBar() {
               </span>
             </div>
             <nav className="py-3 px-2">
-              {NAV_GROUPS.map((group) => (
+              {navGroups.map((group) => (
                 <div key={group.title} className="mb-4">
                   <p className="text-overline text-muted-foreground uppercase tracking-widest px-3 mb-1.5 text-[10px]">
                     {group.title}
@@ -414,6 +444,7 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const tenderCount = useTenderCount();
   const fetchSubscriptionData = useSubscriptionStore((s) => s.fetchAll);
 
   // Hydrate the subscription store once for the whole dashboard.
@@ -450,7 +481,13 @@ export default function DashboardLayout({
   }, []);
 
   return (
-    <SidebarContext.Provider value={{ collapsed, toggle: () => setCollapsed((c) => !c) }}>
+    <SidebarContext.Provider
+      value={{
+        collapsed,
+        toggle: () => setCollapsed((c) => !c),
+        tenderCount,
+      }}
+    >
       <div className="min-h-screen bg-background">
         <Sidebar />
         <div

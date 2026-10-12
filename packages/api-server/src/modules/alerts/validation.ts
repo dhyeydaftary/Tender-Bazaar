@@ -2,9 +2,9 @@ import { z } from 'zod';
 
 export const createAlertSchema = z.object({
   name: z.string().min(1).max(100),
-  keywords: z.array(z.string().min(1)).min(1),
-  categories: z.array(z.string()).optional(),
-  states: z.array(z.string()).optional(),
+  keywords: z.array(z.string()).optional().default([]),
+  categories: z.array(z.string()).optional().default([]),
+  states: z.array(z.string()).optional().default([]),
   minValue: z.number().min(0).optional(),
   maxValue: z.number().min(0).optional(),
   organizations: z.array(z.string()).optional(),
@@ -18,7 +18,7 @@ export const createAlertSchema = z.object({
 
 export const updateAlertSchema = z.object({
   name: z.string().min(1).max(100).optional(),
-  keywords: z.array(z.string().min(1)).min(1).optional(),
+  keywords: z.array(z.string()).optional(),
   categories: z.array(z.string()).optional(),
   states: z.array(z.string()).optional(),
   minValue: z.number().min(0).nullable().optional(),

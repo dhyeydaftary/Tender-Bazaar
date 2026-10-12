@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 import {
@@ -37,6 +37,7 @@ import { FeatureGate } from '@/components/subscription';
 import {
   useTenderDetail,
   useSimilarTenders,
+  useSavedTenders,
   type TenderDetail,
   type TenderDocument,
 } from '@/lib/hooks/use-tenders';
@@ -177,7 +178,7 @@ export default function TenderDetailPage() {
   const tenderId = Array.isArray(rawId) ? rawId[0] : rawId;
 
   const [activeTab, setActiveTab] = useState<'overview' | 'eligibility' | 'documents' | 'similar' | 'results'>('overview');
-  const [isSaved, setIsSaved] = useState(false);
+  const { saved: savedIds, toggleSave } = useSavedTenders();
   const [descExpanded, setDescExpanded] = useState(false);
 
   const { tender: data, isLoading, error } = useTenderDetail(tenderId);
@@ -187,6 +188,21 @@ export default function TenderDetailPage() {
     () => (data ? normalizeTender(data) : null),
     [data],
   );
+
+  useEffect(() => {
+    if (tenderId && data) {
+      try {
+        const raw = localStorage.getItem('tb_user_viewed_tenders');
+        const list: Array<{ id: string; timestamp: number; category?: string }> = raw ? JSON.parse(raw) : [];
+        const now = Date.now();
+        const recent = list.find((v) => v.id === tenderId && now - v.timestamp < 60000);
+        if (!recent) {
+          list.push({ id: tenderId, timestamp: now, category: data.category });
+          localStorage.setItem('tb_user_viewed_tenders', JSON.stringify(list.slice(-500)));
+        }
+      } catch {}
+    }
+  }, [tenderId, data]);
 
   /* ── Loading ───────────────────────────────────────────────── */
   if (isLoading) {
@@ -319,16 +335,29 @@ export default function TenderDetailPage() {
         </div>
 
         <div className="flex items-center gap-3 mt-5">
-          <button
-            onClick={() => setIsSaved(!isSaved)}
-            className={cn(
-              'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all border',
-              isSaved ? 'bg-primary-500/10 border-primary-500/30 text-primary-500' : 'bg-card border-border text-muted-foreground hover:text-foreground',
-            )}
-          >
-            {isSaved ? <BookmarkCheck className="w-4 h-4 fill-current" /> : <Bookmark className="w-4 h-4" />}
-            {isSaved ? 'Saved' : 'Save'}
-          </button>
+          {(() => {
+            const isSaved = Boolean(
+              (tender?.id && savedIds.has(tender.id)) ||
+              (tenderId && savedIds.has(tenderId))
+            );
+            return (
+              <button
+                onClick={() => {
+                  const targetId = tender?.id || tenderId;
+                  if (targetId) toggleSave(targetId);
+                }}
+                className={cn(
+                  'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all border',
+                  isSaved
+                    ? 'bg-primary-500/10 border-primary-500/30 text-primary-500'
+                    : 'bg-card border-border text-muted-foreground hover:text-foreground',
+                )}
+              >
+                {isSaved ? <BookmarkCheck className="w-4 h-4 fill-current" /> : <Bookmark className="w-4 h-4" />}
+                {isSaved ? 'Saved' : 'Save'}
+              </button>
+            );
+          })()}
           <button className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-card border border-border text-muted-foreground hover:text-foreground transition-all">
             <Share2 className="w-4 h-4" /> Share
           </button>

@@ -6,6 +6,7 @@ import { requireAiCheck } from '../../shared/middleware/plan-guard';
 const router = Router();
 
 router.post('/', authenticate, requireAiCheck(), eligibilityController.checkEligibility);
+router.post('/check', authenticate, requireAiCheck(), eligibilityController.checkEligibility);
 router.post('/bulk', authenticate, requireAiCheck(), eligibilityController.bulkCheckEligibility);
 router.get('/history', authenticate, eligibilityController.getEligibilityHistory);
 router.get('/match', authenticate, eligibilityController.getMatchingTenders);

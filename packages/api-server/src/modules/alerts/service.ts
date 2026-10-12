@@ -264,7 +264,12 @@ function buildTenderWhereClause(
 
   // Categories filter
   if (alert.categories.length > 0) {
-    where.category = { in: alert.categories as any };
+    const validCats = alert.categories
+      .map((c) => c.toUpperCase())
+      .filter((c) => ['WORKS', 'GOODS', 'SERVICES', 'CONSULTANCY'].includes(c));
+    if (validCats.length > 0) {
+      where.category = { in: validCats as any };
+    }
   }
 
   // States filter

@@ -1,12 +1,25 @@
 import { Request, Response, NextFunction } from 'express';
 import { tenderService } from './service';
 import { searchTendersSchema } from './validation';
+import { prisma } from '../../config/database';
 
 export const tenderController = {
   async searchTenders(req: Request, res: Response, next: NextFunction) {
     try {
       const filters = searchTendersSchema.parse(req.query);
       const result = await tenderService.searchTenders(filters);
+
+      const userId = (req as any).user?.id;
+      if (userId && filters.query?.trim()) {
+        prisma.searchHistory.create({
+          data: {
+            userId,
+            query: filters.query.trim(),
+            resultCount: result.total,
+          },
+        }).catch(() => {});
+      }
+
       res.json({ success: true, data: result });
     } catch (error) {
       next(error);

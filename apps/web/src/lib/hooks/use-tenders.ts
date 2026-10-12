@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import api from '@/lib/api';
+import { toast } from 'sonner';
 
 interface TenderFilters {
   query?: string;
@@ -85,6 +86,17 @@ export function useTenderSearch(initialFilters: TenderFilters = {}) {
 
       const res = await api.get('/tenders', { params });
       setResult(res.data.data);
+      if (
+        typeof res.data.data?.total === 'number' &&
+        !activeFilters.query &&
+        !activeFilters.categories?.length &&
+        !activeFilters.states?.length
+      ) {
+        try {
+          localStorage.setItem('tb_tenders_total_count', String(res.data.data.total));
+          window.dispatchEvent(new CustomEvent('tb_tenders_updated'));
+        } catch {}
+      }
     } catch (err: any) {
       setError(err.response?.data?.error?.message || 'Failed to fetch tenders');
     } finally {
@@ -300,8 +312,13 @@ export function useSavedTenders() {
     });
 
     try {
-      if (wasSaved) await api.delete(`/saved/${tenderId}`);
-      else await api.post(`/saved/${tenderId}`);
+      if (wasSaved) {
+        await api.delete(`/saved/${tenderId}`);
+        toast.success('Tender removed from saved');
+      } else {
+        await api.post(`/saved/${tenderId}`);
+        toast.success('Tender saved successfully!');
+      }
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status;
 
@@ -320,8 +337,86 @@ export function useSavedTenders() {
         (err as { response?: { data?: { error?: { message?: string } } } })?.response?.data?.error
           ?.message || 'Could not update your saved tenders.';
       setError(message);
+      toast.error(message);
     }
   };
 
   return { saved, toggleSave, error };
 }
+
+/**
+ * Hook to get the live, updated total tender count across the platform.
+ * Hydrates immediately from localStorage cache, updates via /tenders/stats,
+ * and refreshes when the tab gains focus or on periodic interval.
+ */
+export function useTenderCount() {
+  const [count, setCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    try {
+      const saved = localStorage.getItem('tb_tenders_total_count');
+      if (saved && !isNaN(Number(saved))) {
+        setCount(Number(saved));
+      }
+    } catch {}
+
+    const fetchCount = async () => {
+      try {
+        const res = await api.get('/tenders/stats');
+        const total = res.data?.data?.total;
+        if (!cancelled && typeof total === 'number') {
+          setCount(total);
+          try {
+            localStorage.setItem('tb_tenders_total_count', String(total));
+          } catch {}
+          return;
+        }
+      } catch {
+        // Fallback to /tenders?limit=1
+        try {
+          const fallbackRes = await api.get('/tenders', { params: { limit: '1' } });
+          const total = fallbackRes.data?.data?.total;
+          if (!cancelled && typeof total === 'number') {
+            setCount(total);
+            try {
+              localStorage.setItem('tb_tenders_total_count', String(total));
+            } catch {}
+          }
+        } catch {
+          // Keep current state
+        }
+      }
+    };
+
+    fetchCount();
+
+    const handleSync = () => {
+      if (typeof window !== 'undefined') {
+        try {
+          const saved = localStorage.getItem('tb_tenders_total_count');
+          if (saved && !isNaN(Number(saved))) {
+            setCount(Number(saved));
+          }
+        } catch {}
+      }
+      fetchCount();
+    };
+
+    window.addEventListener('focus', handleSync);
+    window.addEventListener('tb_tenders_updated', handleSync);
+
+    const interval = setInterval(fetchCount, 60000);
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener('focus', handleSync);
+      window.removeEventListener('tb_tenders_updated', handleSync);
+      clearInterval(interval);
+    };
+  }, []);
+
+  return count;
+}
+

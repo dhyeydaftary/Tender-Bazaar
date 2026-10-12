@@ -108,7 +108,10 @@ export default function ResultsPage() {
         sortBy: 'awardedDate',
         sortOrder: 'desc',
       };
-      if (params.search) queryParams.search = params.search;
+      if (params.search) {
+        queryParams.query = params.search;
+        queryParams.search = params.search;
+      }
       if (params.category) queryParams.category = params.category;
       if (params.state) queryParams.state = params.state;
 

@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { cn, formatCurrency, getDeadlineInfo, getCategoryInfo } from '@/lib/utils';
 import api from '@/lib/api';
+import { toast } from 'sonner';
 import { useLimitGate } from '@/lib/hooks/use-feature-gate';
 import { UpgradeBanner } from '@/components/subscription';
 
@@ -378,6 +379,68 @@ export default function SavedTendersPage() {
     }
   };
 
+  const exportTendersList = (list: SavedTender[], filenamePrefix: string) => {
+    if (list.length === 0) {
+      toast.error('No tenders available to export');
+      return;
+    }
+
+    const headers = [
+      'Title',
+      'Organization',
+      'Category',
+      'State',
+      'Estimated Value',
+      'Deadline',
+      'Notes',
+      'Saved At',
+    ];
+
+    const escapeCsv = (val: string | number | null | undefined) => {
+      if (val === null || val === undefined) return '""';
+      const str = String(val).replace(/"/g, '""');
+      return `"${str}"`;
+    };
+
+    const rows = list.map((t) => [
+      escapeCsv(t.title),
+      escapeCsv(t.organization),
+      escapeCsv(t.category),
+      escapeCsv(t.state),
+      escapeCsv(t.estimatedValue ? formatCurrency(t.estimatedValue) : 'N/A'),
+      escapeCsv(t.bidSubmissionDeadline),
+      escapeCsv(t.notes || ''),
+      escapeCsv(t.savedAt ? new Date(t.savedAt).toLocaleDateString('en-IN') : ''),
+    ]);
+
+    const csvContent = [headers.join(','), ...rows.map((r) => r.join(','))].join('\r\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `${filenamePrefix}-${new Date().toISOString().slice(0, 10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    toast.success(`Exported ${list.length} tender${list.length > 1 ? 's' : ''} to CSV`);
+  };
+
+  const handleExportSelected = () => {
+    const selectedTenders = tenders.filter((t) => selectedIds.has(t.id));
+    if (selectedTenders.length === 0) {
+      toast.error('No tenders selected for export');
+      return;
+    }
+    exportTendersList(selectedTenders, 'selected-saved-tenders');
+  };
+
+  const handleExportAll = () => {
+    const listToExport = selectedIds.size > 0 ? tenders.filter((t) => selectedIds.has(t.id)) : tenders;
+    exportTendersList(listToExport, 'saved-tenders');
+  };
+
   const handleBulkRemove = async () => {
     const idsToRemove = Array.from(selectedIds);
     const tendersToRemove = tenders.filter((t) => idsToRemove.includes(t.id));
@@ -484,6 +547,16 @@ export default function SavedTendersPage() {
             )}
           </p>
         </div>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={handleExportAll}
+            disabled={tenders.length === 0}
+            className="flex items-center gap-2 px-4 py-2 text-body-sm font-medium bg-card border border-border text-foreground hover:bg-muted rounded-xl transition-all shadow-sm disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+          >
+            <Download className="h-4 w-4 text-primary-500" />
+            <span>Export CSV</span>
+          </button>
+        </div>
       </div>
 
       {/* Search bar */}
@@ -570,7 +643,10 @@ export default function SavedTendersPage() {
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <button className="flex items-center gap-1.5 px-3 py-1.5 text-caption font-medium text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors">
+            <button
+              onClick={handleExportSelected}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-caption font-medium text-muted-foreground hover:text-foreground hover:bg-muted rounded-lg transition-colors cursor-pointer"
+            >
               <Download className="h-3.5 w-3.5" />
               Export
             </button>

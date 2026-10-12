@@ -122,6 +122,28 @@ export const authService = {
       },
     });
 
+    if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') {
+      try {
+        await prisma.auditLog.create({
+          data: {
+            actorId: user.id,
+            actorEmail: user.email,
+            actorRole: user.role,
+            action: 'auth.login',
+            entity: 'AdminPanel',
+            entityId: 'session',
+            metadata: {
+              ipAddress: meta?.ipAddress,
+              userAgent: meta?.userAgent,
+              details: `${user.name || user.email} logged into the Admin Panel`,
+            },
+          },
+        });
+      } catch (err) {
+        console.error('[AuditLog] Failed to log admin login:', err);
+      }
+    }
+
     const { passwordHash: _, ...userWithoutPassword } = user;
     return { user: userWithoutPassword, accessToken, refreshToken };
   },

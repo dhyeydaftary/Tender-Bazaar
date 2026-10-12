@@ -25,9 +25,9 @@ export function formatCurrency(value: number | null | undefined): string {
  * Format a compact number (e.g., 52438 → "52.4K")
  */
 export function formatCompact(value: number): string {
-  if (value >= 10000000) return `${(value / 10000000).toFixed(1)} Cr`;
-  if (value >= 100000) return `${(value / 100000).toFixed(1)} L`;
-  if (value >= 1000) return `${(value / 1000).toFixed(1)}K`;
+  if (value >= 10000000) return `${parseFloat((value / 10000000).toFixed(1))} Cr`;
+  if (value >= 100000) return `${parseFloat((value / 100000).toFixed(1))} L`;
+  if (value >= 1000) return `${parseFloat((value / 1000).toFixed(1))}K`;
   return value.toLocaleString('en-IN');
 }
 

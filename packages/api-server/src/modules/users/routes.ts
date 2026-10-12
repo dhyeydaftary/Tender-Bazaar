@@ -26,4 +26,7 @@ router.delete('/documents/:id', profileController.deleteDocument);
 // GET    /api/v1/profile/completion — Get profile completion percentage
 router.get('/completion', profileController.getProfileCompletion);
 
+// GET    /api/v1/profile/analytics  — Get real user analytics calculated on the fly
+router.get('/analytics', profileController.getAnalytics);
+
 export default router;

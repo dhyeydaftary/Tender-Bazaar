@@ -23,6 +23,10 @@ const envSchema = z.object({
   RAZORPAY_KEY_ID: z.string().default(''),
   RAZORPAY_KEY_SECRET: z.string().default(''),
   RAZORPAY_WEBHOOK_SECRET: z.string().default(''),
+  RATE_LIMIT_WINDOW_MS: z.coerce.number().default(15 * 60 * 1000),
+  RATE_LIMIT_MAX: z.coerce.number().default((process.env.NODE_ENV || 'development') === 'development' ? 10000 : 2000),
+  AUTH_RATE_LIMIT_MAX: z.coerce.number().default((process.env.NODE_ENV || 'development') === 'development' ? 500 : 100),
+  DISABLE_RATE_LIMIT: z.enum(['true', 'false']).default('false'),
 });
 
 export const env = envSchema.parse(process.env);

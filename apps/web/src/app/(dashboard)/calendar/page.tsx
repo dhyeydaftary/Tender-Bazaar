@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useMemo, useCallback, useEffect } from 'react';
+import Link from 'next/link';
 import {
   ChevronLeft,
   ChevronRight,
@@ -131,27 +132,66 @@ export default function CalendarPage() {
           sortBy: 'bidSubmissionDeadline',
           sortOrder: 'asc',
           limit: 50,
+          page: 1,
         },
       });
 
-      if (response.data?.success && Array.isArray(response.data.data)) {
-        const mapped: TenderDeadline[] = response.data.data.map((tender: Record<string, unknown>) => {
+      if (!response.data || response.data.success === false) {
+        throw new Error(response.data?.error?.message || 'Failed to load tender deadlines');
+      }
+
+      let rawTenders: Record<string, unknown>[] = [];
+      const rawData = response.data?.data;
+
+      if (Array.isArray(rawData)) {
+        rawTenders = rawData;
+      } else if (rawData && typeof rawData === 'object' && Array.isArray(rawData.tenders)) {
+        rawTenders = [...rawData.tenders];
+        const totalPages = Number(rawData.totalPages) || 1;
+        if (totalPages > 1) {
+          const additionalPages = [];
+          for (let p = 2; p <= Math.min(totalPages, 5); p++) {
+            additionalPages.push(
+              api.get('/tenders', {
+                params: {
+                  status: 'ACTIVE',
+                  sortBy: 'bidSubmissionDeadline',
+                  sortOrder: 'asc',
+                  limit: 50,
+                  page: p,
+                },
+              }).catch(() => null)
+            );
+          }
+          const pageResponses = await Promise.all(additionalPages);
+          for (const pageRes of pageResponses) {
+            if (pageRes && Array.isArray(pageRes.data?.data?.tenders)) {
+              rawTenders.push(...pageRes.data.data.tenders);
+            }
+          }
+        }
+      } else if (Array.isArray(response.data?.tenders)) {
+        rawTenders = response.data.tenders;
+      } else {
+        throw new Error('Received malformed tender data from server');
+      }
+
+      const mapped: TenderDeadline[] = rawTenders
+        .filter((t) => t && typeof t === 'object' && t.id)
+        .map((tender: Record<string, unknown>) => {
           const deadlineDate = (tender.bidSubmissionDeadline as string || '').slice(0, 10);
           return {
             id: tender.id as string,
-            title: tender.title as string,
-            organization: tender.organization as string,
-            state: tender.state as string,
+            title: (tender.title as string) || 'Untitled Tender',
+            organization: (tender.organization as string) || 'Unknown Organization',
+            state: (tender.state as string) || 'All India',
             category: (tender.category || 'WORKS') as TenderDeadline['category'],
             estimatedValue: (tender.estimatedValue as number) ?? null,
             deadlineDate,
             urgency: computeUrgency(deadlineDate),
           };
         });
-        setDeadlines(mapped);
-      } else {
-        setDeadlines([]);
-      }
+      setDeadlines(mapped);
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : 'Failed to load deadlines';
       setError(message);
@@ -433,19 +473,23 @@ export default function CalendarPage() {
                         {dayDeadlines.map((tender) => {
                           const catStyle = CATEGORY_STYLES[tender.category];
                           return (
-                            <div key={tender.id} className="p-3 hover:bg-muted/30 transition-colors">
+                            <Link
+                              key={tender.id}
+                              href={`/tenders/${tender.id}`}
+                              className="block p-3 hover:bg-muted/40 transition-colors group"
+                            >
                               <div className="flex items-center gap-2 mb-1">
                                 <span className={cn('text-[10px] font-semibold px-1.5 py-0.5 rounded-full', catStyle?.bg, catStyle?.text)}>
                                   {catStyle?.label}
                                 </span>
                               </div>
-                              <p className="text-body-sm text-foreground font-medium line-clamp-2 mb-1">
+                              <p className="text-body-sm text-foreground font-medium line-clamp-2 mb-1 group-hover:text-primary-500 transition-colors">
                                 {tender.title}
                               </p>
                               <p className="text-caption text-muted-foreground truncate">
                                 {tender.organization}
                               </p>
-                            </div>
+                            </Link>
                           );
                         })}
                       </div>
@@ -483,9 +527,10 @@ export default function CalendarPage() {
                   const daysLeft = daysUntilDeadline(tender.deadlineDate);
 
                   return (
-                    <div
+                    <Link
                       key={tender.id}
-                      className="p-4 hover:bg-muted/30 transition-colors group"
+                      href={`/tenders/${tender.id}`}
+                      className="block p-4 hover:bg-muted/30 transition-colors group"
                     >
                       {/* Top row: category + urgency */}
                       <div className="flex items-center justify-between mb-2">
@@ -545,7 +590,7 @@ export default function CalendarPage() {
                           </span>
                         </div>
                       </div>
-                    </div>
+                    </Link>
                   );
                 })
               )}

@@ -116,4 +116,20 @@ export const profileController = {
       next(error);
     }
   },
+
+  /**
+   * GET /api/v1/profile/analytics
+   * Get dynamically calculated real user analytics
+   */
+  async getAnalytics(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = (req as any).user?.id;
+      if (!userId) throw new AppError('Not authenticated', 401, 'NOT_AUTHENTICATED');
+
+      const analytics = await userService.getUserAnalytics(userId);
+      res.json({ success: true, data: analytics });
+    } catch (error) {
+      next(error);
+    }
+  },
 };
