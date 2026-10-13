@@ -26,8 +26,18 @@ import referralRoutes from './modules/referral/routes';
 import bidAssistantRoutes from './modules/bid-assistant/routes';
 import comparisonRoutes from './modules/comparison/routes';
 import apiKeyRoutes from './modules/api-keys/routes';
+import dashboardRoutes from './modules/dashboard/routes';
 
 const app = express();
+
+// Trust the reverse proxy in front of the app so `req.ip` (used to key
+// anonymous rate limiting) reflects the real client rather than the proxy,
+// which would otherwise collapse all anonymous traffic into one bucket.
+// Only enabled outside development: with no proxy in front, trusting
+// X-Forwarded-For would let any client spoof its own IP to evade the limit.
+if (process.env.NODE_ENV !== 'development') {
+  app.set('trust proxy', 1);
+}
 
 // Middleware
 app.use(helmet());
@@ -149,6 +159,7 @@ app.use('/api/v1/referral', referralRoutes);
 app.use('/api/v1/bid-assistant', bidAssistantRoutes);
 app.use('/api/v1/comparison', comparisonRoutes);
 app.use('/api/v1/api-keys', apiKeyRoutes);
+app.use('/api/v1/dashboard', dashboardRoutes);
 
 // Search suggestions
 app.get('/api/v1/search/suggestions', async (req, res, next) => {

@@ -9,15 +9,26 @@ export const tenderController = {
       const filters = searchTendersSchema.parse(req.query);
       const result = await tenderService.searchTenders(filters);
 
+      // Persist the search for the signed-in user. Nothing wrote to
+      // SearchHistory before, so "recent searches" on the dashboard and the
+      // admin search analytics both read a permanently empty table.
+      //
+      // Deliberately fire-and-forget: a logging failure must never turn a
+      // working search into an error response, and the caller should not wait
+      // on the write.
       const userId = (req as any).user?.id;
       if (userId && filters.query?.trim()) {
-        prisma.searchHistory.create({
-          data: {
-            userId,
-            query: filters.query.trim(),
-            resultCount: result.total,
-          },
-        }).catch(() => {});
+        const { query, ...rest } = filters;
+        prisma.searchHistory
+          .create({
+            data: {
+              userId,
+              query: query.trim(),
+              filters: rest as any,
+              resultCount: result.total ?? null,
+            },
+          })
+          .catch((error) => console.error('Failed to record search history:', error));
       }
 
       res.json({ success: true, data: result });

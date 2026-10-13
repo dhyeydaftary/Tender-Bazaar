@@ -4,6 +4,7 @@ import { env } from '../../config/env';
 import razorpay from '../../config/razorpay';
 import { AppError } from '../../shared/middleware/error-handler';
 import { planConfigService } from '../subscriptions/plan-config.service';
+import { invalidateUnreadCount } from '../notifications/service';
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
@@ -371,6 +372,7 @@ export const paymentService = {
         data: { planSlug: plan.slug, billingCycle: payment.billingCycle },
       },
     });
+    await invalidateUnreadCount(payment.userId);
 
     return {
       subscription,
@@ -427,6 +429,7 @@ export const paymentService = {
         data: { reason: reason || null, cancelImmediately: !!cancelImmediately },
       },
     });
+    await invalidateUnreadCount(userId);
 
     return {
       subscription: updatedSubscription,
@@ -828,6 +831,7 @@ export const paymentService = {
           data: { paymentId: payment.id, razorpayOrderId: paymentEntity.order_id },
         },
       });
+      await invalidateUnreadCount(payment.userId);
     }
 
     console.log(`[Razorpay Webhook] Payment failed for order ${paymentEntity.order_id}`);
@@ -858,6 +862,7 @@ export const paymentService = {
           data: { paymentId: payment.id, refundId: refundEntity.id },
         },
       });
+      await invalidateUnreadCount(payment.userId);
 
       console.log(`[Razorpay Webhook] Refund processed: ${refundEntity.id} for payment ${refundEntity.payment_id}`);
     }

@@ -1,8 +1,9 @@
 'use client';
 
 import { useMemo, useState, useEffect } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { toast } from 'sonner';
 import {
   ArrowLeft,
   Bookmark,
@@ -84,6 +85,94 @@ function formatFileSize(bytes?: number | null): string {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${bytes} B`;
+}
+
+/**
+ * Only allow http(s) links out of the app.
+ *
+ * `sourceUrl` and document `fileUrl` come from scraped portals, so they are
+ * untrusted input rendered straight into an `href`. Without this a stored
+ * `javascript:`/`data:` value would execute in the user's session on click.
+ * Anything that is not a parseable absolute http(s) URL returns null, and the
+ * caller renders an explanatory state instead of a broken or unsafe link.
+ */
+function safeExternalUrl(value?: string | null): string | null {
+  if (!value) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return null; // relative or malformed
+  }
+  return parsed.protocol === 'https:' || parsed.protocol === 'http:' ? parsed.toString() : null;
+}
+
+/**
+ * True when the URL only reaches the portal's front page, with no path or
+ * query identifying this tender.
+ */
+function isPortalRootOnly(url: string | null): boolean {
+  if (!url) return false;
+  try {
+    const u = new URL(url);
+    return (u.pathname === '' || u.pathname === '/') && u.search === '' && u.hash === '';
+  } catch {
+    return false;
+  }
+}
+
+export type SourceLinkKind =
+  | 'tender-page'    // opens this specific tender
+  | 'bid-schedules'  // a GeM page specific to this bid, but not the notice
+  | 'portal-listing' // a real listing/search page, not this tender
+  | 'portal-root';   // the portal's front page only
+
+/**
+ * Describe what a stored `sourceUrl` actually opens.
+ *
+ * A link is not "View Original" just because it is a valid https URL. Verified
+ * against the live portals:
+ *
+ *   bidplus.gem.gov.in/all-bids            -> GeM's public bid listing (HTML)
+ *   bidplus.gem.gov.in/list-ra-schedules/x -> HTML page for that specific bid
+ *   eprocure.gov.in/eprocure/app           -> eProcure's generic entry point
+ *   <host>/ (no path)                      -> portal front page
+ *
+ * GeM's PDF endpoints are no longer stored here — they are TenderDocuments —
+ * but they are classified anyway so any record predating the backfill is still
+ * labelled honestly rather than advertised as the tender page.
+ */
+function classifySourceLink(url: string | null): { kind: SourceLinkKind; label: string } {
+  if (!url) return { kind: 'portal-root', label: 'Source unavailable' };
+
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return { kind: 'portal-root', label: 'Source unavailable' };
+  }
+
+  const host = u.host.toLowerCase();
+  const path = u.pathname.replace(/\/+$/, '');
+
+  if (host === 'bidplus.gem.gov.in') {
+    if (path === '/all-bids') return { kind: 'portal-listing', label: 'Open GeM Portal' };
+    if (path.startsWith('/list-ra-schedules')) {
+      return { kind: 'bid-schedules', label: 'View RA Schedules on GeM' };
+    }
+    // A PDF endpoint stored before the backfill: say so rather than call it a page.
+    if (/^\/(showbidDocument|showradocumentPdf|showdirectradocumentPdf)/.test(path)) {
+      return { kind: 'portal-listing', label: 'Download GeM Bid Document (PDF)' };
+    }
+  }
+
+  if (host === 'eprocure.gov.in' && (path === '/eprocure/app' || path === '/eprocure')) {
+    return { kind: 'portal-listing', label: 'Open eProcure Portal' };
+  }
+
+  if (isPortalRootOnly(url)) return { kind: 'portal-root', label: 'Open Source Portal' };
+
+  return { kind: 'tender-page', label: 'View Original' };
 }
 
 function getDocumentKind(doc: TenderDocument): 'pdf' | 'xlsx' | 'zip' | 'other' {
@@ -177,12 +266,84 @@ export default function TenderDetailPage() {
   const rawId = params?.id;
   const tenderId = Array.isArray(rawId) ? rawId[0] : rawId;
 
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<'overview' | 'eligibility' | 'documents' | 'similar' | 'results'>('overview');
-  const { saved: savedIds, toggleSave } = useSavedTenders();
   const [descExpanded, setDescExpanded] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
 
   const { tender: data, isLoading, error } = useTenderDetail(tenderId);
   const { similar, isLoading: similarLoading } = useSimilarTenders(tenderId);
+
+  // Real persistence. `isSaved` used to be local component state toggled by the
+  // button, so Save reported success without storing anything: the state was
+  // lost on refresh and an already-saved tender always rendered as unsaved.
+  // This hook hydrates from GET /saved and reconciles 409/404 with the server.
+  const { saved: savedIds, toggleSave, error: saveError } = useSavedTenders();
+  const isSaved = tenderId ? savedIds.has(tenderId) : false;
+
+  // Reset per-tender view state when navigating straight from one tender to
+  // another (the Similar cards do exactly that): without this the new tender
+  // inherited the previous one's open tab and expanded description.
+  useEffect(() => {
+    setActiveTab('overview');
+    setDescExpanded(false);
+  }, [tenderId]);
+
+  // Surface persistence failures instead of leaving the button silently wrong.
+  useEffect(() => {
+    if (saveError) toast.error(saveError);
+  }, [saveError]);
+
+  const handleToggleSave = async () => {
+    if (!tenderId || isSaving) return;
+
+    // Saving requires an account. Send the user to login with a return path
+    // rather than optimistically showing "Saved" for an anonymous visitor.
+    if (typeof window !== 'undefined' && !localStorage.getItem('accessToken')) {
+      toast.error('Please sign in to save tenders.');
+      router.push(`/login?redirect=${encodeURIComponent(`/tenders/${tenderId}`)}`);
+      return;
+    }
+
+    const wasSaved = isSaved;
+    setIsSaving(true);
+    try {
+      await toggleSave(tenderId);
+      toast.success(wasSaved ? 'Removed from saved tenders' : 'Saved to your tenders');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleShare = async () => {
+    if (!tenderId) return;
+    // Canonical app route for this tender, resolved against the real origin.
+    const url = new URL(`/tenders/${tenderId}`, window.location.origin).toString();
+    const title = tender?.title || 'Tender on TenderBazaar';
+
+    if (navigator.share) {
+      try {
+        await navigator.share({ title, url });
+        return; // the OS sheet confirms; a toast here would double up
+      } catch (err) {
+        // A cancelled share sheet rejects with AbortError. That is the user
+        // declining, not a failure, so stay silent and do not fall through to
+        // the clipboard.
+        if ((err as Error)?.name === 'AbortError') return;
+        // Any other share failure falls through to the clipboard below.
+      }
+    }
+
+    try {
+      await navigator.clipboard.writeText(url);
+      toast.success('Link copied to clipboard');
+    } catch {
+      // Clipboard access is blocked outside a secure context or without
+      // permission. Report it honestly and show the link so it can be copied
+      // by hand, rather than claiming success.
+      toast.error('Could not copy automatically', { description: url });
+    }
+  };
 
   const tender: NormalizedTender | null = useMemo(
     () => (data ? normalizeTender(data) : null),
@@ -242,6 +403,10 @@ export default function TenderDetailPage() {
     ? getDeadlineInfo(tender.bidSubmissionDeadline as string)
     : null;
   const location = [tender.state, tender.district].filter(Boolean).join(', ');
+  // Validated once and reused by every outbound link on the page.
+  const sourceUrl = safeExternalUrl(tender.sourceUrl);
+  // What the stored link actually opens, so every label matches reality.
+  const sourceLink = classifySourceLink(sourceUrl);
 
   const keyRequirements: { label: string; value: string }[] = [
     { label: 'Minimum Turnover', value: formatAmount(tender.minTurnover) },
@@ -335,36 +500,50 @@ export default function TenderDetailPage() {
         </div>
 
         <div className="flex items-center gap-3 mt-5">
-          {(() => {
-            const isSaved = Boolean(
-              (tender?.id && savedIds.has(tender.id)) ||
-              (tenderId && savedIds.has(tenderId))
-            );
-            return (
-              <button
-                onClick={() => {
-                  const targetId = tender?.id || tenderId;
-                  if (targetId) toggleSave(targetId);
-                }}
-                className={cn(
-                  'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all border',
-                  isSaved
-                    ? 'bg-primary-500/10 border-primary-500/30 text-primary-500'
-                    : 'bg-card border-border text-muted-foreground hover:text-foreground',
-                )}
-              >
-                {isSaved ? <BookmarkCheck className="w-4 h-4 fill-current" /> : <Bookmark className="w-4 h-4" />}
-                {isSaved ? 'Saved' : 'Save'}
-              </button>
-            );
-          })()}
-          <button className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-card border border-border text-muted-foreground hover:text-foreground transition-all">
+          <button
+            onClick={handleToggleSave}
+            disabled={isSaving}
+            aria-pressed={isSaved}
+            className={cn(
+              'flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium transition-all border disabled:opacity-60 disabled:cursor-not-allowed',
+              isSaved ? 'bg-primary-500/10 border-primary-500/30 text-primary-500' : 'bg-card border-border text-muted-foreground hover:text-foreground',
+            )}
+          >
+            {isSaving ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : isSaved ? (
+              <BookmarkCheck className="w-4 h-4 fill-current" />
+            ) : (
+              <Bookmark className="w-4 h-4" />
+            )}
+            {isSaved ? 'Saved' : 'Save'}
+          </button>
+          <button
+            onClick={handleShare}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-card border border-border text-muted-foreground hover:text-foreground transition-all"
+          >
             <Share2 className="w-4 h-4" /> Share
           </button>
-          {tender.sourceUrl && (
-            <a href={tender.sourceUrl} target="_blank" rel="noopener" className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-card border border-border text-muted-foreground hover:text-foreground transition-all">
-              <ExternalLink className="w-4 h-4" /> View Original
+          {sourceUrl ? (
+            <a
+              href={sourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-card border border-border text-muted-foreground hover:text-foreground transition-all"
+            >
+              <ExternalLink className="w-4 h-4" />
+              {sourceLink.label}
             </a>
+          ) : (
+            // Rendered disabled rather than hidden, so it is clear the source
+            // link is missing/unusable for this record instead of the button
+            // silently disappearing.
+            <span
+              title="No usable source link is recorded for this tender"
+              className="flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium bg-card border border-border text-muted-foreground/50 cursor-not-allowed"
+            >
+              <ExternalLink className="w-4 h-4" /> Source unavailable
+            </span>
           )}
         </div>
       </div>
@@ -476,11 +655,28 @@ export default function TenderDetailPage() {
             )}
           </div>
 
-          {/* Source link */}
-          {tender.sourceUrl && (
-            <a href={tender.sourceUrl} target="_blank" rel="noopener" className="flex items-center gap-2 text-body-sm text-primary-500 hover:text-primary-600 font-medium transition-colors">
-              View this tender on {tender.source} <ExternalLink className="w-4 h-4" />
+          {/* Source link at the foot of the overview. Same validated URL as the
+              View Original button in the header, so the two can never disagree
+              or point at different tenders. */}
+          {sourceUrl ? (
+            <a
+              href={sourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 text-body-sm text-primary-500 hover:text-primary-600 font-medium transition-colors"
+            >
+              {sourceLink.kind === 'tender-page'
+                ? `View this tender on ${tender.source}`
+                : sourceLink.kind === 'bid-schedules'
+                  ? `${sourceLink.label} (reverse-auction schedules for this bid)`
+                  : `${sourceLink.label} — no direct link to this tender was recorded`}{' '}
+              <ExternalLink className="w-4 h-4" />
             </a>
+          ) : (
+            <p className="text-caption text-muted-foreground flex items-center gap-1.5">
+              <Info className="w-3.5 h-3.5" />
+              No usable source link is recorded for this tender.
+            </p>
           )}
         </div>
       )}
@@ -543,11 +739,10 @@ export default function TenderDetailPage() {
         <div className="bg-card border border-border rounded-xl p-5 lg:p-6">
           <div className="flex items-center justify-between mb-5">
             <h3 className="text-heading-sm text-foreground font-display">Documents ({tender.documents.length})</h3>
-            {tender.documents.length > 0 && (
-              <button className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium bg-primary-500 text-white hover:bg-primary-600 transition-colors">
-                <Download className="w-4 h-4" /> Download All
-              </button>
-            )}
+            {/* "Download All" was a button with no click handler, and there is
+                no bulk-download endpoint behind it, so it advertised a
+                capability that does not exist. Removed rather than left inert;
+                the per-document actions below are the real ones. */}
           </div>
           {tender.documents.length === 0 ? (
             <div className="py-8 text-center">
@@ -555,8 +750,8 @@ export default function TenderDetailPage() {
               <p className="text-body-sm text-muted-foreground">
                 No documents have been attached to this tender yet.
               </p>
-              {tender.sourceUrl && (
-                <a href={tender.sourceUrl} target="_blank" rel="noopener" className="mt-3 inline-flex items-center gap-1.5 text-body-sm text-primary-500 hover:text-primary-600 font-medium transition-colors">
+              {sourceUrl && (
+                <a href={sourceUrl} target="_blank" rel="noopener noreferrer" className="mt-3 inline-flex items-center gap-1.5 text-body-sm text-primary-500 hover:text-primary-600 font-medium transition-colors">
                   Check the source portal <ExternalLink className="w-3.5 h-3.5" />
                 </a>
               )}
@@ -565,6 +760,7 @@ export default function TenderDetailPage() {
             <div className="divide-y divide-border">
               {tender.documents.map((doc) => {
                 const kind = getDocumentKind(doc);
+                const docUrl = safeExternalUrl(doc.fileUrl);
                 const iconColor = kind === 'pdf' ? 'text-red-500' : kind === 'xlsx' ? 'text-green-500' : kind === 'zip' ? 'text-amber-500' : 'text-blue-500';
                 return (
                   <div key={doc.id} className="flex items-center gap-4 py-3.5 group">
@@ -574,12 +770,24 @@ export default function TenderDetailPage() {
                       <p className="text-caption text-muted-foreground">{formatFileSize(doc.fileSize)}</p>
                     </div>
                     <div className="flex gap-2 shrink-0">
-                      <a href={doc.fileUrl} target="_blank" rel="noopener" className="px-3 py-1.5 rounded-lg text-xs font-medium bg-muted text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors flex items-center gap-1.5">
-                        <Eye className="w-3.5 h-3.5" /> View
-                      </a>
-                      <a href={doc.fileUrl} download className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary-500/10 text-primary-500 hover:bg-primary-500/15 transition-colors flex items-center gap-1.5">
-                        <Download className="w-3.5 h-3.5" /> Download
-                      </a>
+                      {/* `fileUrl` is ingested from the source portal, so it
+                          gets the same scheme validation as the source link. An
+                          unusable value shows as such instead of rendering a
+                          link that fails or runs a non-http scheme. */}
+                      {docUrl ? (
+                        <>
+                          <a href={docUrl} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded-lg text-xs font-medium bg-muted text-muted-foreground hover:text-foreground hover:bg-muted/80 transition-colors flex items-center gap-1.5">
+                            <Eye className="w-3.5 h-3.5" /> View
+                          </a>
+                          <a href={docUrl} download className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary-500/10 text-primary-500 hover:bg-primary-500/15 transition-colors flex items-center gap-1.5">
+                            <Download className="w-3.5 h-3.5" /> Download
+                          </a>
+                        </>
+                      ) : (
+                        <span className="px-3 py-1.5 rounded-lg text-xs font-medium bg-muted text-muted-foreground/60" title="This document has no usable download link recorded">
+                          Link unavailable
+                        </span>
+                      )}
                     </div>
                   </div>
                 );
@@ -636,9 +844,32 @@ export default function TenderDetailPage() {
                 ? 'This tender is still active. Results will be published after bid evaluation.'
                 : 'No result has been published for this tender yet.'}
             </p>
-            <button className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium bg-primary-500 text-white hover:bg-primary-600 transition-colors">
+            {/* Originally a button with no click handler. Per-tender result
+                alerts genuinely do not exist: there is no subscription model,
+                the results service emits no notification, and while a
+                TENDER_RESULT notification type and queue handler exist nothing
+                anywhere enqueues one.
+
+                Left disabled rather than repurposed. Making it save the tender
+                would quietly swap one capability for another, so a user who
+                clicked expecting an alert would get a bookmark and no alert.
+                Saving is still available from the header button, which says
+                what it does. */}
+            <button
+              type="button"
+              disabled
+              aria-disabled="true"
+              title="Result alerts for individual tenders are not supported yet"
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium bg-muted text-muted-foreground cursor-not-allowed"
+            >
               <Bell className="w-4 h-4" /> Notify me when result is published
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-background/60 font-semibold uppercase tracking-wide">
+                Coming soon
+              </span>
             </button>
+            <p className="text-caption text-muted-foreground/70 mt-3">
+              Result alerts for individual tenders are not supported yet.
+            </p>
           </div>
         ) : (
           <div className="space-y-3">

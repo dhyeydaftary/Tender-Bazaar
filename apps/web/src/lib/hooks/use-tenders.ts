@@ -1,8 +1,9 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import api from '@/lib/api';
 import { toast } from 'sonner';
+import { useDashboardStore } from '@/stores/dashboard-store';
 
 interface TenderFilters {
   query?: string;
@@ -10,6 +11,17 @@ interface TenderFilters {
   states?: string[];
   tenderTypes?: string[];
   status?: string[];
+  /**
+   * These four were accepted by GET /tenders all along but had no field here
+   * and were never serialised, so the source-portal, organisation and
+   * published/deadline-date controls in the UI silently did nothing.
+   */
+  organizations?: string[];
+  sourcePortals?: string[];
+  publishedFrom?: string;
+  publishedTo?: string;
+  deadlineFrom?: string;
+  deadlineTo?: string;
   minValue?: number;
   maxValue?: number;
   reservedForMSME?: boolean;
@@ -57,34 +69,64 @@ interface SearchResult {
   };
 }
 
+/** Serialise filters into the query parameters GET /tenders expects. */
+function buildSearchParams(f: TenderFilters): Record<string, string> {
+  const params: Record<string, string> = {};
+  if (f.query) params.query = f.query;
+  if (f.categories?.length) params.categories = f.categories.join(',');
+  if (f.states?.length) params.states = f.states.join(',');
+  if (f.tenderTypes?.length) params.tenderTypes = f.tenderTypes.join(',');
+  if (f.status?.length) params.status = f.status.join(',');
+  if (f.organizations?.length) params.organizations = f.organizations.join(',');
+  if (f.sourcePortals?.length) params.sourcePortals = f.sourcePortals.join(',');
+  if (f.publishedFrom) params.publishedFrom = f.publishedFrom;
+  if (f.publishedTo) params.publishedTo = f.publishedTo;
+  if (f.deadlineFrom) params.deadlineFrom = f.deadlineFrom;
+  if (f.deadlineTo) params.deadlineTo = f.deadlineTo;
+  if (f.minValue !== undefined) params.minValue = String(f.minValue);
+  if (f.maxValue !== undefined) params.maxValue = String(f.maxValue);
+  if (f.reservedForMSME !== undefined) params.reservedForMSME = String(f.reservedForMSME);
+  if (f.reservedForStartups !== undefined) params.reservedForStartups = String(f.reservedForStartups);
+  if (f.emdExemptMSME !== undefined) params.emdExemptMSME = String(f.emdExemptMSME);
+  if (f.sortBy) params.sortBy = f.sortBy;
+  if (f.sortOrder) params.sortOrder = f.sortOrder;
+  params.page = String(f.page || 1);
+  params.limit = String(f.limit || 20);
+  return params;
+}
+
+/**
+ * Rapid filter changes are merged into one request. Selecting three filters in
+ * quick succession previously issued three searches, and because each one was
+ * built from a stale `filters` closure the later ones also discarded the
+ * earlier selections.
+ */
+const COALESCE_MS = 200;
+
 export function useTenderSearch(initialFilters: TenderFilters = {}) {
   const [filters, setFilters] = useState<TenderFilters>(initialFilters);
   const [result, setResult] = useState<SearchResult | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const search = useCallback(async (searchFilters?: TenderFilters) => {
-    const activeFilters = searchFilters || filters;
+  // The authoritative current filters. `updateFilters` must never read the
+  // `filters` state through a closure: two filter clicks before the next
+  // render both saw the same stale object, so the second silently dropped the
+  // first one's selection. That is what made several filters look like they
+  // were OR-ed or ignored.
+  const filtersRef = useRef<TenderFilters>(initialFilters);
+  // Monotonic request id so a slow earlier response cannot overwrite the
+  // results of a newer one.
+  const seqRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+
+  const runSearch = useCallback(async (activeFilters: TenderFilters) => {
+    const seq = ++seqRef.current;
     setIsLoading(true);
     setError(null);
     try {
-      const params: Record<string, string> = {};
-      if (activeFilters.query) params.query = activeFilters.query;
-      if (activeFilters.categories?.length) params.categories = activeFilters.categories.join(',');
-      if (activeFilters.states?.length) params.states = activeFilters.states.join(',');
-      if (activeFilters.tenderTypes?.length) params.tenderTypes = activeFilters.tenderTypes.join(',');
-      if (activeFilters.status?.length) params.status = activeFilters.status.join(',');
-      if (activeFilters.minValue !== undefined) params.minValue = String(activeFilters.minValue);
-      if (activeFilters.maxValue !== undefined) params.maxValue = String(activeFilters.maxValue);
-      if (activeFilters.reservedForMSME !== undefined) params.reservedForMSME = String(activeFilters.reservedForMSME);
-      if (activeFilters.reservedForStartups !== undefined) params.reservedForStartups = String(activeFilters.reservedForStartups);
-      if (activeFilters.emdExemptMSME !== undefined) params.emdExemptMSME = String(activeFilters.emdExemptMSME);
-      if (activeFilters.sortBy) params.sortBy = activeFilters.sortBy;
-      if (activeFilters.sortOrder) params.sortOrder = activeFilters.sortOrder;
-      params.page = String(activeFilters.page || 1);
-      params.limit = String(activeFilters.limit || 20);
-
-      const res = await api.get('/tenders', { params });
+      const res = await api.get('/tenders', { params: buildSearchParams(activeFilters) });
+      if (seq !== seqRef.current) return; // superseded
       setResult(res.data.data);
       if (
         typeof res.data.data?.total === 'number' &&
@@ -98,31 +140,71 @@ export function useTenderSearch(initialFilters: TenderFilters = {}) {
         } catch {}
       }
     } catch (err: any) {
+      if (seq !== seqRef.current) return;
       setError(err.response?.data?.error?.message || 'Failed to fetch tenders');
     } finally {
-      setIsLoading(false);
+      if (seq === seqRef.current) setIsLoading(false);
     }
-  }, [filters]);
-
-  useEffect(() => {
-    search();
   }, []);
 
-  const updateFilters = (newFilters: Partial<TenderFilters>) => {
-    const page = newFilters.page !== undefined ? newFilters.page : 1;
-    const updated = { ...filters, ...newFilters, page };
-    setFilters(updated);
-    search(updated);
-  };
+  /** Public escape hatch: search immediately, with explicit or current filters. */
+  const search = useCallback(
+    (searchFilters?: TenderFilters) => runSearch(searchFilters ?? filtersRef.current),
+    [runSearch],
+  );
 
-  const loadMore = () => {
-    const nextPage = (filters.page || 1) + 1;
-    const updated = { ...filters, page: nextPage };
-    setFilters(updated);
-    search(updated);
-  };
+  // Fetch once on mount. The guard stops the duplicate request that React's
+  // StrictMode double-invocation of effects would otherwise issue in
+  // development, on top of any request a filter change already triggered.
+  const didMountFetch = useRef(false);
+  useEffect(() => {
+    if (!didMountFetch.current) {
+      didMountFetch.current = true;
+      runSearch(filtersRef.current);
+    }
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [runSearch]);
 
-  return { filters, result, isLoading, error, updateFilters, loadMore, search, setFilters };
+  const updateFilters = useCallback(
+    (newFilters: Partial<TenderFilters>) => {
+      // Changing any filter resets to page 1 unless the caller is paginating.
+      const page = newFilters.page !== undefined ? newFilters.page : 1;
+      const updated = { ...filtersRef.current, ...newFilters, page };
+      filtersRef.current = updated;
+      setFilters(updated);
+
+      setIsLoading(true);
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => runSearch(filtersRef.current), COALESCE_MS);
+    },
+    [runSearch],
+  );
+
+  const loadMore = useCallback(() => {
+    const updated = { ...filtersRef.current, page: (filtersRef.current.page || 1) + 1 };
+    filtersRef.current = updated;
+    setFilters(updated);
+    runSearch(updated);
+  }, [runSearch]);
+
+  /** Keeps the ref in step when a caller replaces filters wholesale. */
+  const replaceFilters = useCallback((next: TenderFilters) => {
+    filtersRef.current = next;
+    setFilters(next);
+  }, []);
+
+  return {
+    filters,
+    result,
+    isLoading,
+    error,
+    updateFilters,
+    loadMore,
+    search,
+    setFilters: replaceFilters,
+  };
 }
 
 export interface TenderDocument {
@@ -272,6 +354,7 @@ export function useSimilarTenders(id: string | undefined) {
 export function useSavedTenders() {
   const [saved, setSaved] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
+  const adjustSavedCount = useDashboardStore((s) => s.adjustSavedCount);
 
   // Hydrate from the server.
   //
@@ -319,12 +402,20 @@ export function useSavedTenders() {
         await api.post(`/saved/${tenderId}`);
         toast.success('Tender saved successfully!');
       }
+
+      // Sync the dashboard stat immediately so the saved-tenders card
+      // reflects the change without needing a page refresh.
+      adjustSavedCount(wasSaved ? -1 : 1);
     } catch (err: unknown) {
       const status = (err as { response?: { status?: number } })?.response?.status;
 
       // 409 on save and 404 on unsave both mean the server already agrees with
       // the state we just moved to, so keep it instead of reverting.
-      if ((!wasSaved && status === 409) || (wasSaved && status === 404)) return;
+      if ((!wasSaved && status === 409) || (wasSaved && status === 404)) {
+        // Server already in target state — still sync the dashboard count.
+        adjustSavedCount(wasSaved ? -1 : 1);
+        return;
+      }
 
       setSaved((prev) => {
         const next = new Set(prev);

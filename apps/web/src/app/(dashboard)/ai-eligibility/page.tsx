@@ -55,6 +55,19 @@ interface EligibilityResult {
   isEligible: boolean;
   criteria: CriteriaResult[];
   suggestions: string[];
+  /**
+   * True when the API could not reach the AI model (or rejected its response)
+   * and answered from the deterministic rule-based check instead.
+   */
+  isFallback: boolean;
+  /**
+   * Whether a model actually analysed this tender. This is the field to trust:
+   * `isFallback: false` only means this server reached the AI service, and the
+   * service answers 200 even when its own model call failed.
+   */
+  llmAnalysed: boolean;
+  llmStatus: 'SUCCESS' | 'FAILED' | 'TIMED_OUT' | 'UNAVAILABLE' | 'SKIPPED_NO_TEXT' | string;
+  llmError: string | null;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -310,26 +323,20 @@ export default function AIEligibilityCheckPage() {
     setCheckError(null);
     setIsAnalyzing(true);
     try {
-      let resData: any = null;
-      try {
-        const res = await api.post('/eligibility/check', {
-          tenderId: selectedTender.id,
-        });
-        resData = res.data;
-      } catch (checkErr: any) {
-        if (checkErr?.response?.status === 404) {
-          const res = await api.post('/eligibility', {
-            tenderId: selectedTender.id,
-          });
-          resData = res.data;
-        } else {
-          throw checkErr;
-        }
-      }
-
-      if (resData?.success && resData?.data) {
-        const d = resData.data.result || resData.data.eligibilityCheck || resData.data;
-        const rawCriteria = d.criteria || [];
+      // baseURL already includes /api/v1. POST /eligibility is the canonical
+      // check endpoint (/eligibility/check is an alias for the same handler),
+      // so one call is enough — no 404 retry needed.
+      const { data: res } = await api.post('/eligibility', {
+        tenderId: selectedTender.id,
+      });
+      if (res.success && res.data) {
+        // POST /eligibility answers { eligibilityCheck, result: {...} }. Reading
+        // the fields off `res.data` directly left every one undefined, so the
+        // `?? 0` / `?? false` defaults below rendered a confident "0 / not
+        // eligible" verdict no matter what the analysis actually said.
+        const d = res.data.result ?? res.data;
+        // Normalize criteria from JSON object/array to CriteriaResult[]
+        const rawCriteria = d.criteria ?? [];
         let criteria: CriteriaResult[] = [];
 
         if (Array.isArray(rawCriteria)) {
@@ -373,11 +380,27 @@ export default function AIEligibilityCheckPage() {
             .filter(Boolean);
         }
 
+        // Refuse to invent a verdict: if the payload has no numeric score or
+        // boolean verdict, report it as unavailable rather than defaulting.
+        if (typeof d.score !== 'number' || typeof d.isEligible !== 'boolean') {
+          setCheckError(
+            'The eligibility analysis came back in an unexpected format, so no score can be shown. Please try again.',
+          );
+          setShowResults(false);
+          return;
+        }
+
         setResult({
-          score: typeof d.score === 'number' ? Math.round(d.score) : 0,
-          isEligible: Boolean(d.isEligible ?? d.is_eligible),
+          score: Math.round(d.score),
+          isEligible: d.isEligible,
           criteria,
           suggestions,
+          isFallback: d.isFallback === true,
+          // Conservative: anything other than an explicit true is treated as
+          // "no model analysis", so a missing field can never read as success.
+          llmAnalysed: d.llmAnalysed === true,
+          llmStatus: typeof d.llmStatus === 'string' ? d.llmStatus : 'UNAVAILABLE',
+          llmError: typeof d.llmError === 'string' ? d.llmError : null,
         });
         setShowResults(true);
       }
@@ -705,6 +728,60 @@ export default function AIEligibilityCheckPage() {
       {/* ── AI Analysis Results ───────────────────────────────────── */}
       {showResults && !isAnalyzing && result && (
         <div className="space-y-6">
+          {/* Provenance notice.
+              The API reports `isFallback` when it could not reach the AI model,
+              or rejected its response, and answered from the deterministic
+              rule-based check. That was previously invisible, so a rule-based
+              score was presented under an "AI analysis" heading as though a
+              model had read the tender. The criteria below stay visible — they
+              are real comparisons — but the limits are stated plainly. */}
+          {!result.llmAnalysed && (
+            <div className="flex items-start gap-3 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+              <AlertTriangle className="h-4 w-4 text-amber-500 mt-0.5 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-body-sm font-medium text-foreground">
+                  {result.llmStatus === 'FAILED' || result.llmStatus === 'TIMED_OUT'
+                    ? 'AI analysis failed — showing the rule-based pre-check'
+                    : result.llmStatus === 'SKIPPED_NO_TEXT'
+                      ? 'No eligibility text to analyse — showing the rule-based pre-check'
+                      : 'AI analysis unavailable — this is a rule-based pre-check'}
+                </p>
+                <p className="text-caption text-muted-foreground mt-1">
+                  {result.llmStatus === 'SKIPPED_NO_TEXT'
+                    ? 'This tender record carries no published eligibility text, so there was nothing for the model to read. '
+                    : 'No model analysed this tender. '}
+                  The score below comes from an automated comparison of the tender&apos;s basic
+                  fields (category, location, value, EMD and reservations) against your profile. It
+                  does <strong>not</strong> read the tender notice or its documents, so published
+                  turnover, experience, certification and other conditions were not assessed. Treat
+                  it as an indication only, not an eligibility decision, and verify every requirement
+                  against the official tender documents.
+                </p>
+                {result.llmError && (
+                  <p className="text-caption text-muted-foreground/70 mt-1.5">
+                    Reason: {result.llmError}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
+          {result.llmAnalysed && (
+            <div className="flex items-start gap-3 rounded-xl border border-accent-500/30 bg-accent-500/5 px-4 py-3">
+              <Sparkles className="h-4 w-4 text-accent-500 mt-0.5 shrink-0" />
+              <div className="min-w-0">
+                <p className="text-body-sm font-medium text-foreground">
+                  AI-assisted analysis — rule checks plus model review of the tender&apos;s
+                  eligibility text
+                </p>
+                <p className="text-caption text-muted-foreground mt-1">
+                  Model output can still be wrong or incomplete. Confirm every requirement against
+                  the official tender documents before bidding.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Results Header */}
           <div className="bg-card border border-border rounded-xl p-6">
             <div className="flex flex-col lg:flex-row lg:items-center gap-6">
@@ -716,7 +793,9 @@ export default function AIEligibilityCheckPage() {
               {/* Summary */}
               <div className="flex-1">
                 <div className="flex items-center gap-2 mb-2">
-                  <h3 className="text-heading-sm font-display text-foreground">Eligibility Analysis Complete</h3>
+                  <h3 className="text-heading-sm font-display text-foreground">
+                    {result.llmAnalysed ? 'AI-assisted Analysis Complete' : 'Rule-based Pre-check Complete'}
+                  </h3>
                   <span className={cn(
                     'inline-flex items-center gap-1 text-[11px] font-medium px-2.5 py-1 rounded-full',
                     result.isEligible || result.score >= 70
@@ -735,7 +814,9 @@ export default function AIEligibilityCheckPage() {
                   </span>
                 </div>
                 <p className="text-body-sm text-muted-foreground mb-3">
-                  Based on our AI analysis of the tender requirements against your company profile,
+                  {result.llmAnalysed
+                    ? 'Based on our AI analysis of the tender requirements against your company profile,'
+                    : 'Based on an automated comparison of basic tender fields against your company profile,'}
                   {result.score >= 70
                     ? ' you meet most eligibility criteria for this tender.'
                     : result.score >= 40

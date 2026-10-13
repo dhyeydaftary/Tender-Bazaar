@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, createContext, useContext, useMemo } from 'react';
+import { useState, useEffect, createContext, useContext } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import {
@@ -28,28 +28,31 @@ import {
   FileText,
   Command,
 } from 'lucide-react';
-import { cn, formatCompact } from '@/lib/utils';
+import { cn } from '@/lib/utils';
 import { NotificationBell } from '@/components/notifications/notification-bell';
 import { useTheme } from 'next-themes';
 import { useAuthStore } from '@/stores/auth-store';
 import { useSubscriptionStore } from '@/stores/subscription-store';
-import { useTenderCount } from '@/lib/hooks/use-tenders';
+import { useDashboardStore } from '@/stores/dashboard-store';
+import { NavPlanBadge, type NavGate } from '@/components/subscription';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SIDEBAR CONTEXT
    ═══════════════════════════════════════════════════════════════════════════ */
 
-interface SidebarContextType {
-  collapsed: boolean;
-  toggle: () => void;
-  tenderCount: number | null;
-}
+const SidebarContext = createContext({ collapsed: false, toggle: () => {} });
 
-const SidebarContext = createContext<SidebarContextType>({
-  collapsed: false,
-  toggle: () => {},
-  tenderCount: null,
-});
+/**
+ * Compact count for the sidebar badge (1247 -> "1.2K"), which previously
+ * displayed a hard-coded "12.4K" regardless of how many tenders existed.
+ * Returns null while the count is still loading so no badge is rendered.
+ */
+function formatBadgeCount(count: number | undefined | null): string | null {
+  if (count === undefined || count === null) return null;
+  if (count < 1000) return String(count);
+  if (count < 100_000) return `${(count / 1000).toFixed(count < 10_000 ? 1 : 0)}K`;
+  return `${(count / 100_000).toFixed(1)}L`;
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    NAVIGATION
@@ -61,6 +64,14 @@ interface NavItem {
   icon: React.ElementType;
   badge?: string;
   badgeColor?: string;
+  /** Resolved at render time from live data instead of a hard-coded string. */
+  badgeKey?: 'activeTenders';
+  /**
+   * Entitlement this item depends on. When the user's plan does not grant it,
+   * an upgrade badge naming the minimum plan is shown beside the label.
+   * Only set on items that are genuinely gated — Discover's items are not.
+   */
+  gate?: NavGate;
 }
 
 interface NavGroup {
@@ -68,54 +79,50 @@ interface NavGroup {
   items: NavItem[];
 }
 
-function getNavGroups(tenderCount: number | null): NavGroup[] {
-  return [
-    {
-      title: 'Discover',
-      items: [
-        { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-        {
-          href: '/tenders',
-          label: 'All Tenders',
-          icon: FileText,
-          badge: tenderCount != null ? formatCompact(tenderCount) : undefined,
-        },
-        { href: '/search', label: 'Search', icon: Search },
-      ],
-    },
-    {
-      title: 'My Workspace',
-      items: [
-        { href: '/saved', label: 'Saved Tenders', icon: Bookmark },
-        { href: '/alerts', label: 'My Alerts', icon: Bell },
-        { href: '/eligibility', label: 'Eligibility Checks', icon: Shield },
-        { href: '/calendar', label: 'Tender Calendar', icon: CalendarDays },
-      ],
-    },
-    {
-      title: 'AI Tools',
-      items: [
-        { href: '/ai-eligibility', label: 'AI Eligibility', icon: Sparkles, badge: 'NEW', badgeColor: 'bg-accent-500/10 text-accent-500' },
-        { href: '/bid-assistant', label: 'Bid Assistant', icon: FileCheck, badge: 'PRO', badgeColor: 'bg-primary-500/10 text-primary-500' },
-        { href: '/compare', label: 'Tender Comparison', icon: Columns3 },
-      ],
-    },
-    {
-      title: 'Analytics',
-      items: [
-        { href: '/analytics', label: 'My Analytics', icon: BarChart3 },
-        { href: '/results', label: 'Tender Results', icon: Trophy },
-      ],
-    },
-    {
-      title: 'Account',
-      items: [
-        { href: '/subscription', label: 'Subscription', icon: CreditCard },
-        { href: '/settings', label: 'Settings', icon: Settings },
-      ],
-    },
-  ];
-}
+const NAV_GROUPS: NavGroup[] = [
+  {
+    title: 'Discover',
+    items: [
+      { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
+      { href: '/tenders', label: 'All Tenders', icon: FileText, badgeKey: 'activeTenders' },
+      { href: '/search', label: 'Search', icon: Search },
+    ],
+  },
+  {
+    title: 'My Workspace',
+    items: [
+      // Gates reflect the real plan data: Free grants maxSavedTenders 0 and
+      // maxAlerts 0, so both need Starter. Eligibility Checks is NOT gated —
+      // Free includes 1 lifetime AI check — so it carries no badge.
+      { href: '/saved', label: 'Saved Tenders', icon: Bookmark, gate: { kind: 'limit', name: 'maxSavedTenders' } },
+      { href: '/alerts', label: 'My Alerts', icon: Bell, gate: { kind: 'limit', name: 'maxAlerts' } },
+      { href: '/eligibility', label: 'Eligibility Checks', icon: Shield },
+      { href: '/calendar', label: 'Tender Calendar', icon: CalendarDays, gate: { kind: 'feature', name: 'tenderCalendar' } },
+    ],
+  },
+  {
+    title: 'AI Tools',
+    items: [
+      { href: '/ai-eligibility', label: 'AI Eligibility', icon: Sparkles, badge: 'NEW', badgeColor: 'bg-accent-500/10 text-accent-500' },
+      { href: '/bid-assistant', label: 'Bid Assistant', icon: FileCheck, badge: 'PRO', badgeColor: 'bg-primary-500/10 text-primary-500' },
+      { href: '/compare', label: 'Tender Comparison', icon: Columns3, gate: { kind: 'feature', name: 'tenderComparison' } },
+    ],
+  },
+  {
+    title: 'Analytics',
+    items: [
+      { href: '/analytics', label: 'My Analytics', icon: BarChart3 },
+      { href: '/results', label: 'Tender Results', icon: Trophy },
+    ],
+  },
+  {
+    title: 'Account',
+    items: [
+      { href: '/subscription', label: 'Subscription', icon: CreditCard },
+      { href: '/settings', label: 'Settings', icon: Settings },
+    ],
+  },
+];
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SIDEBAR
@@ -124,15 +131,19 @@ function getNavGroups(tenderCount: number | null): NavGroup[] {
 function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
-  const { collapsed, toggle, tenderCount } = useContext(SidebarContext);
+  const { collapsed, toggle } = useContext(SidebarContext);
   const { user, logout, fetchUser } = useAuthStore();
+  const { data: dashboard, fetchDashboard } = useDashboardStore();
   const [mounted, setMounted] = useState(false);
-  const navGroups = useMemo(() => getNavGroups(tenderCount), [tenderCount]);
 
   useEffect(() => {
     setMounted(true);
     fetchUser();
-  }, [fetchUser]);
+    // Supplies the live tender count for the "All Tenders" badge. The store is
+    // TTL-guarded and de-duplicates concurrent callers, so this shares one
+    // request with the dashboard page rather than adding another.
+    fetchDashboard();
+  }, [fetchUser, fetchDashboard]);
 
   if (!mounted) return null;
 
@@ -169,7 +180,7 @@ function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 py-3 px-2 overflow-y-auto no-scrollbar">
-        {navGroups.map((group) => (
+        {NAV_GROUPS.map((group) => (
           <div key={group.title} className="mb-4">
             {!collapsed && (
               <p className="text-overline text-muted-foreground uppercase tracking-widest px-3 mb-1.5 text-[10px]">
@@ -183,6 +194,9 @@ function Sidebar() {
                     ? pathname === '/dashboard'
                     : pathname.startsWith(item.href);
                 const Icon = item.icon;
+                const badge = item.badgeKey
+                  ? formatBadgeCount(dashboard?.stats.activeTenders)
+                  : item.badge;
 
                 return (
                   <Link
@@ -204,16 +218,17 @@ function Sidebar() {
                     {!collapsed && (
                       <>
                         <span className="flex-1 truncate">{item.label}</span>
-                        {item.badge && (
+                        {badge && (
                           <span
                             className={cn(
                               'text-[10px] px-1.5 py-0.5 rounded-full font-semibold',
                               item.badgeColor ?? 'bg-muted text-muted-foreground',
                             )}
                           >
-                            {item.badge}
+                            {badge}
                           </span>
                         )}
+                        {item.gate && <NavPlanBadge gate={item.gate} />}
                       </>
                     )}
                   </Link>
@@ -300,9 +315,11 @@ function TopBar() {
   const pathname = usePathname();
   const router = useRouter();
   const { logout } = useAuthStore();
-  const { tenderCount } = useContext(SidebarContext);
-  const navGroups = useMemo(() => getNavGroups(tenderCount), [tenderCount]);
+  const { data: dashboard } = useDashboardStore();
 
+  // next-themes resolves the theme only on the client, so rendering an icon on
+  // the server produced a hydration mismatch. A fixed-size placeholder holds
+  // the layout until mount.
   useEffect(() => {
     setMounted(true);
   }, []);
@@ -381,7 +398,7 @@ function TopBar() {
               </span>
             </div>
             <nav className="py-3 px-2">
-              {navGroups.map((group) => (
+              {NAV_GROUPS.map((group) => (
                 <div key={group.title} className="mb-4">
                   <p className="text-overline text-muted-foreground uppercase tracking-widest px-3 mb-1.5 text-[10px]">
                     {group.title}
@@ -389,6 +406,9 @@ function TopBar() {
                   {group.items.map((item) => {
                     const isActive = pathname.startsWith(item.href);
                     const Icon = item.icon;
+                    const badge = item.badgeKey
+                      ? formatBadgeCount(dashboard?.stats.activeTenders)
+                      : item.badge;
                     return (
                       <Link
                         key={item.href}
@@ -403,11 +423,12 @@ function TopBar() {
                       >
                         <Icon className="w-[18px] h-[18px]" />
                         <span className="flex-1">{item.label}</span>
-                        {item.badge && (
+                        {badge && (
                           <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-semibold', item.badgeColor ?? 'bg-muted text-muted-foreground')}>
-                            {item.badge}
+                            {badge}
                           </span>
                         )}
+                        {item.gate && <NavPlanBadge gate={item.gate} />}
                       </Link>
                     );
                   })}
@@ -444,7 +465,6 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(false);
-  const tenderCount = useTenderCount();
   const fetchSubscriptionData = useSubscriptionStore((s) => s.fetchAll);
 
   // Hydrate the subscription store once for the whole dashboard.
@@ -481,13 +501,7 @@ export default function DashboardLayout({
   }, []);
 
   return (
-    <SidebarContext.Provider
-      value={{
-        collapsed,
-        toggle: () => setCollapsed((c) => !c),
-        tenderCount,
-      }}
-    >
+    <SidebarContext.Provider value={{ collapsed, toggle: () => setCollapsed((c) => !c) }}>
       <div className="min-h-screen bg-background">
         <Sidebar />
         <div

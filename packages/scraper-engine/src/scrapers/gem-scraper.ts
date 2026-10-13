@@ -436,14 +436,55 @@ export class GemScraper extends BaseScraper {
    *   b_bid_type 2            → showradocumentPdf
    *   otherwise               → showbidDocument
    */
-  private buildBidDocumentUrl(bidId: number, bidType?: number, evalType?: number): string {
-    let segment = 'showbidDocument';
-    if (bidType === 5) {
-      segment = 'showdirectradocumentPdf';
-    } else if (bidType === 2) {
-      segment = (evalType ?? 0) > 0 ? 'list-ra-schedules' : 'showradocumentPdf';
+  /** The route segment GeM uses for this bid type. */
+  private bidUrlSegment(bidType?: number, evalType?: number): string {
+    if (bidType === 5) return 'showdirectradocumentPdf';
+    if (bidType === 2) return (evalType ?? 0) > 0 ? 'list-ra-schedules' : 'showradocumentPdf';
+    return 'showbidDocument';
+  }
+
+  /**
+   * Split a bid's links into a browsable source URL and any document.
+   *
+   * Three of the four segments above are PDF endpoints, not pages. Verified
+   * against the live portal:
+   *
+   *   showradocumentPdf/<id>   -> 200 application/pdf,
+   *                               Content-Disposition: attachment; GeM-RA-<id>.pdf
+   *   showbidDocument/<id>     -> 200 application/pdf,
+   *                               Content-Disposition: attachment; GeM-Bidding-<id>.pdf
+   *   list-ra-schedules/<id>   -> 200 text/html  (a real, bid-specific page)
+   *
+   * Storing a PDF endpoint in `sourceUrl` is what made "View Original" download
+   * a file instead of opening the notice. GeM publishes no per-bid detail page
+   * — its own listing links the bid number straight at `showbidDocument` — so
+   * no detail route is invented here. The document URL is preserved exactly as
+   * a TenderDocument, and `sourceUrl` falls back to the verified public listing.
+   */
+  private buildBidLinks(
+    bidId: number,
+    bidType?: number,
+    evalType?: number,
+  ): { sourceUrl: string; documents?: ScrapedTender['documents'] } {
+    const segment = this.bidUrlSegment(bidType, evalType);
+    const url = `${GEM_BIDPLUS_BASE}/${segment}/${bidId}`;
+
+    if (segment === 'list-ra-schedules') {
+      // An HTML page specific to this bid, so it is a legitimate source link.
+      return { sourceUrl: url };
     }
-    return `${GEM_BIDPLUS_BASE}/${segment}/${bidId}`;
+
+    const name =
+      segment === 'showradocumentPdf'
+        ? 'GeM RA Bid Document'
+        : segment === 'showdirectradocumentPdf'
+          ? 'GeM Direct RA Bid Document'
+          : 'GeM Bid Document';
+
+    return {
+      sourceUrl: GEM_ALL_BIDS_URL,
+      documents: [{ name, fileUrl: url, fileType: 'pdf' }],
+    };
   }
 
   private mapDocsToListings(docs: GemBidDoc[]): Partial<ScrapedTender>[] {
@@ -479,7 +520,7 @@ export class GemScraper extends BaseScraper {
         state: 'All India',
         publishedDate,
         bidSubmissionDeadline: deadline,
-        sourceUrl: this.buildBidDocumentUrl(bidId, bidType, evalType),
+        ...this.buildBidLinks(bidId, bidType, evalType),
         // estimatedValue / emdAmount are intentionally absent — see the file header.
       });
     }
@@ -520,8 +561,11 @@ export class GemScraper extends BaseScraper {
       publishedDate: listing.publishedDate,
       bidSubmissionDeadline: listing.bidSubmissionDeadline,
       sourcePortal: this.portalName,
-      sourceUrl: listing.sourceUrl ?? `${GEM_BIDPLUS_BASE}/all-bids`,
+      sourceUrl: listing.sourceUrl ?? GEM_ALL_BIDS_URL,
       sourceId: listing.sourceId,
+      // Carried through so the bid PDF is stored as a document rather than
+      // masquerading as the tender's web page.
+      documents: listing.documents,
       // Not available from the public listing — left undefined, never guessed:
       estimatedValue: undefined,
       emdAmount: undefined,

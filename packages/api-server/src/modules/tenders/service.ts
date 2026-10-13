@@ -151,12 +151,34 @@ export const tenderService = {
             },
           },
           sort,
-          highlight: {
-            fields: {
-              title: { pre_tags: ['<mark>'], post_tags: ['</mark>'] },
-              description: { pre_tags: ['<mark>'], post_tags: ['</mark>'], fragment_size: 200 },
-            },
-          },
+          // Highlighting is the dominant cost of a text search, because the
+          // highlighter re-matches the query against each hit's text. Combined
+          // with `fuzziness: 'AUTO'` above it has to do that for every fuzzy
+          // term expansion, measured on this index at ~1950ms of ES time
+          // versus ~100ms for the same query with highlighting off and ~23ms
+          // with a non-fuzzy highlighter.
+          //
+          // `highlight_query` lets the hits stay fuzzy — recall, ordering and
+          // totals are unchanged — while the highlighter runs the cheap exact
+          // form. The only visible difference is that a word matched purely by
+          // fuzzy correction is no longer wrapped in <mark>.
+          ...(textQuery
+            ? {
+                highlight: {
+                  fields: {
+                    title: { pre_tags: ['<mark>'], post_tags: ['</mark>'] },
+                    description: { pre_tags: ['<mark>'], post_tags: ['</mark>'], fragment_size: 200 },
+                  },
+                  highlight_query: {
+                    multi_match: {
+                      query: textQuery,
+                      fields: ['title^3', 'description', 'organization^2', 'aiKeywords^2', 'aiSummary'],
+                      type: 'best_fields',
+                    },
+                  },
+                },
+              }
+            : {}),
           aggs: {
             categories: { terms: { field: 'category', size: 10 } },
             states: { terms: { field: 'state', size: 36 } },
@@ -223,6 +245,28 @@ export const tenderService = {
     if (filters.categories?.length) where.category = { in: filters.categories };
     if (filters.states?.length) where.state = { in: filters.states };
     if (filters.status?.length) where.status = { in: filters.status };
+
+    // These five were accepted by the API and honoured by the Elasticsearch
+    // path but dropped here, so whenever a search fell back to PostgreSQL the
+    // tender-type, organisation, source-portal and date filters were silently
+    // ignored and the response claimed to be filtered when it was not.
+    if (filters.tenderTypes?.length) where.tenderType = { in: filters.tenderTypes };
+    if (filters.organizations?.length) where.organization = { in: filters.organizations };
+    if (filters.sourcePortals?.length) where.sourcePortal = { in: filters.sourcePortals };
+
+    if (filters.publishedFrom || filters.publishedTo) {
+      where.publishedDate = {
+        ...(filters.publishedFrom ? { gte: new Date(filters.publishedFrom) } : {}),
+        ...(filters.publishedTo ? { lte: new Date(filters.publishedTo) } : {}),
+      };
+    }
+    if (filters.deadlineFrom || filters.deadlineTo) {
+      where.bidSubmissionDeadline = {
+        ...(filters.deadlineFrom ? { gte: new Date(filters.deadlineFrom) } : {}),
+        ...(filters.deadlineTo ? { lte: new Date(filters.deadlineTo) } : {}),
+      };
+    }
+
     if (filters.minValue) where.estimatedValue = { ...where.estimatedValue, gte: filters.minValue };
     if (filters.maxValue) where.estimatedValue = { ...where.estimatedValue, lte: filters.maxValue };
     if (filters.reservedForMSME) where.reservedForMSME = true;

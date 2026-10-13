@@ -1,4 +1,5 @@
 import { prisma } from '../../../config/database';
+import { invalidateUnreadCount } from '../../notifications/service';
 
 interface BroadcastPayload {
   title: string;
@@ -243,7 +244,10 @@ export const notificationsService = {
         data: { broadcast: true, broadcastId: campaignId, target, sentAt: new Date().toISOString() },
       }));
 
-      await prisma.notification.createMany({ data: notifications }).catch(() => {});
+      await prisma.notification.createMany({ data: notifications });
+      // The unread badge is served from a Redis counter, so a broadcast that
+      // only writes rows leaves every recipient's bell stale until its TTL.
+      await invalidateUnreadCount(notifications.map((n) => n.userId));
     }
 
     return {
