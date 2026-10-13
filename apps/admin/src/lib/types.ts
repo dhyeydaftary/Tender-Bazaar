@@ -246,3 +246,233 @@ export interface PlanConfig {
 // ── Shared ─────────────────────────────────────────────────────────────────
 
 export type Period = '7d' | '30d' | '90d' | '1y';
+
+// ── Analytics ──────────────────────────────────────────────────────────────
+
+export interface PlatformAnalytics {
+  mostViewedTenders: {
+    id: string;
+    title: string;
+    organization: string;
+    viewCount: number;
+    category: string;
+    state: string;
+    estimatedValue: number;
+  }[];
+  mostSavedTenders: {
+    id: string;
+    title: string;
+    organization: string;
+    category: string;
+    state: string;
+    savedCount: number;
+  }[];
+  tendersByCategory: {
+    category: string;
+    count: number;
+    avgValue: number;
+  }[];
+  tendersByState: {
+    state: string;
+    count: number;
+  }[];
+  tendersByPortal: {
+    portal: string;
+    count: number;
+  }[];
+  usersByState: {
+    state: string;
+    count: number;
+  }[];
+}
+
+export interface SearchTrends {
+  topSearches: { query: string; count: number }[];
+  trendingSearches: { query: string; count: number }[];
+  dailyVolume: { date: string; count: number }[];
+  totalSearches: number;
+  redisKeywords: { keyword: string; score: number }[];
+}
+
+export interface TenderAnalyticsData {
+  totalAdded: number;
+  totalValue: number;
+  dailyTenders: { date: string; count: number }[];
+  byCategory: { category: string; count: number }[];
+}
+
+// ── Reports ────────────────────────────────────────────────────────────────
+
+export interface RevenueReportData {
+  totalRevenue: number;
+  transactionCount: number;
+  mrr: number;
+  arr: number;
+  dailyRevenue: { date: string; amount: number }[];
+  monthlyRevenue: { month: string; amount: number }[];
+  planBreakdown: { plan: string; amount: number; count: number }[];
+  cycleBreakdown: { cycle: string; amount: number; count: number }[];
+  dateRange: { start: string; end: string };
+}
+
+export interface UserReportData {
+  totalUsers: number;
+  verifiedUsers: number;
+  verificationRate: number;
+  monthlySignups: { month: string; count: number }[];
+  roleDistribution: { role: string; count: number }[];
+  dateRange: { start: string; end: string };
+}
+
+export interface TenderReportData {
+  totalTenders: number;
+  totalEstimatedValue: number;
+  totalViews: number;
+  monthlyTenders: { month: string; count: number }[];
+  byCategory: { category: string; count: number }[];
+  byStatus: { status: string; count: number }[];
+  byPortal: { portal: string; count: number }[];
+  dateRange: { start: string; end: string };
+}
+
+export interface SubscriptionReportData {
+  totalSubscriptions: number;
+  monthlySubscriptions: { month: string; count: number }[];
+  byPlan: { plan: string; count: number }[];
+  byStatus: { status: string; count: number }[];
+  churnRate: number;
+  dateRange: { start: string; end: string };
+}
+
+// ── Audit Logs ─────────────────────────────────────────────────────────────
+
+export interface AuditLogRecord {
+  id: string;
+  actorId: string;
+  actorEmail: string;
+  actorRole: string;
+  action: string;
+  entity: string;
+  entityId: string | null;
+  changes: Record<string, { old: unknown; new: unknown }> | null;
+  metadata: {
+    ipAddress?: string;
+    details?: string;
+    userAgent?: string;
+    [key: string]: unknown;
+  } | null;
+  createdAt: string;
+}
+
+export interface AuditLogStats {
+  totalLogs: number;
+  logsLast24h: number;
+  logsLast7d: number;
+  byAction: { action: string; count: number }[];
+  byEntity: { entity: string; count: number }[];
+}
+
+export interface AuditLogListResponse {
+  logs: AuditLogRecord[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+// ── Broadcast Notifications ────────────────────────────────────────────────
+
+export interface BroadcastRecord {
+  id: string;
+  title: string;
+  message: string;
+  channel: 'EMAIL' | 'PUSH' | 'WHATSAPP' | 'SMS' | 'IN_APP';
+  target: 'ALL' | 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'ENTERPRISE';
+  status: 'DELIVERED' | 'PENDING' | 'FAILED';
+  delivered: number;
+  failed: number;
+  opened: number;
+  sentAt: string;
+  createdAt?: string;
+}
+
+export interface BroadcastStats {
+  totalBroadcasts: number;
+  totalDelivered: number;
+  totalFailed: number;
+  totalOpened: number;
+  openRate: number;
+}
+
+export interface BroadcastListResponse {
+  broadcasts: BroadcastRecord[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+// ── Content Management ─────────────────────────────────────────────────────
+
+export interface ContentStats {
+  totalPosts: number;
+  publishedPosts: number;
+  draftPosts: number;
+  activeAnnouncements: number;
+  totalAnnouncements: number;
+  activeBanners: number;
+  totalBanners: number;
+  totalViews: number;
+  totalLikes: number;
+}
+
+export interface BlogPostRecord {
+  id: string;
+  title: string;
+  slug: string;
+  excerpt: string | null;
+  content: string;
+  coverImage: string | null;
+  authorId: string;
+  authorName: string;
+  status: 'PUBLISHED' | 'DRAFT' | 'ARCHIVED';
+  tags: string[];
+  publishedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  views: number;
+  likes: number;
+}
+
+export interface AnnouncementRecord {
+  id: string;
+  title: string;
+  message: string;
+  type: string;
+  targetAudience: string;
+  status: 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+  isPinned: boolean;
+  startDate: string | null;
+  endDate: string | null;
+  authorId: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BannerRecord {
+  id: string;
+  title: string;
+  imageUrl: string | null;
+  linkUrl: string | null;
+  description: string | null;
+  position: string;
+  priority: number;
+  status: 'DRAFT' | 'PUBLISHED' | 'ARCHIVED';
+  startDate: string | null;
+  endDate: string | null;
+  authorId: string;
+  createdAt: string;
+  updatedAt: string;
+  impressions?: number;
+  clicks?: number;
+  ctaText?: string;
+}
+

@@ -45,6 +45,7 @@ function timeAgo(dateStr: string): string {
 
 function getNotificationIcon(type: string) {
   switch (type) {
+    case 'TENDER_ALERT':
     case 'ALERT_MATCH':
     case 'ALERT':
       return Bell;
@@ -52,6 +53,7 @@ function getNotificationIcon(type: string) {
     case 'DEADLINE_REMINDER':
       return Clock;
     case 'SUBSCRIPTION':
+    case 'SUBSCRIPTION_EXPIRY':
     case 'PAYMENT':
       return CreditCard;
     case 'SYSTEM':
@@ -59,6 +61,8 @@ function getNotificationIcon(type: string) {
       return AlertTriangle;
     case 'SUCCESS':
     case 'ELIGIBILITY':
+    case 'ELIGIBILITY_RESULT':
+    case 'TENDER_RESULT':
       return CheckCircle2;
     default:
       return Bell;
@@ -68,17 +72,24 @@ function getNotificationIcon(type: string) {
 function getNotificationRoute(notification: Notification): string | null {
   const meta = (notification.data ?? notification.metadata) as Record<string, string> | undefined;
   switch (notification.type) {
+    case 'TENDER_ALERT':
     case 'ALERT_MATCH':
     case 'ALERT':
-      return meta?.alertId ? '/alerts' : '/alerts';
+      return meta?.tenderId ? `/tenders/${meta.tenderId}` : meta?.alertId ? `/alerts` : '/alerts';
     case 'DEADLINE':
     case 'DEADLINE_REMINDER':
       return meta?.tenderId ? `/tenders/${meta.tenderId}` : '/tenders';
     case 'SUBSCRIPTION':
+    case 'SUBSCRIPTION_EXPIRY':
     case 'PAYMENT':
       return '/settings';
     case 'ELIGIBILITY':
+    case 'ELIGIBILITY_RESULT':
       return meta?.tenderId ? `/tenders/${meta.tenderId}` : '/eligibility';
+    case 'TENDER_RESULT':
+      return meta?.tenderId ? `/tenders/${meta.tenderId}` : '/results';
+    case 'NEW_CORRIGENDUM':
+      return meta?.tenderId ? `/tenders/${meta.tenderId}` : '/tenders';
     default:
       return null;
   }
@@ -98,7 +109,13 @@ export function NotificationBell() {
   const fetchUnreadCount = useCallback(async () => {
     try {
       const res = await api.get('/notifications/unread-count');
-      setUnreadCount(res.data.data?.count ?? res.data.data?.unreadCount ?? 0);
+      const count =
+        res.data?.data?.count ??
+        res.data?.data?.unreadCount ??
+        res.data?.count ??
+        res.data?.unreadCount ??
+        0;
+      setUnreadCount(count);
     } catch {
       // Silent fail - non-critical
     }
@@ -184,7 +201,15 @@ export function NotificationBell() {
     <div className="relative" ref={dropdownRef}>
       {/* Bell button */}
       <button
-        onClick={() => setIsOpen((prev) => !prev)}
+        onClick={() => {
+          setIsOpen((prev) => {
+            const next = !prev;
+            if (next) {
+              fetchNotifications();
+            }
+            return next;
+          });
+        }}
         className="relative p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
         aria-label="Notifications"
       >

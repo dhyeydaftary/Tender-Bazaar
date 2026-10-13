@@ -38,10 +38,13 @@ type NumericLimit =
 export function requireFeature(feature: BooleanFeature) {
   return async (req: Request, _res: Response, next: NextFunction) => {
     try {
-      const userId = (req as any).user?.id;
-      if (!userId) return next(new AppError('Authentication required', 401, 'NOT_AUTHENTICATED'));
+      const user = (req as any).user;
+      if (!user?.id) return next(new AppError('Authentication required', 401, 'NOT_AUTHENTICATED'));
+      if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') {
+        return next();
+      }
 
-      const plan = await planConfigService.getUserPlan(userId);
+      const plan = await planConfigService.getUserPlan(user.id);
       const hasIt = planConfigService.hasFeature(plan, feature);
 
       if (!hasIt) {
@@ -67,10 +70,14 @@ export function requireFeature(feature: BooleanFeature) {
 export function requireLimit(limitName: NumericLimit) {
   return async (req: Request, _res: Response, next: NextFunction) => {
     try {
-      const userId = (req as any).user?.id;
-      if (!userId) return next(new AppError('Authentication required', 401, 'NOT_AUTHENTICATED'));
+      const user = (req as any).user;
+      if (!user?.id) return next(new AppError('Authentication required', 401, 'NOT_AUTHENTICATED'));
+      if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') {
+        (req as any).planLimit = { limitName, used: 0, limit: -1 };
+        return next();
+      }
 
-      const { allowed, limit, used } = await planConfigService.checkLimit(userId, limitName);
+      const { allowed, limit, used } = await planConfigService.checkLimit(user.id, limitName);
 
       if (!allowed) {
         const limitLabel = limit === -1 ? 'unlimited' : String(limit);
@@ -98,17 +105,22 @@ export function requireLimit(limitName: NumericLimit) {
 export function tenderPagination() {
   return async (req: Request, _res: Response, next: NextFunction) => {
     try {
-      const userId = (req as any).user?.id;
+      const user = (req as any).user;
+
+      // Admin / Super Admin get unlimited pagination
+      if (user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN') {
+        return next();
+      }
 
       // Unauthenticated users get free-tier limits
-      if (!userId) {
+      if (!user?.id) {
         req.query.page = '1';
         req.query.limit = '20';
         (req as any).paginationLocked = true;
         return next();
       }
 
-      const plan = await planConfigService.getUserPlan(userId);
+      const plan = await planConfigService.getUserPlan(user.id);
 
       if (!plan.paginationAllowed) {
         // Free plan: force page 1 with plan's tenderViewsPerPage
@@ -131,13 +143,17 @@ export function tenderPagination() {
 export function requireAiCheck() {
   return async (req: Request, _res: Response, next: NextFunction) => {
     try {
-      const userId = (req as any).user?.id;
-      if (!userId) return next(new AppError('Authentication required', 401, 'NOT_AUTHENTICATED'));
+      const user = (req as any).user;
+      if (!user?.id) return next(new AppError('Authentication required', 401, 'NOT_AUTHENTICATED'));
+      if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') {
+        (req as any).planLimit = { limitName: 'maxAiChecks', used: 0, limit: -1 };
+        return next();
+      }
 
-      const { allowed, used, limit } = await planConfigService.checkLimit(userId, 'maxAiChecks');
+      const { allowed, used, limit } = await planConfigService.checkLimit(user.id, 'maxAiChecks');
 
       if (!allowed) {
-        const plan = await planConfigService.getUserPlan(userId);
+        const plan = await planConfigService.getUserPlan(user.id);
         const msg = plan.aiChecksResetMonthly
           ? `You have used all ${limit} AI checks this month. They reset next month, or upgrade your plan.`
           : `You have used your lifetime AI check. Upgrade to a paid plan for more.`;

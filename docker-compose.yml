@@ -99,7 +99,7 @@ services:
       - REDIS_URL=redis://redis:6379
       - ELASTICSEARCH_URL=http://elasticsearch:9200
       - AI_SERVICE_URL=http://ai-service:5000
-      - FRONTEND_URL=http://localhost:3002
+      - FRONTEND_URL=http://localhost:3000
     depends_on:
       postgres:
         condition: service_healthy

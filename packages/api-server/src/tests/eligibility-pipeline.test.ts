@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import { aiEligibilityResponseSchema } from '../modules/eligibility/validation';
+import {
+  normaliseEligibilityCriteria,
+  deriveLlmProvenance,
+} from '../modules/eligibility/service';
 
 console.log('--- Starting Eligibility Checks & AI Service Contract Tests ---');
 
@@ -135,6 +139,112 @@ console.log('--- Starting Eligibility Checks & AI Service Contract Tests ---');
   assert.equal(unwrapped.isEligible, true);
   assert.equal(unwrapped.llmAnalysed, true);
   console.log('✓ Frontend correctly unwraps nested result envelope preventing score=0 fallback bug');
+}
+
+// 6. Criteria normalisation — the merge-resolved logic inside checkEligibility
+{
+  // The AI-service shape: an ARRAY of { criterion, status, detail }.
+  const fromAiService = normaliseEligibilityCriteria([
+    { criterion: 'Category Match', status: 'MET', detail: 'WORKS matches', importance: 'CRITICAL' },
+    { criterion: 'Turnover', status: 'PARTIALLY_MET', detail: 'Close to threshold' },
+    { criterion: 'Certifications', status: 'NOT_MET', detail: 'ISO 9001 missing' },
+    { criterion: 'Capacity', status: 'UNCLEAR', detail: 'Not stated' },
+  ]);
+
+  assert.deepEqual(
+    fromAiService.map((c) => [c.name, c.status]),
+    [
+      ['Category Match', 'pass'],
+      ['Turnover', 'partial'],
+      ['Certifications', 'fail'],
+      ['Capacity', 'fail'],
+    ],
+    'AI array criteria must map MET/PARTIALLY_MET to pass/partial and everything else to fail',
+  );
+  assert.equal(fromAiService[0].importance, 'CRITICAL', 'Explicit importance is preserved');
+  assert.equal(fromAiService[1].importance, 'IMPORTANT', 'Missing importance defaults to IMPORTANT');
+
+  // The rule-based fallback shape: a keyed RECORD of { met, detail }. This is
+  // the case that made the normalisation worth keeping through the merge — the
+  // record has no `status` field at all, so passing it through untouched left
+  // the dashboard with nothing to render.
+  const fromFallback = normaliseEligibilityCriteria({
+    categoryMatch: { met: true, detail: 'Category matches' },
+    stateMatch: { met: false, detail: 'Does not operate in tender state' },
+  });
+
+  assert.deepEqual(
+    fromFallback.map((c) => [c.name, c.status, c.detail]),
+    [
+      ['categoryMatch', 'pass', 'Category matches'],
+      ['stateMatch', 'fail', 'Does not operate in tender state'],
+    ],
+    'Record criteria must be keyed by name and derive status from `met`',
+  );
+
+  // Missing details fall back to wording that matches the derived status
+  // rather than being left blank.
+  const noDetails = normaliseEligibilityCriteria([
+    { criterion: 'A', status: 'MET' },
+    { criterion: 'B', status: 'NOT_MET' },
+  ]);
+  assert.equal(noDetails[0].detail, 'Requirement satisfied');
+  assert.equal(noDetails[1].detail, 'Requirement not met');
+
+  // Degenerate inputs must not throw: an unparsed criteria value yields [].
+  assert.deepEqual(normaliseEligibilityCriteria(undefined), []);
+  assert.deepEqual(normaliseEligibilityCriteria(null), []);
+  assert.deepEqual(normaliseEligibilityCriteria({}), []);
+  assert.deepEqual(normaliseEligibilityCriteria([]), []);
+  assert.deepEqual(normaliseEligibilityCriteria('nonsense'), []);
+
+  // An unnamed criterion still renders with a placeholder rather than blank.
+  assert.equal(normaliseEligibilityCriteria([{ status: 'MET' }])[0].name, 'Criterion');
+
+  // Lower-cased / alternate spellings the engine has used are honoured.
+  assert.equal(normaliseEligibilityCriteria([{ criterion: 'X', status: 'pass' }])[0].status, 'pass');
+  assert.equal(normaliseEligibilityCriteria([{ criterion: 'X', met: true }])[0].status, 'pass');
+
+  console.log('✓ Criteria normalisation handles both the AI array and fallback record shapes');
+}
+
+// 7. LLM provenance — never report analysis that did not happen
+{
+  assert.deepEqual(
+    deriveLlmProvenance({ llmAnalysed: true, llmStatus: 'SUCCESS' }),
+    { llmStatus: 'SUCCESS', llmAnalysed: true },
+    'A positively reported success is the only case that counts as analysed',
+  );
+
+  // The failure this field exists to catch: the service answered, but its own
+  // LLM call failed. `llmAnalysed` must not claim an analysis happened.
+  for (const status of ['FAILED', 'TIMED_OUT', 'UNAVAILABLE', 'SKIPPED_NO_TEXT']) {
+    assert.equal(
+      deriveLlmProvenance({ llmAnalysed: true, llmStatus: status }).llmAnalysed,
+      false,
+      `llmAnalysed must be false when llmStatus is ${status}, even if the flag is set`,
+    );
+  }
+
+  assert.equal(
+    deriveLlmProvenance({ llmAnalysed: false, llmStatus: 'SUCCESS' }).llmAnalysed,
+    false,
+    'A SUCCESS status alone is not enough without the flag',
+  );
+
+  // Absent provenance is treated conservatively as "no analysis".
+  assert.deepEqual(
+    deriveLlmProvenance({}),
+    { llmStatus: 'UNAVAILABLE', llmAnalysed: false },
+    'Absent provenance defaults to UNAVAILABLE / not analysed',
+  );
+  assert.equal(
+    deriveLlmProvenance({ llmAnalysed: 'true' as unknown }).llmAnalysed,
+    false,
+    'A truthy non-boolean must not be read as success',
+  );
+
+  console.log('✓ LLM provenance reports analysis only when the service positively confirmed SUCCESS');
 }
 
 console.log('--- All Eligibility Checks Tests Passed Successfully! ---');

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const searchResultsSchema = z.object({
   query: z.string().optional(),
+  search: z.string().optional(),
   organization: z.string().optional(),
   state: z.string().optional(),
   category: z.string().optional(),

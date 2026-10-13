@@ -32,6 +32,33 @@ const ANON_MAX = env.RATE_LIMIT_ANON_MAX;
 const AUTH_ATTEMPT_MAX = env.RATE_LIMIT_AUTH_MAX;
 
 /**
+ * The DEVELOPMENT-ONLY rate-limit bypass.
+ *
+ * Kept as a pure function of its two inputs so it can be unit-tested without
+ * reloading the environment module, whose `env` is parsed once at import.
+ *
+ * BOTH conditions must hold, and the NODE_ENV check is what makes this safe:
+ * a production (or test) deployment cannot switch rate limiting off by
+ * configuration alone, so `DISABLE_RATE_LIMIT=true` leaking into a production
+ * environment file is inert. The flag is a literal 'true' | 'false' validated
+ * by the env schema, so a typo fails at startup rather than being coerced.
+ *
+ * This only ever skips the request-counting middleware. It does not touch
+ * authentication: `authenticate` still runs, and the auth limiter's
+ * `skipSuccessfulRequests` semantics are unchanged.
+ */
+export function isRateLimitBypassed(
+  nodeEnv: string,
+  disableRateLimit: string,
+): boolean {
+  return nodeEnv === 'development' && disableRateLimit === 'true';
+}
+
+/** Bound to the live environment; evaluated per request by both limiters. */
+const skipWhenBypassed = () =>
+  isRateLimitBypassed(env.NODE_ENV, env.DISABLE_RATE_LIMIT);
+
+/**
  * Resolve the user id from the access token so each account gets its own
  * bucket. The token is fully verified: an unverified decode would let anyone
  * mint a payload and hop buckets at will, defeating the limit. Unverified,
@@ -64,6 +91,7 @@ export const apiLimiter = rateLimit({
     const userId = userIdFromRequest(req as Request);
     return userId ? `user:${userId}` : `ip:${(req as Request).ip ?? 'unknown'}`;
   },
+  skip: skipWhenBypassed,
   message: {
     success: false,
     error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many requests, please try again later' },
@@ -78,6 +106,7 @@ export const authLimiter = rateLimit({
   // guards against; counting successful logins just locked out legitimate
   // users who signed in, refreshed a token, or switched accounts a few times.
   skipSuccessfulRequests: true,
+  skip: skipWhenBypassed,
   message: {
     success: false,
     error: { code: 'RATE_LIMIT_EXCEEDED', message: 'Too many authentication attempts' },

@@ -4,6 +4,11 @@ import { AlertFrequency, Prisma } from '@prisma/client';
 import { invalidateUnreadCount, notificationService } from '../notifications/service';
 import { planConfigService } from '../subscriptions/plan-config.service';
 import { publishNotificationJob, type NotificationJobChannel } from '../../queue/notification-publisher';
+import {
+  hasAlertFilterCriteria,
+  supportedAlertCategories,
+  ALERT_NO_FILTER_MESSAGE,
+} from './validation';
 
 // Plan limits for max alerts
 const PLAN_ALERT_LIMITS: Record<string, number> = {
@@ -97,6 +102,24 @@ export const alertService = {
     const alert = await prisma.alert.findUnique({ where: { id: alertId } });
     if (!alert) throw new AppError('Alert not found', 404, 'ALERT_NOT_FOUND');
     if (alert.userId !== userId) throw new AppError('Not authorized', 403, 'FORBIDDEN');
+
+    // The create path rejects filter-less alerts in its schema, but an update
+    // could otherwise strip the last filter and leave an alert that matches
+    // every active tender. Checked against the MERGED result so a partial
+    // update (renaming, toggling a channel) is unaffected.
+    const effectiveFilters = {
+      keywords: data.keywords ?? alert.keywords,
+      categories: data.categories ?? alert.categories,
+      states: data.states ?? alert.states,
+      organizations: data.organizations ?? alert.organizations,
+      tenderTypes: data.tenderTypes ?? alert.tenderTypes,
+      minValue: data.minValue !== undefined ? data.minValue : alert.minValue,
+      maxValue: data.maxValue !== undefined ? data.maxValue : alert.maxValue,
+    };
+
+    if (!hasAlertFilterCriteria(effectiveFilters)) {
+      throw new AppError(ALERT_NO_FILTER_MESSAGE, 400, 'VALIDATION_ERROR');
+    }
 
     const updateData: any = {};
     if (data.name !== undefined) updateData.name = data.name;
@@ -430,9 +453,14 @@ function buildTenderWhereClause(
     }));
   }
 
-  // Categories filter
-  if (alert.categories.length > 0) {
-    where.category = { in: alert.categories as any };
+  // Categories filter. Reads stay tolerant of legacy rows: `Alert.categories`
+  // is a free-form String[], so values outside the TenderCategory enum could be
+  // stored before validation existed. Unsupported values are ignored here
+  // rather than throwing, and the shared helper keeps this list from drifting
+  // from the one the write path validates against.
+  const supportedCats = supportedAlertCategories(alert.categories);
+  if (supportedCats.length > 0) {
+    where.category = { in: supportedCats as any };
   }
 
   // States filter
@@ -459,6 +487,23 @@ function buildTenderWhereClause(
   // Tender types filter
   if (alert.tenderTypes.length > 0) {
     where.tenderType = { in: alert.tenderTypes as any };
+  }
+
+  // Legacy safety net.
+  //
+  // New alerts cannot reach this state: the create/update schemas require at
+  // least one filter and reject unsupported categories. But rows written before
+  // those rules can have no filters at all, or categories that are ALL
+  // unsupported — and in both cases every clause above is skipped, leaving
+  // `{ status: 'ACTIVE' }`, which matches the entire catalogue. That is the
+  // notify-on-everything bug, so such an alert is forced to match nothing
+  // instead. Deliberately not an exception: a legacy row must not break the
+  // matching job for every other alert in the batch.
+  if (!hasAlertFilterCriteria({ ...alert, categories: supportedCats })) {
+    console.warn(
+      '[alerts] Alert has no effective filter (possibly a legacy row); matching nothing rather than every tender.',
+    );
+    return { ...where, id: { in: [] } };
   }
 
   // Since date filter (for matching jobs)

@@ -310,11 +310,19 @@ function Sidebar() {
 
 function TopBar() {
   const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
   const { logout } = useAuthStore();
   const { data: dashboard } = useDashboardStore();
+
+  // next-themes resolves the theme only on the client, so rendering an icon on
+  // the server produced a hydration mismatch. A fixed-size placeholder holds
+  // the layout until mount.
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Close mobile menu on route change
   useEffect(() => {
@@ -360,10 +368,14 @@ function TopBar() {
           {/* Theme toggle */}
           <button
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors min-w-[36px] min-h-[36px] flex items-center justify-center"
             aria-label="Toggle theme"
           >
-            {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            {mounted ? (
+              theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />
+            ) : (
+              <span className="w-4 h-4 block" />
+            )}
           </button>
 
           {/* Notifications */}

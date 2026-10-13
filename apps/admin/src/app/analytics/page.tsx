@@ -1,12 +1,16 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Search,
   Eye,
   Bookmark,
   MapPin,
   BarChart3,
+  RefreshCw,
+  Loader2,
+  AlertCircle,
+  Building2,
   TrendingUp,
 } from 'lucide-react';
 import {
@@ -19,401 +23,569 @@ import {
   CartesianGrid,
   Tooltip,
   ResponsiveContainer,
-  Legend,
 } from 'recharts';
-
-// ---------------------------------------------------------------------------
-// Mock Data
-// ---------------------------------------------------------------------------
-
-const CHART_COLORS = ['#FF6B35', '#00D4AA', '#1B2845', '#FFB800', '#FF4560', '#775DD0'];
-
-// Top searched keywords
-const topKeywords = [
-  { keyword: 'construction tender', searches: 4520 },
-  { keyword: 'IT services', searches: 3890 },
-  { keyword: 'road development', searches: 3245 },
-  { keyword: 'medical equipment', searches: 2980 },
-  { keyword: 'solar energy', searches: 2670 },
-  { keyword: 'water supply', searches: 2340 },
-  { keyword: 'building renovation', searches: 2100 },
-  { keyword: 'security services', searches: 1890 },
-  { keyword: 'electrical work', searches: 1650 },
-  { keyword: 'software development', searches: 1420 },
-];
-
-// Search volume trend (last 30 days)
-const searchVolumeTrend = Array.from({ length: 30 }, (_, i) => ({
-  name: `Mar ${i + 1}`,
-  volume: Math.floor(Math.random() * 3000 + 5000),
-}));
-
-// Most viewed tenders
-const mostViewedTenders = [
-  { id: 1, title: 'Construction of 4-Lane Highway NH-48 Junction', views: 12450, saves: 890 },
-  { id: 2, title: 'Supply of Desktop Computers for Schools', views: 9870, saves: 1230 },
-  { id: 3, title: 'Cloud Infrastructure Services for NIC', views: 8540, saves: 670 },
-  { id: 4, title: 'Solar Panels for Rural Electrification', views: 7890, saves: 980 },
-  { id: 5, title: 'Smart City Portal Development Jaipur', views: 6720, saves: 540 },
-  { id: 6, title: 'Road Resurfacing BBMP Bengaluru', views: 5980, saves: 420 },
-  { id: 7, title: 'Medical Equipment for Primary Health Centres', views: 5430, saves: 760 },
-  { id: 8, title: 'Water Treatment Plant Upgrade Chennai', views: 4890, saves: 380 },
-];
-
-// Most saved tenders
-const mostSavedTenders = [
-  { id: 1, title: 'Supply of Desktop Computers for Schools', saves: 1230 },
-  { id: 2, title: 'Solar Panels for Rural Electrification', saves: 980 },
-  { id: 3, title: 'Construction of 4-Lane Highway NH-48', saves: 890 },
-  { id: 4, title: 'Medical Equipment for Primary Health Centres', saves: 760 },
-  { id: 5, title: 'Cloud Infrastructure Services for NIC', saves: 670 },
-  { id: 6, title: 'Smart City Portal Development Jaipur', saves: 540 },
-  { id: 7, title: 'Road Resurfacing BBMP Bengaluru', saves: 420 },
-  { id: 8, title: 'Water Treatment Plant Upgrade Chennai', saves: 380 },
-];
-
-// Geographic distribution by state
-const stateDistribution = [
-  { state: 'Maharashtra', users: 2850 },
-  { state: 'Gujarat', users: 2340 },
-  { state: 'Delhi', users: 1980 },
-  { state: 'Karnataka', users: 1670 },
-  { state: 'Tamil Nadu', users: 1420 },
-  { state: 'Uttar Pradesh', users: 1280 },
-  { state: 'Rajasthan', users: 1100 },
-  { state: 'Madhya Pradesh', users: 890 },
-  { state: 'West Bengal', users: 750 },
-  { state: 'Telangana', users: 620 },
-];
-
-// Activity heatmap data (7 days x 24 hours)
-const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const heatmapData: number[][] = days.map(() =>
-  Array.from({ length: 24 }, (_, hour) => {
-    // Simulate realistic activity patterns
-    if (hour >= 0 && hour < 6) return Math.floor(Math.random() * 20);
-    if (hour >= 6 && hour < 9) return Math.floor(Math.random() * 60 + 20);
-    if (hour >= 9 && hour < 18) return Math.floor(Math.random() * 80 + 60);
-    if (hour >= 18 && hour < 22) return Math.floor(Math.random() * 50 + 30);
-    return Math.floor(Math.random() * 30 + 10);
-  })
-);
-
-// Tender volume by category
-const tenderByCategory = [
-  { category: 'Construction', count: 3450 },
-  { category: 'IT Services', count: 2890 },
-  { category: 'Healthcare', count: 2340 },
-  { category: 'Energy', count: 1980 },
-  { category: 'Agriculture', count: 1670 },
-  { category: 'Security', count: 1230 },
-  { category: 'Water Supply', count: 1100 },
-  { category: 'Education', count: 890 },
-];
-
-// Tender volume by state
-const tenderByState = [
-  { state: 'Maharashtra', count: 4520 },
-  { state: 'Gujarat', count: 3890 },
-  { state: 'Karnataka', count: 3245 },
-  { state: 'Tamil Nadu', count: 2980 },
-  { state: 'Delhi', count: 2670 },
-  { state: 'Uttar Pradesh', count: 2340 },
-  { state: 'Rajasthan', count: 2100 },
-  { state: 'Madhya Pradesh', count: 1890 },
-];
-
-// New tenders per day (last 30 days)
-const newTendersPerDay = Array.from({ length: 30 }, (_, i) => ({
-  name: `Mar ${i + 1}`,
-  tenders: Math.floor(Math.random() * 300 + 200),
-}));
+import {
+  getPlatformAnalytics,
+  getSearchTrends,
+  getTenderAnalytics,
+} from '@/lib/admin-api';
+import type {
+  PlatformAnalytics,
+  SearchTrends,
+  TenderAnalyticsData,
+  Period,
+} from '@/lib/types';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
 function formatNumber(n: number): string {
-  return n.toLocaleString('en-IN');
+  return (n || 0).toLocaleString('en-IN');
 }
 
-function getHeatColor(value: number): string {
-  if (value < 15) return 'bg-muted';
-  if (value < 30) return 'bg-emerald-900/40';
-  if (value < 50) return 'bg-emerald-800/50';
-  if (value < 80) return 'bg-emerald-600/50';
-  if (value < 100) return 'bg-emerald-500/60';
-  return 'bg-emerald-400/70';
+function formatINR(num: number | null | undefined): string {
+  if (!num || num <= 0) return 'Value on Request';
+  if (num >= 10000000) return `₹${(num / 10000000).toFixed(2)} Cr`;
+  if (num >= 100000) return `₹${(num / 100000).toFixed(2)} L`;
+  return `₹${num.toLocaleString('en-IN')}`;
 }
 
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
+const DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+function getHeatColor(val: number): string {
+  if (val <= 0) return 'bg-muted/40';
+  if (val < 5) return 'bg-emerald-950/40 text-emerald-300';
+  if (val < 15) return 'bg-emerald-800/50 text-emerald-200';
+  if (val < 30) return 'bg-emerald-600/60 text-white';
+  return 'bg-emerald-500/80 text-white';
+}
+
 export default function AnalyticsPage() {
+  const [period, setPeriod] = useState<Period>('30d');
+  const [analytics, setAnalytics] = useState<PlatformAnalytics | null>(null);
+  const [searchTrends, setSearchTrends] = useState<SearchTrends | null>(null);
+  const [tenderAnalytics, setTenderAnalytics] = useState<TenderAnalyticsData | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isAutoRefresh, setIsAutoRefresh] = useState(true);
+  const [secondsAgo, setSecondsAgo] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  const loadData = useCallback(async (isManual = false, isBackground = false) => {
+    if (isManual) setIsRefreshing(true);
+    else if (!isBackground) setIsLoading(true);
+    setError(null);
+
+    try {
+      const [platformData, trendsData, tenderData] = await Promise.all([
+        getPlatformAnalytics(),
+        getSearchTrends(),
+        getTenderAnalytics(period),
+      ]);
+      setAnalytics(platformData);
+      setSearchTrends(trendsData);
+      setTenderAnalytics(tenderData);
+      setSecondsAgo(0);
+    } catch (err: any) {
+      console.error('Failed to load analytics:', err);
+      if (!isBackground) {
+        setError(err?.message || 'Failed to load analytics from database.');
+      }
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
+  }, [period]);
+
+  // Initial load
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  // Live Auto-Refresh every 8 seconds
+  useEffect(() => {
+    if (!isAutoRefresh) return;
+    const interval = setInterval(() => {
+      loadData(false, true);
+    }, 8000);
+    return () => clearInterval(interval);
+  }, [isAutoRefresh, loadData]);
+
+  // Live seconds elapsed ticker
+  useEffect(() => {
+    const ticker = setInterval(() => {
+      setSecondsAgo((s) => s + 1);
+    }, 1000);
+    return () => clearInterval(ticker);
+  }, []);
+
+  // Derived real data for keywords
+  const topKeywordsData = (searchTrends?.topSearches || []).length > 0
+    ? (searchTrends?.topSearches || []).slice(0, 10).map((s) => ({
+        keyword: s.query,
+        searches: s.count,
+      }))
+    : (searchTrends?.redisKeywords || []).slice(0, 10).map((k) => ({
+        keyword: k.keyword,
+        searches: Math.round(k.score),
+      }));
+
+  // Search volume trend
+  const searchVolumeData = (searchTrends?.dailyVolume || []).map((v) => {
+    const d = new Date(v.date);
+    return {
+      name: d.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }),
+      volume: v.count,
+    };
+  });
+
+  // Most viewed tenders
+  const viewedTenders = analytics?.mostViewedTenders || [];
+
+  // Most saved tenders
+  const savedTenders = analytics?.mostSavedTenders || [];
+
+  // Geographic distribution by state
+  const stateData = (analytics?.tendersByState || []).slice(0, 10).map((s) => ({
+    state: s.state || 'Other',
+    count: s.count,
+  }));
+
+  // Category breakdown
+  const categoryData = (analytics?.tendersByCategory || []).map((c) => ({
+    category: c.category,
+    count: c.count,
+    avgValue: c.avgValue,
+  }));
+
+  // New tenders per day from tenderAnalytics
+  const newTendersData = (tenderAnalytics?.dailyTenders || []).map((t) => {
+    const d = new Date(t.date);
+    return {
+      name: d.toLocaleDateString('en-IN', { month: 'short', day: 'numeric' }),
+      tenders: t.count,
+    };
+  });
+
   return (
-    <div className="">
+    <div className="space-y-8">
       {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-foreground">Platform Analytics</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Comprehensive analytics across search, content, users, and tenders.
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-border">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-2xl font-bold text-foreground">Platform Analytics</h1>
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              Live DB
+            </span>
+          </div>
+          <p className="text-muted-foreground text-sm mt-1">
+            Real-time platform insights aggregated directly from PostgreSQL &amp; Redis.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Live Auto-Refresh Toggle */}
+          <button
+            onClick={() => setIsAutoRefresh(!isAutoRefresh)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all ${
+              isAutoRefresh
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
+                : 'bg-muted/50 border-border text-muted-foreground hover:bg-muted'
+            }`}
+            title={isAutoRefresh ? 'Live auto-update active (every 8s)' : 'Live updates paused (click to resume)'}
+          >
+            <span className={`w-2 h-2 rounded-full ${isAutoRefresh ? 'bg-emerald-500 animate-pulse' : 'bg-muted-foreground'}`} />
+            <span>{isAutoRefresh ? 'Auto-Update (8s)' : 'Updates Paused'}</span>
+            <span className="text-[10px] font-normal opacity-75">
+              • {secondsAgo === 0 ? 'just now' : `${secondsAgo}s ago`}
+            </span>
+          </button>
+
+          {/* Period selector */}
+          <div className="flex items-center bg-muted/60 p-1 rounded-xl border border-border">
+            {(['7d', '30d', '90d'] as Period[]).map((p) => (
+              <button
+                key={p}
+                onClick={() => setPeriod(p)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  period === p
+                    ? 'bg-card text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {p === '7d' ? '7 Days' : p === '30d' ? '30 Days' : '90 Days'}
+              </button>
+            ))}
+          </div>
+
+          {/* Refresh button */}
+          <button
+            onClick={() => loadData(true)}
+            disabled={isRefreshing || isLoading}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-card border border-border hover:bg-muted text-foreground text-sm font-medium transition-colors shadow-sm disabled:opacity-50"
+            title="Refresh analytics data"
+          >
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-primary-500' : ''}`} />
+            <span className="hidden sm:inline">Refresh</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Error notification */}
+      {error && (
+        <div className="flex items-center gap-3 p-4 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm">
+          <AlertCircle className="w-5 h-5 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* Quick Summary Strip */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-card border border-border rounded-xl p-4">
+          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Total Searches</p>
+          <p className="text-2xl font-bold text-foreground mt-1">
+            {isLoading ? '...' : formatNumber(searchTrends?.totalSearches || 0)}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Recorded user queries</p>
+        </div>
+        <div className="bg-card border border-border rounded-xl p-4">
+          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Total Tenders</p>
+          <p className="text-2xl font-bold text-primary-500 mt-1">
+            {isLoading ? '...' : formatNumber(analytics?.tendersByCategory.reduce((sum, c) => sum + c.count, 0) || 0)}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Active in platform</p>
+        </div>
+        <div className="bg-card border border-border rounded-xl p-4">
+          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">States Covered</p>
+          <p className="text-2xl font-bold text-foreground mt-1">
+            {isLoading ? '...' : (analytics?.tendersByState || []).length}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">National &amp; state portals</p>
+        </div>
+        <div className="bg-card border border-border rounded-xl p-4">
+          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Period Tender Vol</p>
+          <p className="text-2xl font-bold text-accent-500 mt-1">
+            {isLoading ? '...' : formatNumber(tenderAnalytics?.totalAdded || 0)}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Added in last {period}</p>
+        </div>
       </div>
 
       {/* ========== SEARCH ANALYTICS ========== */}
-      <SectionTitle title="Search Analytics" icon={<Search className="w-5 h-5" />} />
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        {/* Top searched keywords */}
-        <div className="bg-card border border-border rounded-xl p-6">
-          <h3 className="text-lg font-semibold text-foreground mb-4">Top Searched Keywords</h3>
-          <ResponsiveContainer width="100%" height={350}>
-            <BarChart data={topKeywords} layout="vertical" margin={{ left: 20 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" horizontal={false} />
-              <XAxis type="number" stroke="#6B7280" fontSize={12} tickLine={false} />
-              <YAxis dataKey="keyword" type="category" stroke="#6B7280" fontSize={11} tickLine={false} width={140} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '8px', color: '#374151' }}
-                labelStyle={{ color: '#6B7280' }}
-                formatter={(value: number) => [formatNumber(value), 'Searches']}
-              />
-              <Bar dataKey="searches" fill="#FF6B35" radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <Search className="w-5 h-5 text-primary-500" />
+          <h2 className="text-xl font-bold text-foreground">Search Analytics</h2>
         </div>
 
-        {/* Search volume trend */}
-        <div className="bg-card border border-border rounded-xl p-6">
-          <h3 className="text-lg font-semibold text-foreground mb-4">Search Volume Trend (30 Days)</h3>
-          <ResponsiveContainer width="100%" height={350}>
-            <LineChart data={searchVolumeTrend}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis dataKey="name" stroke="#6B7280" fontSize={12} tickLine={false} interval={4} />
-              <YAxis stroke="#6B7280" fontSize={12} tickLine={false} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '8px', color: '#374151' }}
-                labelStyle={{ color: '#6B7280' }}
-                formatter={(value: number) => [formatNumber(value), 'Searches']}
-              />
-              <Line type="monotone" dataKey="volume" stroke="#00D4AA" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Top searched keywords */}
+          <div className="bg-card border border-border rounded-xl p-6">
+            <h3 className="text-lg font-semibold text-foreground mb-4">Top Searched Queries</h3>
+            {isLoading ? (
+              <div className="h-[320px] flex items-center justify-center">
+                <Loader2 className="w-6 h-6 animate-spin text-primary-500" />
+              </div>
+            ) : topKeywordsData.length === 0 ? (
+              <div className="h-[320px] flex flex-col items-center justify-center text-muted-foreground">
+                <Search className="w-8 h-8 mb-2 opacity-40" />
+                <p className="text-sm">No search queries logged yet</p>
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={320}>
+                <BarChart data={topKeywordsData} layout="vertical" margin={{ left: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
+                  <XAxis type="number" stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
+                  <YAxis
+                    dataKey="keyword"
+                    type="category"
+                    stroke="hsl(var(--muted-foreground))"
+                    fontSize={11}
+                    tickLine={false}
+                    width={130}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: 'hsl(var(--card))',
+                      borderColor: 'hsl(var(--border))',
+                      borderRadius: '8px',
+                      color: 'hsl(var(--foreground))',
+                    }}
+                    formatter={(val: number) => [formatNumber(val), 'Searches']}
+                  />
+                  <Bar dataKey="searches" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+
+          {/* Search volume trend */}
+          <div className="bg-card border border-border rounded-xl p-6">
+            <h3 className="text-lg font-semibold text-foreground mb-4">Search Volume Trend</h3>
+            {isLoading ? (
+              <div className="h-[320px] flex items-center justify-center">
+                <Loader2 className="w-6 h-6 animate-spin text-primary-500" />
+              </div>
+            ) : searchVolumeData.length === 0 ? (
+              <div className="h-[320px] flex flex-col items-center justify-center text-muted-foreground">
+                <TrendingUp className="w-8 h-8 mb-2 opacity-40" />
+                <p className="text-sm">No volume data logged yet</p>
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={320}>
+                <LineChart data={searchVolumeData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
+                  <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: 'hsl(var(--card))',
+                      borderColor: 'hsl(var(--border))',
+                      borderRadius: '8px',
+                      color: 'hsl(var(--foreground))',
+                    }}
+                    formatter={(val: number) => [formatNumber(val), 'Searches']}
+                  />
+                  <Line type="monotone" dataKey="volume" stroke="hsl(var(--accent))" strokeWidth={2.5} dot={{ r: 3 }} />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
         </div>
       </div>
 
       {/* ========== CONTENT ANALYTICS ========== */}
-      <SectionTitle title="Content Analytics" icon={<Eye className="w-5 h-5" />} />
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        {/* Most viewed tenders */}
-        <div className="bg-card border border-border rounded-xl p-6">
-          <h3 className="text-lg font-semibold text-foreground mb-4">Most Viewed Tenders</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Title</th>
-                  <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider text-right">Views</th>
-                  <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider text-right">Saves</th>
-                </tr>
-              </thead>
-              <tbody>
-                {mostViewedTenders.map((t, idx) => (
-                  <tr key={t.id} className="border-b border-border hover:bg-muted/50 transition-colors">
-                    <td className="py-2.5 pr-4">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground font-medium w-5">{idx + 1}.</span>
-                        <span className="text-sm text-foreground/80 truncate max-w-[240px]">{t.title}</span>
-                      </div>
-                    </td>
-                    <td className="py-2.5 text-sm text-foreground font-medium text-right">
-                      <span className="inline-flex items-center gap-1">
-                        <Eye className="w-3 h-3 text-muted-foreground" />
-                        {formatNumber(t.views)}
-                      </span>
-                    </td>
-                    <td className="py-2.5 text-sm text-muted-foreground text-right">
-                      <span className="inline-flex items-center gap-1">
-                        <Bookmark className="w-3 h-3 text-muted-foreground" />
-                        {formatNumber(t.saves)}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <Eye className="w-5 h-5 text-primary-500" />
+          <h2 className="text-xl font-bold text-foreground">Content &amp; Engagement</h2>
         </div>
 
-        {/* Most saved tenders */}
-        <div className="bg-card border border-border rounded-xl p-6">
-          <h3 className="text-lg font-semibold text-foreground mb-4">Most Saved Tenders</h3>
-          <div className="overflow-x-auto">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="border-b border-border">
-                  <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Title</th>
-                  <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider text-right">Saves</th>
-                </tr>
-              </thead>
-              <tbody>
-                {mostSavedTenders.map((t, idx) => (
-                  <tr key={t.id} className="border-b border-border hover:bg-muted/50 transition-colors">
-                    <td className="py-2.5 pr-4">
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground font-medium w-5">{idx + 1}.</span>
-                        <span className="text-sm text-foreground/80 truncate max-w-[280px]">{t.title}</span>
-                      </div>
-                    </td>
-                    <td className="py-2.5 text-sm text-foreground font-medium text-right">
-                      <span className="inline-flex items-center gap-1">
-                        <Bookmark className="w-3 h-3 text-primary-500" />
-                        {formatNumber(t.saves)}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      {/* ========== USER ANALYTICS ========== */}
-      <SectionTitle title="User Analytics" icon={<MapPin className="w-5 h-5" />} />
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        {/* Geographic distribution */}
-        <div className="bg-card border border-border rounded-xl p-6">
-          <h3 className="text-lg font-semibold text-foreground mb-4">Geographic Distribution</h3>
-          <ResponsiveContainer width="100%" height={350}>
-            <BarChart data={stateDistribution} layout="vertical" margin={{ left: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" horizontal={false} />
-              <XAxis type="number" stroke="#6B7280" fontSize={12} tickLine={false} />
-              <YAxis dataKey="state" type="category" stroke="#6B7280" fontSize={11} tickLine={false} width={120} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '8px', color: '#374151' }}
-                labelStyle={{ color: '#6B7280' }}
-                formatter={(value: number) => [formatNumber(value), 'Users']}
-              />
-              <Bar dataKey="users" fill="#00D4AA" radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
-        </div>
-
-        {/* Activity heatmap */}
-        <div className="bg-card border border-border rounded-xl p-6">
-          <h3 className="text-lg font-semibold text-foreground mb-4">Activity Heatmap (Hour of Day)</h3>
-          <div className="overflow-x-auto">
-            <div className="min-w-[600px]">
-              {/* Hour labels */}
-              <div className="flex mb-1 ml-10">
-                {Array.from({ length: 24 }, (_, h) => (
-                  <div key={h} className="flex-1 text-center text-[9px] text-muted-foreground">
-                    {h % 3 === 0 ? `${h}` : ''}
-                  </div>
-                ))}
-              </div>
-              {/* Rows */}
-              {days.map((day, dayIdx) => (
-                <div key={day} className="flex items-center gap-1 mb-1">
-                  <span className="w-9 text-xs text-muted-foreground text-right shrink-0">{day}</span>
-                  <div className="flex flex-1 gap-[2px]">
-                    {heatmapData[dayIdx].map((val, hourIdx) => (
-                      <div
-                        key={hourIdx}
-                        className={`flex-1 h-5 rounded-sm ${getHeatColor(val)}`}
-                        title={`${day} ${hourIdx}:00 - ${val} activities`}
-                      />
-                    ))}
-                  </div>
-                </div>
-              ))}
-              {/* Legend */}
-              <div className="flex items-center gap-2 mt-3 ml-10">
-                <span className="text-xs text-muted-foreground">Less</span>
-                <div className="w-4 h-3 rounded-sm bg-muted" />
-                <div className="w-4 h-3 rounded-sm bg-emerald-900/40" />
-                <div className="w-4 h-3 rounded-sm bg-emerald-800/50" />
-                <div className="w-4 h-3 rounded-sm bg-emerald-600/50" />
-                <div className="w-4 h-3 rounded-sm bg-emerald-500/60" />
-                <div className="w-4 h-3 rounded-sm bg-emerald-400/70" />
-                <span className="text-xs text-muted-foreground">More</span>
-              </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Most viewed tenders */}
+          <div className="bg-card border border-border rounded-xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-foreground">Most Viewed Tenders</h3>
+              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-primary-500/10 text-primary-500 border border-primary-500/20 font-medium">
+                <Eye className="w-3 h-3" />
+                Live Views
+              </span>
             </div>
+            {isLoading ? (
+              <div className="h-60 flex items-center justify-center">
+                <Loader2 className="w-6 h-6 animate-spin text-primary-500" />
+              </div>
+            ) : viewedTenders.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-8 text-center">No tender view data yet</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Tender</th>
+                      <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider text-right">Value</th>
+                      <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider text-right">Views</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {viewedTenders.slice(0, 7).map((t, idx) => (
+                      <tr key={t.id} className="hover:bg-muted/40 transition-colors">
+                        <td className="py-2.5 pr-3 max-w-[240px]">
+                          <div className="flex items-start gap-2">
+                            <span className="text-xs text-muted-foreground font-semibold mt-0.5">{idx + 1}.</span>
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium text-foreground truncate" title={t.title}>
+                                {t.title}
+                              </p>
+                              <p className="text-[10px] text-muted-foreground truncate">{t.organization || t.state}</p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-2.5 text-xs text-foreground font-medium text-right whitespace-nowrap">
+                          {formatINR(t.estimatedValue)}
+                        </td>
+                        <td className="py-2.5 text-xs text-right whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-primary-500/10 border border-primary-500/25 text-primary-500 font-bold">
+                            <Eye className="w-3 h-3 text-primary-500" />
+                            {formatNumber(t.viewCount)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Most saved tenders */}
+          <div className="bg-card border border-border rounded-xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-foreground">Most Saved Tenders</h3>
+              <span className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 border border-amber-500/20 font-medium">
+                <Bookmark className="w-3 h-3 fill-amber-500" />
+                Live Bookmarks
+              </span>
+            </div>
+            {isLoading ? (
+              <div className="h-60 flex items-center justify-center">
+                <Loader2 className="w-6 h-6 animate-spin text-primary-500" />
+              </div>
+            ) : savedTenders.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-8 text-center">No saved tender records found</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead>
+                    <tr className="border-b border-border">
+                      <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Tender</th>
+                      <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">Category</th>
+                      <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider text-right">Bookmarks</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {savedTenders.slice(0, 7).map((t, idx) => (
+                      <tr key={t.id} className="hover:bg-muted/40 transition-colors">
+                        <td className="py-2.5 pr-3 max-w-[260px]">
+                          <div className="flex items-start gap-2">
+                            <span className="text-xs text-muted-foreground font-semibold mt-0.5">{idx + 1}.</span>
+                            <div className="min-w-0">
+                              <p className="text-xs font-medium text-foreground truncate" title={t.title}>
+                                {t.title}
+                              </p>
+                              <p className="text-[10px] text-muted-foreground truncate">{t.organization}</p>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-2.5 text-xs text-muted-foreground">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-muted border border-border">
+                            {t.category}
+                          </span>
+                        </td>
+                        <td className="py-2.5 text-xs text-right whitespace-nowrap">
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500/10 border border-amber-500/25 text-amber-500 font-bold">
+                            <Bookmark className="w-3 h-3 fill-amber-500" />
+                            {formatNumber(t.savedCount)}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {/* ========== TENDER ANALYTICS ========== */}
-      <SectionTitle title="Tender Analytics" icon={<BarChart3 className="w-5 h-5" />} />
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
-        {/* Tender volume by category */}
-        <div className="bg-card border border-border rounded-xl p-6">
-          <h3 className="text-lg font-semibold text-foreground mb-4">Tender Volume by Category</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={tenderByCategory}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-              <XAxis dataKey="category" stroke="#6B7280" fontSize={10} tickLine={false} angle={-20} textAnchor="end" height={50} />
-              <YAxis stroke="#6B7280" fontSize={12} tickLine={false} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '8px', color: '#374151' }}
-                labelStyle={{ color: '#6B7280' }}
-                formatter={(value: number) => [formatNumber(value), 'Tenders']}
-              />
-              <Bar dataKey="count" fill="#FF6B35" radius={[4, 4, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+      {/* ========== TENDER & GEOGRAPHY ANALYTICS ========== */}
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <BarChart3 className="w-5 h-5 text-primary-500" />
+          <h2 className="text-xl font-bold text-foreground">Tender Volume &amp; Distribution</h2>
         </div>
 
-        {/* Tender volume by state */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* Category distribution */}
+          <div className="bg-card border border-border rounded-xl p-6">
+            <h3 className="text-lg font-semibold text-foreground mb-4">Volume by Category</h3>
+            {isLoading ? (
+              <div className="h-[280px] flex items-center justify-center">
+                <Loader2 className="w-6 h-6 animate-spin text-primary-500" />
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={categoryData}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                  <XAxis dataKey="category" stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
+                  <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: 'hsl(var(--card))',
+                      borderColor: 'hsl(var(--border))',
+                      borderRadius: '8px',
+                      color: 'hsl(var(--foreground))',
+                    }}
+                    formatter={(val: number) => [formatNumber(val), 'Tenders']}
+                  />
+                  <Bar dataKey="count" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+
+          {/* State distribution */}
+          <div className="bg-card border border-border rounded-xl p-6">
+            <h3 className="text-lg font-semibold text-foreground mb-4">Top States by Tender Count</h3>
+            {isLoading ? (
+              <div className="h-[280px] flex items-center justify-center">
+                <Loader2 className="w-6 h-6 animate-spin text-primary-500" />
+              </div>
+            ) : (
+              <ResponsiveContainer width="100%" height={280}>
+                <BarChart data={stateData} layout="vertical" margin={{ left: 10 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
+                  <XAxis type="number" stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
+                  <YAxis
+                    dataKey="state"
+                    type="category"
+                    stroke="hsl(var(--muted-foreground))"
+                    fontSize={11}
+                    tickLine={false}
+                    width={100}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      backgroundColor: 'hsl(var(--card))',
+                      borderColor: 'hsl(var(--border))',
+                      borderRadius: '8px',
+                      color: 'hsl(var(--foreground))',
+                    }}
+                    formatter={(val: number) => [formatNumber(val), 'Tenders']}
+                  />
+                  <Bar dataKey="count" fill="#818cf8" radius={[0, 4, 4, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </div>
+
+        {/* Daily Tenders Trend */}
         <div className="bg-card border border-border rounded-xl p-6">
-          <h3 className="text-lg font-semibold text-foreground mb-4">Tender Volume by State</h3>
-          <ResponsiveContainer width="100%" height={300}>
-            <BarChart data={tenderByState} layout="vertical" margin={{ left: 10 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" horizontal={false} />
-              <XAxis type="number" stroke="#6B7280" fontSize={12} tickLine={false} />
-              <YAxis dataKey="state" type="category" stroke="#6B7280" fontSize={11} tickLine={false} width={120} />
-              <Tooltip
-                contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '8px', color: '#374151' }}
-                labelStyle={{ color: '#6B7280' }}
-                formatter={(value: number) => [formatNumber(value), 'Tenders']}
-              />
-              <Bar dataKey="count" fill="#775DD0" radius={[0, 4, 4, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+          <h3 className="text-lg font-semibold text-foreground mb-4">
+            Daily Tenders Added (Last {period})
+          </h3>
+          {isLoading ? (
+            <div className="h-[260px] flex items-center justify-center">
+              <Loader2 className="w-6 h-6 animate-spin text-primary-500" />
+            </div>
+          ) : newTendersData.length === 0 ? (
+            <div className="h-[260px] flex flex-col items-center justify-center text-muted-foreground">
+              <p className="text-sm">No new tenders in selected period ({period})</p>
+            </div>
+          ) : (
+            <ResponsiveContainer width="100%" height={260}>
+              <LineChart data={newTendersData}>
+                <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
+                <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'hsl(var(--card))',
+                    borderColor: 'hsl(var(--border))',
+                    borderRadius: '8px',
+                    color: 'hsl(var(--foreground))',
+                  }}
+                  formatter={(val: number) => [formatNumber(val), 'Tenders']}
+                />
+                <Line type="monotone" dataKey="tenders" stroke="#f59e0b" strokeWidth={2.5} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          )}
         </div>
       </div>
-
-      {/* New tenders per day */}
-      <div className="bg-card border border-border rounded-xl p-6 mb-8">
-        <h3 className="text-lg font-semibold text-foreground mb-4">New Tenders Per Day (Last 30 Days)</h3>
-        <ResponsiveContainer width="100%" height={300}>
-          <LineChart data={newTendersPerDay}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
-            <XAxis dataKey="name" stroke="#6B7280" fontSize={12} tickLine={false} interval={4} />
-            <YAxis stroke="#6B7280" fontSize={12} tickLine={false} />
-            <Tooltip
-              contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '8px', color: '#374151' }}
-              labelStyle={{ color: '#6B7280' }}
-              formatter={(value: number) => [formatNumber(value), 'New Tenders']}
-            />
-            <Line type="monotone" dataKey="tenders" stroke="#FFB800" strokeWidth={2} dot={false} />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Section Title
-// ---------------------------------------------------------------------------
-function SectionTitle({ title, icon }: { title: string; icon: React.ReactNode }) {
-  return (
-    <div className="flex items-center gap-2 mb-4 mt-2">
-      <div className="text-primary-500">{icon}</div>
-      <h2 className="text-xl font-bold text-foreground">{title}</h2>
     </div>
   );
 }

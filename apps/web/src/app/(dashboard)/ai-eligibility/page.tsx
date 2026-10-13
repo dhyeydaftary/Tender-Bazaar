@@ -25,6 +25,7 @@ import {
 import { cn } from '@/lib/utils';
 import api from '@/lib/api';
 import { useLimitGate } from '@/lib/hooks/use-feature-gate';
+import { useSubscriptionStore } from '@/stores/subscription-store';
 import { UpgradeBanner } from '@/components/subscription';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -79,8 +80,11 @@ function formatINR(value: number): string {
   return `Rs.${value.toLocaleString('en-IN')}`;
 }
 
-function formatDate(date: string): string {
-  return new Date(date).toLocaleDateString('en-IN', {
+function formatDate(date?: string | null): string {
+  if (!date) return 'Not specified';
+  const d = new Date(date);
+  if (isNaN(d.getTime())) return 'Not specified';
+  return d.toLocaleDateString('en-IN', {
     day: '2-digit',
     month: 'short',
     year: 'numeric',
@@ -229,6 +233,17 @@ export default function AIEligibilityCheckPage() {
   const [result, setResult] = useState<EligibilityResult | null>(null);
   const [checkError, setCheckError] = useState<string | null>(null);
 
+  // Subscription status
+  const isFreePlan = useSubscriptionStore((s) => s.isFreePlan);
+  const currentPlan = useSubscriptionStore((s) => s.currentPlan);
+  const subscription = useSubscriptionStore((s) => s.subscription);
+  const fetchSubscription = useSubscriptionStore((s) => s.fetchSubscription);
+  const hasPaidSubscription = (!isFreePlan && !!currentPlan && currentPlan.slug !== 'free') || (subscription?.status === 'ACTIVE' && currentPlan?.slug !== 'free');
+
+  useEffect(() => {
+    fetchSubscription();
+  }, [fetchSubscription]);
+
   // Plan limit gate for AI checks
   const aiCheckLimit = useLimitGate('maxAiChecks');
   const checksUsed = aiCheckLimit.used;
@@ -241,14 +256,28 @@ export default function AIEligibilityCheckPage() {
     try {
       setTendersLoading(true);
       setTendersError(null);
-      // baseURL already includes /api/v1 — the old '/api/v1/tenders' 404'd.
-      // The endpoint also returns { tenders, total, page, limit, aggregations },
-      // not a bare array, so the list has to be read off .tenders.
       const { data: res } = await api.get('/tenders', {
-        params: { status: 'ACTIVE', limit: 10 },
+        params: { status: 'ACTIVE', limit: 100, page: 1 },
       });
-      const tenderList = res?.data?.tenders;
-      if (res.success && Array.isArray(tenderList)) {
+      let tenderList: any[] = res?.data?.tenders || [];
+      const total = res?.data?.total || tenderList.length;
+
+      // If more than 100 tenders exist, fetch the remaining pages to show all tenders
+      if (total > tenderList.length) {
+        const totalPages = Math.ceil(total / 100);
+        const additionalPages = await Promise.all(
+          Array.from({ length: totalPages - 1 }, (_, i) =>
+            api.get('/tenders', { params: { status: 'ACTIVE', limit: 100, page: i + 2 } }).catch(() => null)
+          )
+        );
+        for (const pRes of additionalPages) {
+          if (pRes?.data?.data?.tenders) {
+            tenderList = tenderList.concat(pRes.data.data.tenders);
+          }
+        }
+      }
+
+      if (Array.isArray(tenderList)) {
         const mapped: Tender[] = tenderList.map((t: any) => ({
           id: t.id,
           title: t.title ?? 'Untitled Tender',
@@ -256,10 +285,10 @@ export default function AIEligibilityCheckPage() {
           category: t.category ?? '',
           state: t.state ?? '',
           estimatedValue: t.estimatedValue ?? 0,
-          bidDeadline: t.bidDeadline ?? t.closingDate ?? '',
+          bidDeadline: t.bidSubmissionDeadline ?? t.bidDeadline ?? t.closingDate ?? '',
         }));
         setTenders(mapped);
-        if (mapped.length > 0) setSelectedTender(mapped[0]);
+        if (mapped.length > 0) setSelectedTender((prev) => prev ?? mapped[0]);
       }
     } catch (err: any) {
       setTendersError(err?.response?.data?.error?.message || err.message || 'Failed to load tenders');
@@ -280,7 +309,9 @@ export default function AIEligibilityCheckPage() {
     return (
       t.title.toLowerCase().includes(q) ||
       t.id.toLowerCase().includes(q) ||
-      t.organization.toLowerCase().includes(q)
+      t.organization.toLowerCase().includes(q) ||
+      t.category.toLowerCase().includes(q) ||
+      t.state.toLowerCase().includes(q)
     );
   });
 
@@ -292,8 +323,9 @@ export default function AIEligibilityCheckPage() {
     setCheckError(null);
     setIsAnalyzing(true);
     try {
-      // baseURL already includes /api/v1, and the check endpoint is
-      // POST /eligibility — there is no /eligibility/check route.
+      // baseURL already includes /api/v1. POST /eligibility is the canonical
+      // check endpoint (/eligibility/check is an alias for the same handler),
+      // so one call is enough — no 404 retry needed.
       const { data: res } = await api.post('/eligibility', {
         tenderId: selectedTender.id,
       });
@@ -304,24 +336,48 @@ export default function AIEligibilityCheckPage() {
         // eligible" verdict no matter what the analysis actually said.
         const d = res.data.result ?? res.data;
         // Normalize criteria from JSON object/array to CriteriaResult[]
+        const rawCriteria = d.criteria ?? [];
         let criteria: CriteriaResult[] = [];
-        if (Array.isArray(d.criteria)) {
-          criteria = d.criteria.map((c: any) => ({
-            name: c.name ?? 'Unknown',
-            status: c.status ?? 'fail',
-            detail: c.detail ?? '',
-          }));
-        } else if (d.criteria && typeof d.criteria === 'object') {
-          criteria = Object.entries(d.criteria).map(([key, val]: [string, any]) => ({
-            name: val.name ?? key,
-            status: val.status ?? 'fail',
-            detail: val.detail ?? '',
-          }));
+
+        if (Array.isArray(rawCriteria)) {
+          criteria = rawCriteria.map((c: any) => {
+            const name = c.name || c.criterion || 'Criterion';
+            const rawStatus = (c.status || '').toString().toUpperCase();
+            let status: CriteriaStatus = 'fail';
+            if (rawStatus === 'MET' || rawStatus === 'PASS' || c.met === true || c.status === 'pass') {
+              status = 'pass';
+            } else if (rawStatus === 'PARTIALLY_MET' || rawStatus === 'PARTIAL' || c.status === 'partial') {
+              status = 'partial';
+            }
+            return {
+              name,
+              status,
+              detail: c.detail || '',
+            };
+          });
+        } else if (rawCriteria && typeof rawCriteria === 'object') {
+          criteria = Object.entries(rawCriteria).map(([key, val]: [string, any]) => {
+            const name = val.name || val.criterion || key;
+            const rawStatus = (val.status || (val.met ? 'MET' : 'NOT_MET')).toString().toUpperCase();
+            let status: CriteriaStatus = 'fail';
+            if (rawStatus === 'MET' || rawStatus === 'PASS' || val.met === true || val.status === 'pass') {
+              status = 'pass';
+            } else if (rawStatus === 'PARTIALLY_MET' || rawStatus === 'PARTIAL' || val.status === 'partial') {
+              status = 'partial';
+            }
+            return {
+              name,
+              status,
+              detail: val.detail || '',
+            };
+          });
         }
 
         let suggestions: string[] = [];
         if (Array.isArray(d.suggestions)) {
-          suggestions = d.suggestions.map((s: any) => (typeof s === 'string' ? s : s.text ?? s.suggestion ?? ''));
+          suggestions = d.suggestions
+            .map((s: any) => (typeof s === 'string' ? s : s.text ?? s.suggestion ?? ''))
+            .filter(Boolean);
         }
 
         // Refuse to invent a verdict: if the payload has no numeric score or
@@ -335,7 +391,7 @@ export default function AIEligibilityCheckPage() {
         }
 
         setResult({
-          score: d.score,
+          score: Math.round(d.score),
           isEligible: d.isEligible,
           criteria,
           suggestions,
@@ -399,7 +455,7 @@ export default function AIEligibilityCheckPage() {
               'text-caption font-mono font-semibold',
               checksPercent > 80 ? 'text-amber-500' : 'text-foreground',
             )}>
-              {checksUsed}/{checksLimit}
+              {aiCheckLimit.isUnlimited ? 'Unlimited' : `${checksUsed}/${checksLimit}`}
             </span>
           </div>
           <div className="h-1.5 bg-muted rounded-full overflow-hidden">
@@ -408,11 +464,13 @@ export default function AIEligibilityCheckPage() {
                 'h-full rounded-full transition-all duration-700',
                 checksPercent > 80 ? 'bg-amber-500' : 'bg-primary-500',
               )}
-              style={{ width: `${checksPercent}%` }}
+              style={{ width: `${aiCheckLimit.isUnlimited ? 100 : checksPercent}%` }}
             />
           </div>
           <p className="text-[11px] text-muted-foreground mt-1.5">
-            {checksLimit - checksUsed} checks remaining on Starter plan
+            {aiCheckLimit.isUnlimited
+              ? `Unlimited checks included with ${currentPlan?.name || 'Enterprise'} plan`
+              : `${Math.max(0, checksLimit - checksUsed)} checks remaining on ${currentPlan?.name || 'Free'} plan`}
           </p>
         </div>
       </div>
@@ -476,8 +534,20 @@ export default function AIEligibilityCheckPage() {
             />
           </div>
 
+          {/* Tender Count & Scroll Hint */}
+          <div className="flex items-center justify-between text-caption text-muted-foreground mb-2 px-1">
+            <span>
+              {tendersLoading ? 'Loading tenders...' : `Showing ${filteredTenders.length} active tenders`}
+            </span>
+            {filteredTenders.length > 5 && (
+              <span className="text-[11px] text-muted-foreground/70 hidden sm:inline">
+                Scroll down to view all tenders
+              </span>
+            )}
+          </div>
+
           {/* Tender Suggestions List */}
-          <div className="divide-y divide-border border border-border rounded-lg overflow-hidden">
+          <div className="divide-y divide-border border border-border rounded-lg overflow-y-auto max-h-[460px]">
             {tendersLoading ? (
               <div className="text-center py-8">
                 <Loader2 className="h-8 w-8 text-primary-500 animate-spin mx-auto mb-2" />
@@ -504,8 +574,10 @@ export default function AIEligibilityCheckPage() {
                 const catStyle = getCategoryStyle(tender.category);
                 const isSelected = selectedTender?.id === tender.id;
                 return (
-                  <button
+                  <div
                     key={tender.id}
+                    role="button"
+                    tabIndex={0}
                     onClick={() => {
                       setSelectedTender(tender);
                       setShowResults(false);
@@ -513,51 +585,71 @@ export default function AIEligibilityCheckPage() {
                       setResult(null);
                       setCheckError(null);
                     }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        setSelectedTender(tender);
+                        setShowResults(false);
+                        setIsAnalyzing(false);
+                        setResult(null);
+                        setCheckError(null);
+                      }
+                    }}
                     className={cn(
-                      'w-full flex items-center gap-4 px-4 py-3.5 text-left transition-colors',
+                      'w-full flex items-center justify-between gap-4 px-4 py-3.5 text-left transition-colors cursor-pointer select-none',
                       isSelected
                         ? 'bg-primary-500/5 border-l-2 border-l-primary-500'
                         : 'hover:bg-muted/30 border-l-2 border-l-transparent',
                     )}
                   >
-                    {/* Radio indicator */}
-                    <div className={cn(
-                      'h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors',
-                      isSelected ? 'border-primary-500' : 'border-border',
-                    )}>
-                      {isSelected && (
-                        <div className="h-2 w-2 rounded-full bg-primary-500" />
-                      )}
-                    </div>
-
-                    {/* Tender info */}
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2 mb-0.5">
-                        <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold', catStyle.color, catStyle.bg)}>
-                          {tender.category}
-                        </span>
-                        <span className="text-caption text-muted-foreground flex items-center gap-0.5">
-                          <MapPin className="h-3 w-3" /> {tender.state}
-                        </span>
-                      </div>
-                      <p className={cn(
-                        'text-body-sm font-medium truncate transition-colors',
-                        isSelected ? 'text-primary-500' : 'text-foreground',
+                    <div className="flex items-center gap-3.5 flex-1 min-w-0">
+                      {/* Radio indicator */}
+                      <div className={cn(
+                        'h-4 w-4 rounded-full border-2 shrink-0 flex items-center justify-center transition-colors',
+                        isSelected ? 'border-primary-500' : 'border-border',
                       )}>
-                        {tender.title}
-                      </p>
-                      <p className="text-caption text-muted-foreground truncate flex items-center gap-1 mt-0.5">
-                        <Building2 className="h-3 w-3 shrink-0" />
-                        {tender.organization}
-                      </p>
+                        {isSelected && (
+                          <div className="h-2 w-2 rounded-full bg-primary-500" />
+                        )}
+                      </div>
+
+                      {/* Tender info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-0.5">
+                          <span className={cn('text-[10px] px-1.5 py-0.5 rounded font-semibold', catStyle.color, catStyle.bg)}>
+                            {tender.category}
+                          </span>
+                          <span className="text-caption text-muted-foreground flex items-center gap-0.5">
+                            <MapPin className="h-3 w-3" /> {tender.state}
+                          </span>
+                        </div>
+                        <p className={cn(
+                          'text-body-sm font-medium truncate transition-colors',
+                          isSelected ? 'text-primary-500 font-semibold' : 'text-foreground',
+                        )}>
+                          {tender.title}
+                        </p>
+                        <p className="text-caption text-muted-foreground truncate flex items-center gap-1 mt-0.5">
+                          <Building2 className="h-3 w-3 shrink-0" />
+                          {tender.organization}
+                        </p>
+                      </div>
                     </div>
 
-                    {/* Arrow */}
-                    <ChevronRight className={cn(
-                      'h-4 w-4 shrink-0 transition-colors',
-                      isSelected ? 'text-primary-500' : 'text-muted-foreground/40',
-                    )} />
-                  </button>
+                    {/* Arrow / Direct link to tender details */}
+                    <Link
+                      href={`/tenders/${tender.id}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      title="View tender details (opens in new tab)"
+                      className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-primary-500 transition-colors shrink-0 flex items-center justify-center group/arrow"
+                    >
+                      <ChevronRight className={cn(
+                        'h-4 w-4 transition-transform group-hover/arrow:translate-x-0.5',
+                        isSelected ? 'text-primary-500' : 'text-muted-foreground/60',
+                      )} />
+                    </Link>
+                  </div>
                 );
               })
             )}
@@ -567,13 +659,24 @@ export default function AIEligibilityCheckPage() {
 
       {/* ── Selected Tender + Run Check ───────────────────────────── */}
       {selectedTender && !showResults && !isAnalyzing && (
-        <div className="bg-card border border-border rounded-xl p-5 mb-6">
+        <div className="bg-card border border-border rounded-xl p-5 mb-6 shadow-sm">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
             <div className="flex-1 min-w-0">
               <p className="text-overline text-muted-foreground uppercase tracking-widest text-[10px] font-medium mb-1.5">
                 Selected Tender
               </p>
-              <h3 className="text-body-sm font-semibold text-foreground mb-1">{selectedTender.title}</h3>
+              <div className="flex items-center gap-2 mb-1">
+                <Link
+                  href={`/tenders/${selectedTender.id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="group inline-flex items-center gap-1.5 text-body-sm font-semibold text-foreground hover:text-primary-500 transition-colors"
+                  title="View full tender details"
+                >
+                  <span className="truncate">{selectedTender.title}</span>
+                  <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground group-hover:text-primary-500 group-hover:translate-x-0.5 transition-all" />
+                </Link>
+              </div>
               <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-caption text-muted-foreground">
                 <span className="flex items-center gap-1">
                   <Building2 className="h-3 w-3" />
@@ -591,7 +694,7 @@ export default function AIEligibilityCheckPage() {
             </div>
             <button
               onClick={handleRunCheck}
-              className="inline-flex items-center gap-2 px-6 py-2.5 bg-primary-500 hover:bg-primary-600 text-white font-medium rounded-lg transition-colors shrink-0"
+              className="inline-flex items-center gap-2 px-6 py-2.5 bg-primary-500 hover:bg-primary-600 text-white font-medium rounded-lg transition-colors shrink-0 shadow-sm hover:shadow"
             >
               <Sparkles className="h-4 w-4" />
               Run Eligibility Check
@@ -813,29 +916,31 @@ export default function AIEligibilityCheckPage() {
         </div>
       )}
 
-      {/* ── Plan Upgrade CTA ──────────────────────────────────────── */}
-      <div className="mt-8 bg-gradient-to-r from-primary-500/10 via-accent-500/10 to-primary-500/10 border border-primary-500/20 rounded-xl p-5">
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-lg bg-primary-500/20 flex items-center justify-center shrink-0">
-              <Zap className="h-5 w-5 text-primary-500" />
+      {/* ── Plan Upgrade CTA (only shown for users without a paid subscription) ── */}
+      {!hasPaidSubscription && (
+        <div className="mt-8 bg-gradient-to-r from-primary-500/10 via-accent-500/10 to-primary-500/10 border border-primary-500/20 rounded-xl p-5">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-lg bg-primary-500/20 flex items-center justify-center shrink-0">
+                <Zap className="h-5 w-5 text-primary-500" />
+              </div>
+              <div>
+                <p className="text-body-sm font-semibold text-foreground">Upgrade for Unlimited AI Checks</p>
+                <p className="text-caption text-muted-foreground">
+                  Professional plan includes 50 AI checks/month. Enterprise gives unlimited access.
+                </p>
+              </div>
             </div>
-            <div>
-              <p className="text-body-sm font-semibold text-foreground">Upgrade for Unlimited AI Checks</p>
-              <p className="text-caption text-muted-foreground">
-                Professional plan includes 50 AI checks/month. Enterprise gives unlimited access.
-              </p>
-            </div>
+            <Link
+              href="/subscription"
+              className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-primary-500 hover:bg-primary-600 text-white font-medium rounded-lg transition-colors shrink-0"
+            >
+              Upgrade Plan
+              <ArrowRight className="h-4 w-4" />
+            </Link>
           </div>
-          <Link
-            href="/subscription"
-            className="inline-flex items-center justify-center gap-2 px-5 py-2.5 bg-primary-500 hover:bg-primary-600 text-white font-medium rounded-lg transition-colors shrink-0"
-          >
-            Upgrade Plan
-            <ArrowRight className="h-4 w-4" />
-          </Link>
         </div>
-      </div>
+      )}
     </div>
   );
 }

@@ -91,6 +91,18 @@ export const notificationService = {
     return { markedCount: result.count };
   },
 
+  async markReadByIds(userId: string, ids: string[]) {
+    const result = await prisma.notification.updateMany({
+      where: { userId, id: { in: ids }, isRead: false },
+      data: { isRead: true },
+    });
+
+    // Invalidate unread count cache
+    await redis.del(`unread:${userId}`);
+
+    return { markedCount: result.count };
+  },
+
   async getUnreadCount(userId: string) {
     // Try Redis cache first
     const cached = await redis.get(`unread:${userId}`);

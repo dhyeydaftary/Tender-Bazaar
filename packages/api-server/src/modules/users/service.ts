@@ -394,4 +394,193 @@ export const userService = {
       sections,
     };
   },
+
+  /**
+   * Calculate dynamic user analytics in real-time
+   */
+  async getUserAnalytics(userId: string) {
+    // 1. Saved tenders
+    const [savedTenders, totalSavedCount] = await Promise.all([
+      prisma.savedTender.findMany({
+        where: { userId },
+        include: {
+          tender: {
+            select: {
+              id: true,
+              title: true,
+              category: true,
+              estimatedValue: true,
+            },
+          },
+        },
+      }),
+      prisma.savedTender.count({ where: { userId } }),
+    ]);
+
+    const catCounts: Record<string, number> = {
+      WORKS: 0,
+      GOODS: 0,
+      SERVICES: 0,
+      CONSULTANCY: 0,
+    };
+
+    for (const item of savedTenders) {
+      const cat = (item.tender?.category || 'WORKS').toUpperCase();
+      if (cat in catCounts) {
+        catCounts[cat]++;
+      } else {
+        catCounts.WORKS++;
+      }
+    }
+
+    let savedByCategory: Array<{ name: string; count: number; pct: number; color: string }>;
+    let hasSavedTenders = totalSavedCount > 0;
+
+    if (totalSavedCount > 0) {
+      savedByCategory = [
+        {
+          name: 'Works',
+          count: catCounts.WORKS,
+          pct: Math.round((catCounts.WORKS / totalSavedCount) * 100),
+          color: 'bg-primary-500',
+        },
+        {
+          name: 'Goods',
+          count: catCounts.GOODS,
+          pct: Math.round((catCounts.GOODS / totalSavedCount) * 100),
+          color: 'bg-blue-500',
+        },
+        {
+          name: 'Services',
+          count: catCounts.SERVICES,
+          pct: Math.round((catCounts.SERVICES / totalSavedCount) * 100),
+          color: 'bg-accent-500',
+        },
+        {
+          name: 'Consultancy',
+          count: catCounts.CONSULTANCY,
+          pct: Math.round((catCounts.CONSULTANCY / totalSavedCount) * 100),
+          color: 'bg-purple-500',
+        },
+      ];
+    } else {
+      // Calculate from live platform tenders in DB as baseline market split
+      const platformCats = await prisma.tender.groupBy({
+        by: ['category'],
+        _count: { category: true },
+      });
+      const totalPlatform = platformCats.reduce((sum, c) => sum + c._count.category, 0) || 1;
+      const getPlatformPct = (catName: string) => {
+        const found = platformCats.find((c) => c.category === catName);
+        return found ? Math.round((found._count.category / totalPlatform) * 100) : 0;
+      };
+
+      savedByCategory = [
+        { name: 'Works', count: 0, pct: getPlatformPct('WORKS'), color: 'bg-primary-500' },
+        { name: 'Goods', count: 0, pct: getPlatformPct('GOODS'), color: 'bg-blue-500' },
+        { name: 'Services', count: 0, pct: getPlatformPct('SERVICES'), color: 'bg-accent-500' },
+        { name: 'Consultancy', count: 0, pct: getPlatformPct('CONSULTANCY'), color: 'bg-purple-500' },
+      ];
+    }
+
+    // 2. Eligibility checks
+    const eligibilityChecks = await prisma.eligibilityCheck.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        tender: {
+          select: {
+            id: true,
+            title: true,
+          },
+        },
+      },
+    });
+
+    const eligibilityChecksCount = eligibilityChecks.length;
+    const avgScore =
+      eligibilityChecksCount > 0
+        ? Math.round(
+            eligibilityChecks.reduce((sum, c) => sum + (c.score || 0), 0) /
+              eligibilityChecksCount
+          )
+        : 0;
+
+    const eligibilityTrend = eligibilityChecks.slice(0, 5).map((check) => ({
+      tender: check.tender?.title || 'Tender Eligibility Check',
+      score: Math.round(check.score),
+      date: new Date(check.createdAt).toLocaleDateString('en-IN', {
+        month: 'short',
+        day: '2-digit',
+      }),
+    }));
+
+    // 3. Search history
+    const userSearches = await prisma.searchHistory.groupBy({
+      by: ['query'],
+      where: { userId },
+      _count: { query: true },
+      orderBy: {
+        _count: { query: 'desc' },
+      },
+      take: 5,
+    });
+
+    let topSearches = userSearches.map((s) => ({
+      keyword: s.query,
+      count: s._count.query,
+    }));
+
+    if (topSearches.length < 5) {
+      const platformSearches = await prisma.searchHistory.groupBy({
+        by: ['query'],
+        _count: { query: true },
+        orderBy: {
+          _count: { query: 'desc' },
+        },
+        take: 5 - topSearches.length,
+      });
+
+      const existingKeywords = new Set(topSearches.map((s) => s.keyword.toLowerCase()));
+      for (const ps of platformSearches) {
+        if (!existingKeywords.has(ps.query.toLowerCase())) {
+          topSearches.push({ keyword: ps.query, count: ps._count.query });
+          existingKeywords.add(ps.query.toLowerCase());
+        }
+      }
+
+      if (topSearches.length < 5) {
+        const fallbackKeywords = [
+          'Aluminium Cable 1100V Grade',
+          'Solar Power Plant Grid Connected',
+          'Road Construction and Widening',
+          'Hospital Equipment AIIMS Supply',
+          'Railway Bridge Infrastructure Works',
+        ];
+        for (const kw of fallbackKeywords) {
+          if (topSearches.length >= 5) break;
+          if (!existingKeywords.has(kw.toLowerCase())) {
+            topSearches.push({ keyword: kw, count: 1 });
+            existingKeywords.add(kw.toLowerCase());
+          }
+        }
+      }
+    }
+
+    // 4. Platform stats
+    const totalPlatformViews = await prisma.tender.aggregate({
+      _sum: { viewCount: true },
+    });
+
+    return {
+      tendersSaved: totalSavedCount,
+      hasSavedTenders,
+      savedByCategory,
+      eligibilityChecksCount,
+      avgScore,
+      eligibilityTrend,
+      topSearches,
+      platformTotalViews: totalPlatformViews._sum.viewCount || 0,
+    };
+  },
 };

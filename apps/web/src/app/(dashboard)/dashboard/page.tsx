@@ -628,7 +628,7 @@ export default function DashboardPage() {
                 {
                   icon: Shield,
                   label: 'Check Eligibility',
-                  href: '/eligibility',
+                  href: '/ai-eligibility',
                   color: 'text-blue-500',
                 },
                 { icon: Columns3, label: 'Compare', href: '/compare', color: 'text-purple-500' },

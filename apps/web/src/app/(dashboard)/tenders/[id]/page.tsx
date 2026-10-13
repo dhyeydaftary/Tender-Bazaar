@@ -350,6 +350,21 @@ export default function TenderDetailPage() {
     [data],
   );
 
+  useEffect(() => {
+    if (tenderId && data) {
+      try {
+        const raw = localStorage.getItem('tb_user_viewed_tenders');
+        const list: Array<{ id: string; timestamp: number; category?: string }> = raw ? JSON.parse(raw) : [];
+        const now = Date.now();
+        const recent = list.find((v) => v.id === tenderId && now - v.timestamp < 60000);
+        if (!recent) {
+          list.push({ id: tenderId, timestamp: now, category: data.category });
+          localStorage.setItem('tb_user_viewed_tenders', JSON.stringify(list.slice(-500)));
+        }
+      } catch {}
+    }
+  }, [tenderId, data]);
+
   /* ── Loading ───────────────────────────────────────────────── */
   if (isLoading) {
     return (

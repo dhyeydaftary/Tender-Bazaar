@@ -26,10 +26,15 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
       throw new AppError('Token has been revoked', 401, 'TOKEN_REVOKED');
     }
 
-    const decoded = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+    const decoded = jwt.verify(token, env.JWT_SECRET) as any;
+    const userId = decoded.userId || decoded.id || decoded.sub;
+
+    if (!userId) {
+      throw new AppError('Invalid token payload', 401, 'INVALID_TOKEN');
+    }
 
     const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
+      where: { id: userId },
       select: {
         id: true,
         name: true,

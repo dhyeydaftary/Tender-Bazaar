@@ -32,7 +32,7 @@ function positiveIntEnv(defaultValue: number) {
     );
 }
 
-const envSchema = z.object({
+export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   PORT: z.coerce.number().default(4000),
   DATABASE_URL: z.string().default('postgresql://postgres:postgres@localhost:5432/tenderbazaar'),
@@ -64,6 +64,19 @@ const envSchema = z.object({
   RATE_LIMIT_AUTHED_MAX: positiveIntEnv(1000),
   RATE_LIMIT_ANON_MAX: positiveIntEnv(300),
   RATE_LIMIT_AUTH_MAX: positiveIntEnv(20),
+
+  /**
+   * Opt in to the DEVELOPMENT-ONLY rate-limit bypass, which skips both the API
+   * and the authentication limiter entirely. Disabled by default, and ignored
+   * outside NODE_ENV=development (see shared/middleware/rate-limiter.ts).
+   *
+   * Validated as a literal 'true' | 'false' rather than coerced: a typo such as
+   * `DISABLE_RATE_LIMIT=yes` fails at startup instead of being read as falsy
+   * and silently doing nothing, or — far worse — as truthy in production.
+   * Mirrors ALLOW_DEMO_GOOGLE_AUTH above: a production deployment cannot
+   * disable rate limiting by configuration alone.
+   */
+  DISABLE_RATE_LIMIT: z.enum(['true', 'false']).default('false'),
 });
 
 const parsed = envSchema.safeParse(process.env);
