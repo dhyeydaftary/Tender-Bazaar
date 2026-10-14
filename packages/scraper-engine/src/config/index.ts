@@ -187,7 +187,7 @@ export const PORTAL_CONFIGS: PortalConfig[] = [
   {
     name: 'Gujarat',
     key: 'gujarat',
-    url: 'https://nprocure.com',
+    url: 'https://tender.nprocure.com',
     enabled: envBool('PORTAL_GUJARAT_ENABLED', true),
     cronExpression: '0 */6 * * *',
     priority: 3,
@@ -238,7 +238,7 @@ export const PORTAL_CONFIGS: PortalConfig[] = [
   {
     name: 'Karnataka',
     key: 'karnataka',
-    url: 'https://eproc.karnataka.gov.in',
+    url: 'https://kppp.karnataka.gov.in',
     enabled: envBool('PORTAL_KARNATAKA_ENABLED', true),
     cronExpression: '30 */6 * * *',
     priority: 3,

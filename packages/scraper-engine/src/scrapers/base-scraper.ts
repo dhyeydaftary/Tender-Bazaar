@@ -1,4 +1,10 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
+import https from 'node:https';
+
+const defaultHttpsAgent = new https.Agent({
+  rejectUnauthorized: false,
+  keepAlive: true,
+});
 import * as cheerio from 'cheerio';
 import { chromium, Browser, Page } from 'playwright';
 import PQueue from 'p-queue';
@@ -322,6 +328,7 @@ export abstract class BaseScraper {
             },
             responseType: options?.responseType ?? 'text',
             data: options?.data,
+            httpsAgent: defaultHttpsAgent,
             ...(options?.proxy
               ? {
                   proxy: {
