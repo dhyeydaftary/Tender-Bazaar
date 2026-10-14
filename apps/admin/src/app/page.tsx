@@ -118,16 +118,21 @@ export default function AdminDashboard() {
     }));
   }, [charts]);
 
-  // User signups chart data (last 7 days)
+  // User signups chart data (adapted to selected period)
   const usersChartData = useMemo(() => {
     if (!charts?.users) return [];
-    const last7 = charts.users.slice(-7);
-    const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    return last7.map((p) => ({
-      name: dayNames[new Date(p.date).getDay()],
+    if (chartPeriod === '7d') {
+      const slice = charts.users.slice(-7);
+      return slice.map((p) => ({
+        name: new Date(p.date).toLocaleDateString('en-IN', { weekday: 'short' }),
+        users: p.count,
+      }));
+    }
+    return charts.users.map((p) => ({
+      name: formatChartDate(p.date),
       users: p.count,
     }));
-  }, [charts]);
+  }, [charts, chartPeriod]);
 
   // Scraper health with resilient field mapping
   const scraperHealth = useMemo(() => {
@@ -185,40 +190,58 @@ export default function AdminDashboard() {
           icon={<Users className="w-5 h-5" />}
           iconBg="bg-blue-500/15 text-blue-400"
           label="Total Users"
-          value={formatINR(stats?.users.total || 0)}
-          trend={`+${formatINR(stats?.users.newThisWeek || 0)} this week`}
+          value={(stats?.users.total || 0).toLocaleString('en-IN')}
+          trend={`+${stats?.users.newThisWeek || 0} this week`}
           trendUp={(stats?.users.weekOverWeekChange || 0) >= 0}
         />
         <StatCard
           icon={<CreditCard className="w-5 h-5" />}
           iconBg="bg-purple-500/15 text-purple-400"
           label="Active Subscriptions"
-          value={formatINR(stats?.subscriptions.active || 0)}
-          trend="paid plans"
-          trendUp
+          value={(stats?.subscriptions.active || 0).toString()}
+          trend={
+            (stats?.subscriptions as any)?.newThisMonth
+              ? `+${(stats?.subscriptions as any).newThisMonth} this month`
+              : `${stats?.subscriptions.active || 0} active paid plans`
+          }
+          trendUp={(stats?.subscriptions.active || 0) > 0}
         />
         <StatCard
           icon={<IndianRupee className="w-5 h-5" />}
           iconBg="bg-green-500/15 text-green-400"
           label="MRR"
           value={`\u20B9${formatINR(stats?.revenue.mrr || 0)}`}
-          trend={`${(stats?.revenue.monthOverMonthChange || 0) >= 0 ? '+' : ''}${stats?.revenue.monthOverMonthChange || 0}% MoM`}
-          trendUp={(stats?.revenue.monthOverMonthChange || 0) >= 0}
+          trend={
+            stats?.revenue.thisMonth
+              ? `\u20B9${formatINR(stats.revenue.thisMonth)} this month`
+              : `${(stats?.revenue.monthOverMonthChange || 0) >= 0 ? '+' : ''}${stats?.revenue.monthOverMonthChange || 0}% MoM`
+          }
+          trendUp={(stats?.revenue.monthOverMonthChange || 0) >= 0 || (stats?.revenue.thisMonth || 0) > 0}
         />
         <StatCard
           icon={<FileText className="w-5 h-5" />}
           iconBg="bg-orange-500/15 text-orange-400"
           label="Total Tenders"
-          value={formatINR(stats?.tenders.total || 0)}
-          trend={`+${formatINR(stats?.tenders.addedThisWeek || 0)} this week`}
-          trendUp
+          value={(stats?.tenders.total || 0).toLocaleString('en-IN')}
+          trend={
+            (stats?.tenders as any)?.active
+              ? `${(stats?.tenders as any).active} active in market`
+              : `+${stats?.tenders.addedThisWeek || 0} this week`
+          }
+          trendUp={(stats?.tenders.total || 0) > 0}
         />
         <StatCard
           icon={<TrendingUp className="w-5 h-5" />}
           iconBg="bg-teal-500/15 text-teal-400"
           label="Today's New Tenders"
-          value={formatINR(stats?.tenders.addedToday || 0)}
-          trend={`${(stats?.tenders.todayVsYesterday || 0) >= 0 ? '+' : ''}${stats?.tenders.todayVsYesterday || 0} vs yesterday`}
+          value={(stats?.tenders.addedToday || 0).toLocaleString('en-IN')}
+          trend={
+            (stats?.tenders.todayVsYesterday || 0) !== 0
+              ? `${(stats?.tenders.todayVsYesterday || 0) >= 0 ? '+' : ''}${stats?.tenders.todayVsYesterday} vs yesterday`
+              : (stats?.tenders.addedThisWeek || 0) > 0
+              ? `+${stats?.tenders.addedThisWeek} this week`
+              : 'Live sync active'
+          }
           trendUp={(stats?.tenders.todayVsYesterday || 0) >= 0}
         />
       </div>
@@ -257,9 +280,10 @@ export default function AdminDashboard() {
                 <XAxis dataKey="name" stroke="#6B7280" fontSize={12} tickLine={false} />
                 <YAxis stroke="#6B7280" fontSize={12} tickLine={false} tickFormatter={(v) => `${Math.floor(v / 1000)}k`} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '8px', color: '#374151' }}
-                  labelStyle={{ color: '#6B7280' }}
-                  formatter={(value: number) => [`\u20B9${formatINR(value)}`, 'Revenue']}
+                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '10px', color: '#ffffff', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.4)' }}
+                  labelStyle={{ color: '#ffffff', fontWeight: 600, fontSize: '13px' }}
+                  itemStyle={{ color: '#f1f5f9', fontSize: '12px' }}
+                  formatter={(value: number) => [`₹${formatINR(value)}`, 'Revenue']}
                 />
                 <Line type="monotone" dataKey="revenue" stroke="#FF6B35" strokeWidth={2} dot={false} />
               </LineChart>
@@ -292,8 +316,9 @@ export default function AdminDashboard() {
                   ))}
                 </Pie>
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '8px', color: '#374151' }}
-                  labelStyle={{ color: '#6B7280' }}
+                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '10px', color: '#ffffff', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.4)' }}
+                  labelStyle={{ color: '#ffffff', fontWeight: 600, fontSize: '13px' }}
+                  itemStyle={{ color: '#f1f5f9', fontSize: '12px' }}
                   formatter={(value: number, name: string) => [formatINR(value), name]}
                 />
                 <Legend
@@ -310,7 +335,9 @@ export default function AdminDashboard() {
       {/* New Users Chart + Scraper Health */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
         <div className="bg-card border border-border rounded-xl p-6">
-          <h2 className="text-lg font-semibold text-foreground mb-4">New Users (Last 7 Days)</h2>
+          <h2 className="text-lg font-semibold text-foreground mb-4">
+            New Users ({chartPeriod === '7d' ? 'Last 7 Days' : chartPeriod === '30d' ? 'Last 30 Days' : chartPeriod === '90d' ? 'Last 90 Days' : 'Last 1 Year'})
+          </h2>
           {usersChartData.length === 0 ? (
             <div className="flex items-center justify-center h-[280px] text-muted-foreground text-sm">
               No data
@@ -322,8 +349,10 @@ export default function AdminDashboard() {
                 <XAxis dataKey="name" stroke="#6B7280" fontSize={12} tickLine={false} />
                 <YAxis stroke="#6B7280" fontSize={12} tickLine={false} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#ffffff', border: '1px solid #e5e7eb', borderRadius: '8px', color: '#374151' }}
-                  labelStyle={{ color: '#6B7280' }}
+                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '10px', color: '#ffffff', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.4)' }}
+                  labelStyle={{ color: '#ffffff', fontWeight: 600, fontSize: '13px' }}
+                  itemStyle={{ color: '#f1f5f9', fontSize: '12px' }}
+                  formatter={(value: number) => [`${value} new users`, 'Signups']}
                 />
                 <Bar dataKey="users" fill="#00D4AA" radius={[4, 4, 0, 0]} />
               </BarChart>

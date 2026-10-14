@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Download,
   FileText,
@@ -9,23 +9,22 @@ import {
   IndianRupee,
   RefreshCw,
   CheckCircle,
-  AlertCircle,
   Loader2,
   Database,
   Brain,
   Mail,
   ToggleLeft,
   ToggleRight,
-  HardDrive,
 } from 'lucide-react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import {
-  exportReport,
   getRevenueReport,
   getUserReport,
   getTenderReport,
   getSubscriptionReport,
   getScraperHealth,
-  getPlatformAnalytics,
+  getDashboardStats,
 } from '@/lib/admin-api';
 import { useAuthStore } from '@/lib/auth';
 
@@ -37,6 +36,13 @@ type DateRange = 'last_7_days' | 'last_30_days' | 'last_quarter' | 'all_time';
 type GenerateState = 'idle' | 'generating' | 'ready';
 type ReportStatus = 'Ready' | 'Processing' | 'Failed';
 
+interface DownloadPayload {
+  filename: string;
+  content: string; // CSV string, JSON string, or data URI for PDF
+  mimeType: string;
+  format: ReportFormat;
+}
+
 interface ReportTemplate {
   id: string;
   icon: React.ReactNode;
@@ -46,7 +52,7 @@ interface ReportTemplate {
   format: ReportFormat;
   dateRange: DateRange;
   state: GenerateState;
-  downloadData?: { filename: string; content: string; mimeType: string };
+  downloadData?: DownloadPayload;
 }
 
 interface RecentReport {
@@ -56,8 +62,9 @@ interface RecentReport {
   date: string;
   format: ReportFormat;
   size: string;
+  sizeBytes?: number;
   status: ReportStatus;
-  downloadData?: { filename: string; content: string; mimeType: string };
+  downloadData?: DownloadPayload;
 }
 
 interface ScheduledReport {
@@ -76,6 +83,22 @@ const DATE_RANGE_LABELS: Record<DateRange, string> = {
   last_quarter: 'Last Quarter',
   all_time: 'All Time',
 };
+
+function getDateRangeParams(range: DateRange): { startDate: string; endDate: string } {
+  const end = new Date();
+  if (range === 'all_time') {
+    return { startDate: new Date(0).toISOString(), endDate: end.toISOString() };
+  }
+  const start = new Date();
+  if (range === 'last_7_days') {
+    start.setDate(end.getDate() - 7);
+  } else if (range === 'last_30_days') {
+    start.setDate(end.getDate() - 30);
+  } else if (range === 'last_quarter') {
+    start.setDate(end.getDate() - 90);
+  }
+  return { startDate: start.toISOString(), endDate: end.toISOString() };
+}
 
 const INITIAL_TEMPLATES: ReportTemplate[] = [
   {
@@ -97,7 +120,7 @@ const INITIAL_TEMPLATES: ReportTemplate[] = [
       'Payment transactions, subscription plan breakdown, MRR, ARR, and payment status from PostgreSQL.',
     lastGenerated: 'Live DB Ready',
     format: 'CSV',
-    dateRange: 'last_30_days',
+    dateRange: 'all_time',
     state: 'idle',
   },
   {
@@ -119,7 +142,7 @@ const INITIAL_TEMPLATES: ReportTemplate[] = [
       'Plan distributions (Free, Starter, Professional), billing cycles, and active subscriber status.',
     lastGenerated: 'Live DB Ready',
     format: 'CSV',
-    dateRange: 'last_30_days',
+    dateRange: 'all_time',
     state: 'idle',
   },
   {
@@ -138,7 +161,7 @@ const INITIAL_TEMPLATES: ReportTemplate[] = [
     icon: <Brain className="w-6 h-6" />,
     title: 'Platform Search & Trends',
     description:
-      'Keyword demand patterns, top searched terms from Redis & PostgreSQL search history.',
+      'High-demand and top-viewed tenders with traffic rankings and engagement metrics.',
     lastGenerated: 'Live DB Ready',
     format: 'CSV',
     dateRange: 'last_30_days',
@@ -152,7 +175,7 @@ const INITIAL_SCHEDULED: ScheduledReport[] = [
     name: 'Weekly Revenue & Subscriptions',
     frequency: 'Every Monday 9:00 AM',
     nextRun: 'Next Monday 09:00 AM',
-    recipients: 'superadmin@tenderbazaar.com',
+    recipients: 'admin@tenderbazaar.com',
     deliveryMethod: 'Email',
     active: true,
   },
@@ -170,22 +193,49 @@ const INITIAL_SCHEDULED: ScheduledReport[] = [
     name: 'Monthly Tender & User Growth',
     frequency: '1st of every month',
     nextRun: '1st of next month',
-    recipients: 'superadmin@tenderbazaar.com',
+    recipients: 'admin@tenderbazaar.com',
     deliveryMethod: 'Email',
     active: true,
   },
 ];
 
-function triggerDownload(filename: string, content: string, mimeType: string) {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
+function downloadFile(filename: string, content: string | Blob, mimeType: string) {
+  let url: string;
+  let isBlobUrl = false;
+
+  if (typeof content === 'string' && content.startsWith('data:')) {
+    url = content;
+  } else {
+    const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType });
+    url = URL.createObjectURL(blob);
+    isBlobUrl = true;
+  }
+
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+
+  if (isBlobUrl) {
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+  }
+}
+
+function formatStorageSize(bytes: number): string {
+  if (!bytes || bytes <= 0) return '0.0 KB';
+  const gb = 1024 * 1024 * 1024;
+  const mb = 1024 * 1024;
+  const kb = 1024;
+
+  if (bytes >= gb) {
+    return `${(bytes / gb).toFixed(2)} GB`;
+  }
+  if (bytes >= mb) {
+    return `${(bytes / mb).toFixed(1)} MB`;
+  }
+  return `${(bytes / kb).toFixed(1)} KB`;
 }
 
 function convertToCSV(data: any[]): string {
@@ -199,7 +249,65 @@ function convertToCSV(data: any[]): string {
       })
       .join(','),
   );
-  return [headers.join(','), ...rows].join('\n');
+  return '\uFEFF' + [headers.join(','), ...rows].join('\n');
+}
+
+function generatePDFData(title: string, rangeLabel: string, rawData: any[]): { blob: Blob; dataUri: string } {
+  const doc = new jsPDF({
+    orientation: 'landscape',
+    unit: 'pt',
+    format: 'a4',
+  });
+
+  // Top header banner
+  doc.setFillColor(15, 23, 42); // slate-900
+  doc.rect(0, 0, doc.internal.pageSize.getWidth(), 45, 'F');
+
+  doc.setFontSize(14);
+  doc.setTextColor(255, 255, 255);
+  doc.text(title, 25, 28);
+
+  doc.setFontSize(8.5);
+  doc.setTextColor(148, 163, 184); // slate-400
+  doc.text(
+    `TenderBazaar System Export | Range: ${rangeLabel} | Date: ${new Date().toLocaleString()} | Total Records: ${rawData.length}`,
+    25,
+    62,
+  );
+
+  if (rawData && rawData.length > 0) {
+    const headers = Object.keys(rawData[0]);
+    const rows = rawData.slice(0, 1000).map((row) =>
+      headers.map((h) => (row[h] === null || row[h] === undefined ? '' : String(row[h]))),
+    );
+
+    autoTable(doc, {
+      startY: 72,
+      head: [headers],
+      body: rows,
+      theme: 'grid',
+      styles: {
+        fontSize: 7.5,
+        cellPadding: 4,
+        overflow: 'linebreak',
+        textColor: [30, 41, 59],
+      },
+      headStyles: {
+        fillColor: [2, 132, 199], // sky-600
+        textColor: [255, 255, 255],
+        fontStyle: 'bold',
+        fontSize: 8,
+      },
+      alternateRowStyles: {
+        fillColor: [248, 250, 252],
+      },
+      margin: { top: 72, left: 25, right: 25, bottom: 25 },
+    });
+  }
+
+  const blob = doc.output('blob');
+  const dataUri = doc.output('datauristring');
+  return { blob, dataUri };
 }
 
 export default function ReportsPage() {
@@ -209,7 +317,7 @@ export default function ReportsPage() {
   const [recentReports, setRecentReports] = useState<RecentReport[]>([]);
   const [totalTendersCount, setTotalTendersCount] = useState<number>(0);
   const [totalUsersCount, setTotalUsersCount] = useState<number>(0);
-  const [storageBytes, setStorageBytes] = useState<number>(145000);
+  const [storageBytes, setStorageBytes] = useState<number>(0);
   const [notification, setNotification] = useState<string | null>(null);
 
   // Load live counts and saved recent reports from localStorage
@@ -217,15 +325,30 @@ export default function ReportsPage() {
     try {
       const saved = localStorage.getItem('tb_admin_recent_reports');
       if (saved) {
-        setRecentReports(JSON.parse(saved));
+        const parsed: RecentReport[] = JSON.parse(saved);
+        setRecentReports(parsed);
+        const totalSize = parsed.reduce((sum, r) => sum + (r.sizeBytes || r.downloadData?.content?.length || 0), 0);
+        setStorageBytes(totalSize);
       }
     } catch {}
 
-    // Fetch initial DB metrics for summary
-    Promise.all([getTenderReport(), getUserReport()])
-      .then(([tenders, users]) => {
-        setTotalTendersCount(tenders.totalTenders);
-        setTotalUsersCount(users.totalUsers);
+    // Fetch live dashboard & report metrics on mount
+    getDashboardStats()
+      .then((stats) => {
+        if (stats?.tenders?.total) setTotalTendersCount(stats.tenders.total);
+        if (stats?.users?.total) setTotalUsersCount(stats.users.total);
+      })
+      .catch(() => {});
+
+    getTenderReport()
+      .then((res) => {
+        if (res?.totalTenders) setTotalTendersCount(res.totalTenders);
+      })
+      .catch(() => {});
+
+    getUserReport()
+      .then((res) => {
+        if (res?.totalUsers) setTotalUsersCount(res.totalUsers);
       })
       .catch(() => {});
   }, []);
@@ -237,12 +360,22 @@ export default function ReportsPage() {
     } catch {}
   };
 
+  // When format is switched, reset state to idle so user generates fresh data in that format
   const updateTemplateFormat = (id: string, format: ReportFormat) => {
-    setTemplates((prev) => prev.map((t) => (t.id === id ? { ...t, format } : t)));
+    setTemplates((prev) =>
+      prev.map((t) =>
+        t.id === id ? { ...t, format, state: 'idle', downloadData: undefined } : t,
+      ),
+    );
   };
 
+  // When date range is switched, reset state to idle so user queries fresh data for that range
   const updateTemplateDateRange = (id: string, dateRange: DateRange) => {
-    setTemplates((prev) => prev.map((t) => (t.id === id ? { ...t, dateRange } : t)));
+    setTemplates((prev) =>
+      prev.map((t) =>
+        t.id === id ? { ...t, dateRange, state: 'idle', downloadData: undefined } : t,
+      ),
+    );
   };
 
   const toggleScheduled = (id: string) => {
@@ -251,7 +384,7 @@ export default function ReportsPage() {
     );
   };
 
-  // Generate real report by fetching live PostgreSQL data
+  // Generate real report by fetching live PostgreSQL data and immediately downloading the file
   const handleGenerate = async (id: string) => {
     const template = templates.find((t) => t.id === id);
     if (!template) return;
@@ -261,57 +394,115 @@ export default function ReportsPage() {
     );
 
     try {
-      let rawData: any = null;
+      let rawData: any[] = [];
       let filenamePrefix = template.id;
+      const { startDate, endDate } = getDateRangeParams(template.dateRange);
 
       if (id === 'tender') {
-        const res = await getTenderReport();
-        setTotalTendersCount(res.totalTenders);
-        rawData = res.byCategory.map((c) => ({
-          Metric: 'Category Breakdown',
-          Category: c.category,
-          Count: c.count,
-          TotalTenders: res.totalTenders,
-          TotalEstimatedValueINR: res.totalEstimatedValue,
-          TotalViews: res.totalViews,
-        }));
+        const res = await getTenderReport({ startDate, endDate });
+        if (res.tenders && res.tenders.length > 0) {
+          rawData = res.tenders.map((t) => ({
+            ReferenceNumber: t.referenceNumber || t.id,
+            Title: t.title,
+            Organization: t.organization,
+            Category: t.category,
+            State: t.state || 'N/A',
+            Status: t.status,
+            SourcePortal: t.sourcePortal,
+            EstimatedValueINR: t.estimatedValue != null ? t.estimatedValue : 0,
+            SubmissionDeadline: t.bidSubmissionDeadline ? new Date(t.bidSubmissionDeadline).toLocaleDateString() : 'N/A',
+            PublishedDate: t.createdAt ? new Date(t.createdAt).toLocaleDateString() : 'N/A',
+          }));
+        } else {
+          rawData = res.byCategory.map((c) => ({
+            Metric: 'Category Breakdown',
+            Category: c.category,
+            Count: c.count,
+            TotalTenders: res.totalTenders,
+            TotalEstimatedValueINR: res.totalEstimatedValue,
+            TotalViews: res.totalViews,
+          }));
+        }
         filenamePrefix = 'tenders-report';
       } else if (id === 'revenue') {
-        const res = await getRevenueReport();
-        rawData = res.planBreakdown.map((p) => ({
-          Plan: p.plan,
-          RevenueINR: p.amount,
-          TransactionCount: p.count,
-          MRR: res.mrr,
-          ARR: res.arr,
-        }));
+        const res = await getRevenueReport({ startDate, endDate });
+        if (res.payments && res.payments.length > 0) {
+          rawData = res.payments.map((p) => ({
+            PaymentID: p.id,
+            CustomerName: p.userName,
+            CustomerEmail: p.userEmail,
+            Plan: p.plan,
+            BillingCycle: p.cycle,
+            AmountINR: p.amount,
+            Currency: p.currency,
+            Status: p.status,
+            Gateway: p.gateway,
+            Date: new Date(p.date).toLocaleString(),
+          }));
+        } else {
+          rawData = res.planBreakdown.map((p) => ({
+            Plan: p.plan,
+            RevenueINR: p.amount,
+            TransactionCount: p.count,
+            MRR: res.mrr,
+            ARR: res.arr,
+          }));
+        }
         filenamePrefix = 'revenue-report';
       } else if (id === 'users') {
-        const res = await getUserReport();
-        setTotalUsersCount(res.totalUsers);
-        rawData = res.roleDistribution.map((r) => ({
-          Role: r.role,
-          Count: r.count,
-          VerifiedUsers: res.verifiedUsers,
-          VerificationRate: `${res.verificationRate}%`,
-          TotalUsers: res.totalUsers,
-        }));
+        const res = await getUserReport({ startDate, endDate });
+        if (res.users && res.users.length > 0) {
+          rawData = res.users.map((u) => ({
+            UserID: u.id,
+            Name: u.name,
+            Email: u.email,
+            Role: u.role,
+            EmailVerified: u.isEmailVerified ? 'Yes' : 'No',
+            JoinedDate: u.createdAt ? new Date(u.createdAt).toLocaleDateString() : 'N/A',
+          }));
+        } else {
+          rawData = (res.roleDistribution || res.byRole || []).map((r) => ({
+            Role: r.role,
+            Count: r.count,
+            VerifiedUsers: res.verifiedUsers,
+            VerificationRate: `${res.verificationRate}%`,
+            TotalUsers: res.totalUsers,
+          }));
+        }
         filenamePrefix = 'users-report';
       } else if (id === 'subscriptions') {
-        const res = await getSubscriptionReport();
-        rawData = res.byPlan.map((p) => ({
-          Plan: p.plan,
-          Subscribers: p.count,
-          TotalSubscriptions: res.totalSubscriptions,
-          ChurnRate: `${res.churnRate}%`,
-        }));
+        const res = await getSubscriptionReport({ startDate, endDate });
+        if (res.subscriptions && res.subscriptions.length > 0) {
+          rawData = res.subscriptions.map((s) => ({
+            SubscriptionID: s.id,
+            CustomerName: s.userName,
+            CustomerEmail: s.userEmail,
+            Plan: s.plan,
+            BillingCycle: s.cycle,
+            Status: s.status,
+            StartDate: new Date(s.startDate).toLocaleDateString(),
+            EndDate: new Date(s.endDate).toLocaleDateString(),
+          }));
+        } else {
+          rawData = res.byPlan.map((p) => ({
+            Plan: p.plan,
+            Subscribers: p.count,
+            TotalSubscriptions: res.totalSubscriptions,
+            ChurnRate: `${res.churnRate}%`,
+          }));
+        }
         filenamePrefix = 'subscriptions-report';
       } else if (id === 'scrapers') {
         const scrapers = await getScraperHealth();
-        rawData = scrapers.map((s) => ({
+        const minDate = new Date(startDate);
+        const filtered = template.dateRange === 'all_time'
+          ? scrapers
+          : scrapers.filter((s) => s.lastRunAt && new Date(s.lastRunAt) >= minDate);
+        const toExport = filtered.length > 0 ? filtered : scrapers;
+        rawData = toExport.map((s) => ({
           Portal: s.portalName,
           Status: s.status,
-          Enabled: s.enabled,
+          Enabled: s.enabled ? 'Yes' : 'No',
           TotalRuns: s.totalRuns,
           SuccessRuns: s.totalSuccessRuns,
           FailedRuns: s.totalFailedRuns,
@@ -321,38 +512,67 @@ export default function ReportsPage() {
         }));
         filenamePrefix = 'scrapers-health-report';
       } else if (id === 'search') {
-        const analytics = await getPlatformAnalytics();
-        rawData = analytics.mostViewedTenders.map((t) => ({
-          TenderId: t.id,
+        const res = await getTenderReport({ startDate, endDate });
+        const sorted = (res.tenders || []).slice(0, 100).sort((a, b) => (b.viewCount || 0) - (a.viewCount || 0));
+        rawData = sorted.map((t) => ({
+          TenderID: t.referenceNumber || t.id,
           Title: t.title,
           Organization: t.organization,
-          State: t.state,
           Category: t.category,
-          ViewCount: t.viewCount,
+          State: t.state || 'N/A',
+          ViewCount: t.viewCount || 0,
+          EstimatedValueINR: t.estimatedValue != null ? t.estimatedValue : 0,
+          PublishedDate: t.createdAt ? new Date(t.createdAt).toLocaleDateString() : 'N/A',
         }));
         filenamePrefix = 'search-and-trends-report';
       }
 
       const dateStr = new Date().toISOString().split('T')[0];
-      const isJson = template.format === 'JSON';
-      const fileExt = isJson ? 'json' : 'csv';
-      const mimeType = isJson ? 'application/json' : 'text/csv;charset=utf-8;';
-      const fileContent = isJson
-        ? JSON.stringify(rawData, null, 2)
-        : convertToCSV(Array.isArray(rawData) ? rawData : [rawData]);
+      const rangeTag = template.dateRange.replace(/_/g, '-');
+      const filename = `${filenamePrefix}-${rangeTag}-${dateStr}.${template.format.toLowerCase()}`;
 
-      const filename = `${filenamePrefix}-${dateStr}.${fileExt}`;
-      const sizeBytes = new Blob([fileContent]).size;
-      const sizeLabel =
-        sizeBytes > 1024 * 1024
-          ? `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`
-          : `${(sizeBytes / 1024).toFixed(1)} KB`;
+      let fileContent: string = '';
+      let mimeType: string = '';
+      let downloadPayload: string | Blob = '';
+      let sizeBytes = 0;
+
+      if (template.format === 'CSV') {
+        fileContent = convertToCSV(rawData);
+        mimeType = 'text/csv;charset=utf-8;';
+        downloadPayload = fileContent;
+        sizeBytes = new Blob([fileContent]).size;
+      } else if (template.format === 'JSON') {
+        fileContent = JSON.stringify(rawData, null, 2);
+        mimeType = 'application/json;charset=utf-8;';
+        downloadPayload = fileContent;
+        sizeBytes = new Blob([fileContent]).size;
+      } else if (template.format === 'PDF') {
+        const { blob, dataUri } = generatePDFData(
+          template.title,
+          DATE_RANGE_LABELS[template.dateRange],
+          rawData,
+        );
+        mimeType = 'application/pdf';
+        fileContent = dataUri;
+        downloadPayload = blob;
+        sizeBytes = blob.size;
+      }
+
+      const sizeLabel = formatStorageSize(sizeBytes);
 
       setStorageBytes((prev) => prev + sizeBytes);
 
-      const downloadData = { filename, content: fileContent, mimeType };
+      const downloadData: DownloadPayload = {
+        filename,
+        content: fileContent,
+        mimeType,
+        format: template.format,
+      };
 
-      // Update template state to ready
+      // 1. Immediately trigger the file download in the browser
+      downloadFile(filename, downloadPayload, mimeType);
+
+      // 2. Update template state to ready with the download data
       setTemplates((prev) =>
         prev.map((t) =>
           t.id === id
@@ -366,20 +586,21 @@ export default function ReportsPage() {
         ),
       );
 
-      // Add to recent reports
+      // 3. Add to recent exports table
       const newReport: RecentReport = {
         id: `rep-${Date.now()}`,
-        name: `${template.title} (${dateStr})`,
-        generatedBy: user?.name ? `${user.name} (${user.role})` : 'Parth Savajadiya (SUPER_ADMIN)',
+        name: `${template.title} (${DATE_RANGE_LABELS[template.dateRange]})`,
+        generatedBy: user?.name ? `${user.name} (${user.role})` : user?.email || 'Administrator',
         date: dateStr,
         format: template.format,
         size: sizeLabel,
+        sizeBytes,
         status: 'Ready',
         downloadData,
       };
 
       saveRecentReports([newReport, ...recentReports.slice(0, 19)]);
-      setNotification(`Report "${newReport.name}" generated successfully from PostgreSQL!`);
+      setNotification(`Downloaded ${newReport.name} [${template.format}] with ${rawData.length} records!`);
       setTimeout(() => setNotification(null), 4000);
     } catch (err: any) {
       console.error('Error generating report:', err);
@@ -393,7 +614,7 @@ export default function ReportsPage() {
 
   const handleDownload = (template: ReportTemplate) => {
     if (template.downloadData) {
-      triggerDownload(
+      downloadFile(
         template.downloadData.filename,
         template.downloadData.content,
         template.downloadData.mimeType,
@@ -414,7 +635,7 @@ export default function ReportsPage() {
             </span>
           </div>
           <p className="text-muted-foreground text-sm mt-1">
-            Export live data directly from PostgreSQL database in CSV, JSON, and XLSX formats.
+            Export live data directly from PostgreSQL database in CSV, JSON, and PDF formats.
           </p>
         </div>
       </div>
@@ -436,17 +657,17 @@ export default function ReportsPage() {
         </div>
         <div className="bg-card border border-border rounded-xl p-4">
           <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Tenders in Database</p>
-          <p className="text-2xl font-bold text-primary-500 mt-1">{totalTendersCount || 155}</p>
+          <p className="text-2xl font-bold text-primary-500 mt-1">{totalTendersCount}</p>
           <p className="text-[11px] text-muted-foreground mt-0.5">Available for export</p>
         </div>
         <div className="bg-card border border-border rounded-xl p-4">
           <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Registered Users</p>
-          <p className="text-2xl font-bold text-accent-500 mt-1">{totalUsersCount || 3}</p>
+          <p className="text-2xl font-bold text-accent-500 mt-1">{totalUsersCount}</p>
           <p className="text-[11px] text-muted-foreground mt-0.5">In User table</p>
         </div>
         <div className="bg-card border border-border rounded-xl p-4">
           <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Storage Exported</p>
-          <p className="text-2xl font-bold text-foreground mt-1">{(storageBytes / 1024).toFixed(1)} KB</p>
+          <p className="text-2xl font-bold text-foreground mt-1">{formatStorageSize(storageBytes)}</p>
           <p className="text-[11px] text-muted-foreground mt-0.5">Cumulative payload</p>
         </div>
       </div>
@@ -491,9 +712,9 @@ export default function ReportsPage() {
                         key={fmt}
                         type="button"
                         onClick={() => updateTemplateFormat(tpl.id, fmt)}
-                        className={`px-2 py-1 rounded text-[11px] font-semibold transition-all ${
+                        className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${
                           tpl.format === fmt
-                            ? 'bg-primary-500 text-white shadow-sm'
+                            ? 'bg-primary-500 text-white shadow-sm ring-1 ring-primary-400'
                             : 'bg-muted text-muted-foreground hover:text-foreground'
                         }`}
                       >
@@ -509,7 +730,7 @@ export default function ReportsPage() {
                   <select
                     value={tpl.dateRange}
                     onChange={(e) => updateTemplateDateRange(tpl.id, e.target.value as DateRange)}
-                    className="text-xs bg-muted border border-border rounded px-2 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary-500"
+                    className="text-xs bg-muted border border-border rounded px-2 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary-500 cursor-pointer"
                   >
                     {Object.entries(DATE_RANGE_LABELS).map(([k, label]) => (
                       <option key={k} value={k}>
@@ -519,17 +740,29 @@ export default function ReportsPage() {
                   </select>
                 </div>
 
-                {/* Generate / Download CTA */}
+                {/* Generate & Download CTA */}
                 {tpl.state === 'ready' ? (
-                  <button
-                    onClick={() => handleDownload(tpl)}
-                    className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold shadow-md transition-all active:scale-[0.98]"
-                  >
-                    <Download className="w-4 h-4" />
-                    Download {tpl.format}
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleDownload(tpl)}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold shadow-md transition-all active:scale-[0.98]"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      Download {tpl.format}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleGenerate(tpl.id)}
+                      title="Generate and download again"
+                      className="p-2.5 rounded-lg border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-all"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
                 ) : (
                   <button
+                    type="button"
                     onClick={() => handleGenerate(tpl.id)}
                     disabled={tpl.state === 'generating'}
                     className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-xs font-semibold shadow-md transition-all active:scale-[0.98] disabled:opacity-60"
@@ -537,12 +770,12 @@ export default function ReportsPage() {
                     {tpl.state === 'generating' ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        Querying Database...
+                        Generating {tpl.format}...
                       </>
                     ) : (
                       <>
-                        <RefreshCw className="w-4 h-4" />
-                        Generate Live Report
+                        <Download className="w-4 h-4" />
+                        Generate &amp; Download {tpl.format}
                       </>
                     )}
                   </button>
@@ -576,7 +809,7 @@ export default function ReportsPage() {
           {recentReports.length === 0 ? (
             <div className="p-8 text-center text-muted-foreground text-sm">
               <Download className="w-8 h-8 mx-auto mb-2 opacity-40" />
-              No exports generated yet. Click &quot;Generate Live Report&quot; on any template above.
+              No exports generated yet. Click &quot;Generate &amp; Download&quot; on any template above.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -602,13 +835,8 @@ export default function ReportsPage() {
                       <td className="py-3 px-4 text-right">
                         {r.downloadData && (
                           <button
-                            onClick={() =>
-                              triggerDownload(
-                                r.downloadData!.filename,
-                                r.downloadData!.content,
-                                r.downloadData!.mimeType,
-                              )
-                            }
+                            type="button"
+                            onClick={() => downloadFile(r.downloadData!.filename, r.downloadData!.content, r.downloadData!.mimeType)}
                             className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-primary-500/10 text-primary-500 hover:bg-primary-500 hover:text-white transition-all border border-primary-500/20"
                           >
                             <Download className="w-3.5 h-3.5" />

@@ -61,6 +61,33 @@ function getHeatColor(val: number): string {
   return 'bg-emerald-500/80 text-white';
 }
 
+function ChartTooltip({ active, payload, label, unit = 'Count' }: any) {
+  if (!active || !payload || !payload.length) return null;
+  const item = payload[0];
+  const value = item.value ?? 0;
+  const title =
+    label ||
+    item.payload?.keyword ||
+    item.payload?.category ||
+    item.payload?.state ||
+    item.payload?.name ||
+    item.name ||
+    '';
+  const metricName = item.name === 'value' || item.name === 'count' ? unit : (item.name || unit);
+  const color = item.color || item.payload?.fill || '#00D4AA';
+
+  return (
+    <div className="bg-slate-900/95 text-white border border-slate-700/80 rounded-xl px-3.5 py-2.5 shadow-xl backdrop-blur-md min-w-[140px]">
+      {title && <p className="text-xs font-semibold text-white mb-1.5 truncate max-w-[240px]">{title}</p>}
+      <div className="flex items-center gap-2 text-xs">
+        <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: color }} />
+        <span className="text-slate-300 font-medium">{metricName}:</span>
+        <span className="text-white font-bold">{formatNumber(value)}</span>
+      </div>
+    </div>
+  );
+}
+
 export default function AnalyticsPage() {
   const [period, setPeriod] = useState<Period>('30d');
   const [analytics, setAnalytics] = useState<PlatformAnalytics | null>(null);
@@ -306,15 +333,7 @@ export default function AnalyticsPage() {
                     tickLine={false}
                     width={130}
                   />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: 'hsl(var(--card))',
-                      borderColor: 'hsl(var(--border))',
-                      borderRadius: '8px',
-                      color: 'hsl(var(--foreground))',
-                    }}
-                    formatter={(val: number) => [formatNumber(val), 'Searches']}
-                  />
+                  <Tooltip content={<ChartTooltip unit="Searches" />} />
                   <Bar dataKey="searches" fill="hsl(var(--primary))" radius={[0, 4, 4, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -339,15 +358,7 @@ export default function AnalyticsPage() {
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                   <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
                   <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: 'hsl(var(--card))',
-                      borderColor: 'hsl(var(--border))',
-                      borderRadius: '8px',
-                      color: 'hsl(var(--foreground))',
-                    }}
-                    formatter={(val: number) => [formatNumber(val), 'Searches']}
-                  />
+                  <Tooltip content={<ChartTooltip unit="Searches" />} />
                   <Line type="monotone" dataKey="volume" stroke="hsl(var(--accent))" strokeWidth={2.5} dot={{ r: 3 }} />
                 </LineChart>
               </ResponsiveContainer>
@@ -501,15 +512,7 @@ export default function AnalyticsPage() {
                   <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                   <XAxis dataKey="category" stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
                   <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: 'hsl(var(--card))',
-                      borderColor: 'hsl(var(--border))',
-                      borderRadius: '8px',
-                      color: 'hsl(var(--foreground))',
-                    }}
-                    formatter={(val: number) => [formatNumber(val), 'Tenders']}
-                  />
+                  <Tooltip content={<ChartTooltip unit="Tenders" />} />
                   <Bar dataKey="count" fill="hsl(var(--primary))" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -536,15 +539,7 @@ export default function AnalyticsPage() {
                     tickLine={false}
                     width={100}
                   />
-                  <Tooltip
-                    contentStyle={{
-                      backgroundColor: 'hsl(var(--card))',
-                      borderColor: 'hsl(var(--border))',
-                      borderRadius: '8px',
-                      color: 'hsl(var(--foreground))',
-                    }}
-                    formatter={(val: number) => [formatNumber(val), 'Tenders']}
-                  />
+                  <Tooltip content={<ChartTooltip unit="Tenders" />} />
                   <Bar dataKey="count" fill="#818cf8" radius={[0, 4, 4, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -571,15 +566,7 @@ export default function AnalyticsPage() {
                 <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
                 <XAxis dataKey="name" stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
                 <YAxis stroke="hsl(var(--muted-foreground))" fontSize={11} tickLine={false} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: 'hsl(var(--card))',
-                    borderColor: 'hsl(var(--border))',
-                    borderRadius: '8px',
-                    color: 'hsl(var(--foreground))',
-                  }}
-                  formatter={(val: number) => [formatNumber(val), 'Tenders']}
-                />
+                <Tooltip content={<ChartTooltip unit="Tenders" />} />
                 <Line type="monotone" dataKey="tenders" stroke="#f59e0b" strokeWidth={2.5} dot={{ r: 3 }} />
               </LineChart>
             </ResponsiveContainer>

@@ -109,6 +109,42 @@ function formatDate(dateStr: string): string {
   });
 }
 
+function PlanTooltip({ active, payload, label }: any) {
+  if (!active || !payload || !payload.length) return null;
+  const item = payload[0];
+  const value = item.value ?? 0;
+  const color = item.payload?.color || '#3B82F6';
+  const planName = label || item.payload?.name || 'Plan';
+  return (
+    <div className="bg-slate-900/95 text-white border border-slate-700/80 rounded-xl px-3.5 py-2.5 shadow-xl backdrop-blur-md min-w-[130px]">
+      <p className="text-xs font-semibold text-white mb-1.5">{planName}</p>
+      <div className="flex items-center gap-2 text-xs">
+        <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: color }} />
+        <span className="text-slate-300 font-medium">Subscribers:</span>
+        <span className="text-white font-bold">{value} {value === 1 ? 'user' : 'users'}</span>
+      </div>
+    </div>
+  );
+}
+
+function CycleTooltip({ active, payload }: any) {
+  if (!active || !payload || !payload.length) return null;
+  const item = payload[0];
+  const value = item.value ?? 0;
+  const name = item.name || item.payload?.name || 'Cycle';
+  const color = item.payload?.color || '#FF6B35';
+  return (
+    <div className="bg-slate-900/95 text-white border border-slate-700/80 rounded-xl px-3.5 py-2.5 shadow-xl backdrop-blur-md min-w-[130px]">
+      <p className="text-xs font-semibold text-white mb-1.5">{name}</p>
+      <div className="flex items-center gap-2 text-xs">
+        <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: color }} />
+        <span className="text-slate-300 font-medium">Active Plans:</span>
+        <span className="text-white font-bold">{value} {value === 1 ? 'subscriber' : 'subscribers'}</span>
+      </div>
+    </div>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -257,27 +293,15 @@ export default function SubscriptionsPage() {
           {planDistData.length > 0 ? (
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={planDistData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.08)" />
                 <XAxis
                   dataKey="name"
-                  stroke="#6B7280"
+                  stroke="#94a3b8"
                   fontSize={12}
                   tickLine={false}
                 />
-                <YAxis stroke="#6B7280" fontSize={12} tickLine={false} />
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#ffffff',
-                    border: '1px solid #e5e7eb',
-                    borderRadius: '8px',
-                    color: '#374151',
-                  }}
-                  labelStyle={{ color: '#6B7280' }}
-                  formatter={(value: number) => [
-                    formatINR(value),
-                    'Subscribers',
-                  ]}
-                />
+                <YAxis stroke="#94a3b8" fontSize={12} tickLine={false} allowDecimals={false} />
+                <Tooltip content={<PlanTooltip />} />
                 <Bar dataKey="value" radius={[4, 4, 0, 0]}>
                   {planDistData.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={entry.color} />
@@ -314,18 +338,7 @@ export default function SubscriptionsPage() {
                     <Cell key={`cell-${index}`} fill={entry.color} />
                   ))}
                 </Pie>
-                <Tooltip
-                  contentStyle={{
-                    backgroundColor: '#ffffff',
-                    border: '1px solid #e5e7eb',
-                    borderRadius: '8px',
-                    color: '#374151',
-                  }}
-                  formatter={(value: number, name: string) => [
-                    formatINR(value),
-                    name,
-                  ]}
-                />
+                <Tooltip content={<CycleTooltip />} />
                 <Legend
                   verticalAlign="bottom"
                   iconType="circle"
@@ -408,8 +421,8 @@ export default function SubscriptionsPage() {
           <h2 className="text-lg font-semibold text-foreground">
             Expiring in Next 7 Days
           </h2>
-          <span className="ml-auto text-xs text-muted-foreground bg-muted px-2 py-1 rounded-full">
-            {stats.expiringNext7Days} subscriptions
+          <span className="ml-auto text-xs text-muted-foreground bg-muted px-2.5 py-1 rounded-full font-medium">
+            {stats.expiringNext7Days} subscription{stats.expiringNext7Days === 1 ? '' : 's'}
           </span>
         </div>
         {expiringLoading ? (

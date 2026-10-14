@@ -13,6 +13,9 @@ export interface AppearanceContextType {
   setFont: (font: string) => void;
   primaryColor: string;
   setPrimaryColor: (color: string) => void;
+  isCompact: boolean;
+  toggleCompact: () => void;
+  setIsCompact: (compact: boolean) => void;
 }
 
 export const AppearanceContext = createContext<AppearanceContextType>({
@@ -22,6 +25,9 @@ export const AppearanceContext = createContext<AppearanceContextType>({
   setFont: () => {},
   primaryColor: '#FF6B35',
   setPrimaryColor: () => {},
+  isCompact: false,
+  toggleCompact: () => {},
+  setIsCompact: () => {},
 });
 
 export const useAppearance = () => useContext(AppearanceContext);
@@ -80,12 +86,14 @@ export function applyAppearanceSettings({
   primaryColor,
   secondaryColor,
   accentColor,
+  isCompact,
 }: {
   isDark?: boolean;
   font?: string;
   primaryColor?: string;
   secondaryColor?: string;
   accentColor?: string;
+  isCompact?: boolean;
 }) {
   if (typeof window === 'undefined') return;
   const root = document.documentElement;
@@ -97,6 +105,16 @@ export function applyAppearanceSettings({
     } else {
       root.classList.remove('dark');
       localStorage.setItem('tb_admin_theme', 'light');
+    }
+  }
+
+  if (isCompact !== undefined) {
+    if (isCompact) {
+      root.classList.add('compact');
+      localStorage.setItem('tb_admin_compact', 'true');
+    } else {
+      root.classList.remove('compact');
+      localStorage.setItem('tb_admin_compact', 'false');
     }
   }
 
@@ -148,12 +166,16 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
   const [isDark, setIsDark] = useState(true);
   const [font, setFontState] = useState('plus-jakarta-sans');
   const [primaryColor, setPrimaryColorState] = useState('#FF6B35');
+  const [isCompact, setIsCompactState] = useState(false);
 
   useEffect(() => {
     try {
       const savedTheme = localStorage.getItem('tb_admin_theme');
       const darkVal = savedTheme ? savedTheme !== 'light' : true;
       setIsDark(darkVal);
+
+      const savedCompact = localStorage.getItem('tb_admin_compact') === 'true';
+      setIsCompactState(savedCompact);
 
       const savedFont = localStorage.getItem('tb_admin_font') || 'plus-jakarta-sans';
       setFontState(savedFont);
@@ -166,6 +188,7 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
 
       applyAppearanceSettings({
         isDark: darkVal,
+        isCompact: savedCompact,
         font: savedFont,
         primaryColor: pColor,
         secondaryColor: sColor,
@@ -177,6 +200,8 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
       try {
         const theme = localStorage.getItem('tb_admin_theme');
         setIsDark(theme !== 'light');
+        const compact = localStorage.getItem('tb_admin_compact') === 'true';
+        setIsCompactState(compact);
         const f = localStorage.getItem('tb_admin_font');
         if (f) setFontState(f);
         const c = JSON.parse(localStorage.getItem('tb_admin_colors') || '{}');
@@ -198,6 +223,17 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
     applyAppearanceSettings({ isDark: next });
   };
 
+  const toggleCompact = () => {
+    const next = !isCompact;
+    setIsCompactState(next);
+    applyAppearanceSettings({ isCompact: next });
+  };
+
+  const setIsCompact = (compact: boolean) => {
+    setIsCompactState(compact);
+    applyAppearanceSettings({ isCompact: compact });
+  };
+
   const setFont = (newFont: string) => {
     setFontState(newFont);
     applyAppearanceSettings({ font: newFont });
@@ -210,7 +246,17 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
 
   return (
     <AppearanceContext.Provider
-      value={{ isDark, toggleTheme, font, setFont, primaryColor, setPrimaryColor }}
+      value={{
+        isDark,
+        toggleTheme,
+        font,
+        setFont,
+        primaryColor,
+        setPrimaryColor,
+        isCompact,
+        toggleCompact,
+        setIsCompact,
+      }}
     >
       {children}
     </AppearanceContext.Provider>
