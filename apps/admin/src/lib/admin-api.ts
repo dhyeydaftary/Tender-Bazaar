@@ -27,6 +27,13 @@ import type {
   BlogPostRecord,
   AnnouncementRecord,
   BannerRecord,
+  TenderAdminRecord,
+  TenderListResponse,
+  TenderStats,
+  SupportTicketRecord,
+  SupportTicketStats,
+  TicketStatus,
+  TicketPriority,
 } from './types';
 
 // ---------------------------------------------------------------------------
@@ -73,12 +80,47 @@ export async function getExpiringSubscriptions(): Promise<SubscriptionListRespon
     api.get('/admin/subscriptions', {
       params: {
         status: 'ACTIVE',
+        expiringBefore: endDate,
         sortBy: 'endDate',
         sortOrder: 'asc',
         limit: 20,
       },
     }),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Tender Management
+// ---------------------------------------------------------------------------
+
+export async function getTenderList(params: {
+  page?: number;
+  limit?: number;
+  search?: string;
+  sourcePortal?: string;
+  category?: string;
+  status?: string;
+  state?: string;
+  sortBy?: string;
+  sortOrder?: string;
+}): Promise<TenderListResponse> {
+  return unwrap<TenderListResponse>(api.get('/admin/tenders', { params }));
+}
+
+export async function getTenderStats(): Promise<TenderStats> {
+  return unwrap<TenderStats>(api.get('/admin/tenders/stats'));
+}
+
+export async function getTenderDetail(id: string): Promise<TenderAdminRecord & { documents?: any[]; results?: any[] }> {
+  return unwrap(api.get(`/admin/tenders/${id}`));
+}
+
+export async function updateTender(id: string, data: Partial<TenderAdminRecord>): Promise<TenderAdminRecord> {
+  return unwrap(api.patch(`/admin/tenders/${id}`, data));
+}
+
+export async function deleteTender(id: string): Promise<{ message: string }> {
+  return unwrap(api.delete(`/admin/tenders/${id}`));
 }
 
 // ---------------------------------------------------------------------------
@@ -372,5 +414,104 @@ export async function updateBanner(id: string, data: Partial<BannerRecord>): Pro
 
 export async function deleteBanner(id: string): Promise<any> {
   return unwrap(api.delete(`/admin/content/banners/${id}`));
+}
+
+// ---------------------------------------------------------------------------
+// Support Tickets
+// ---------------------------------------------------------------------------
+
+export async function getSupportTickets(params?: {
+  page?: number;
+  limit?: number;
+  search?: string;
+  status?: string;
+  priority?: string;
+  category?: string;
+  assignedTo?: string;
+  sortBy?: string;
+  sortOrder?: 'asc' | 'desc';
+}): Promise<{ tickets: SupportTicketRecord[]; total: number; page: number; limit: number }> {
+  const res = await unwrapWithMeta<SupportTicketRecord[]>(api.get('/admin/support/tickets', { params }));
+  return {
+    tickets: res.data || [],
+    total: res.meta?.total || 0,
+    page: res.meta?.page || 1,
+    limit: res.meta?.limit || 10,
+  };
+}
+
+export async function getSupportStats(): Promise<SupportTicketStats> {
+  return unwrap<SupportTicketStats>(api.get('/admin/support/stats'));
+}
+
+export async function getTicketDetail(id: string): Promise<SupportTicketRecord> {
+  return unwrap<SupportTicketRecord>(api.get(`/admin/support/tickets/${id}`));
+}
+
+export async function updateTicket(
+  id: string,
+  data: {
+    status?: TicketStatus;
+    priority?: TicketPriority;
+    category?: string;
+    assignedTo?: string | null;
+  }
+): Promise<SupportTicketRecord> {
+  return unwrap<SupportTicketRecord>(api.patch(`/admin/support/tickets/${id}`, data));
+}
+
+export async function replyToTicket(
+  id: string,
+  message: string
+): Promise<any> {
+  return unwrap<any>(api.post(`/admin/support/tickets/${id}/reply`, { message }));
+}
+
+// ---------------------------------------------------------------------------
+// System Health
+// ---------------------------------------------------------------------------
+
+export interface SystemHealthResponse {
+  status: 'ok' | 'degraded' | 'unhealthy';
+  timestamp: string;
+  uptime: number;
+  services: {
+    database?: 'healthy' | 'unhealthy';
+    redis?: 'healthy' | 'unhealthy';
+    elasticsearch?: 'healthy' | 'unhealthy';
+    [key: string]: string | undefined;
+  };
+}
+
+export async function getSystemHealth(): Promise<SystemHealthResponse> {
+  const baseURL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
+  const rootURL = baseURL.replace(/\/api\/v1\/?$/, '');
+  const res = await api.get<SystemHealthResponse>('/health', { baseURL: rootURL });
+  return res.data;
+}
+
+// ---------------------------------------------------------------------------
+// Settings Management
+// ---------------------------------------------------------------------------
+
+export interface AdminSettingItem {
+  id: string;
+  key: string;
+  value: any;
+  description?: string;
+  updatedBy?: string | null;
+  updatedAt?: string;
+}
+
+export type AdminSettingsGrouped = Record<string, AdminSettingItem[]>;
+
+export async function getAdminSettings(): Promise<AdminSettingsGrouped> {
+  return unwrap<AdminSettingsGrouped>(api.get('/admin/settings'));
+}
+
+export async function updateAdminSettings(
+  settings: Array<{ category: string; key: string; value: any }>
+): Promise<{ updated: number }> {
+  return unwrap<{ updated: number }>(api.patch('/admin/settings', { settings }));
 }
 

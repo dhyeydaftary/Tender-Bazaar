@@ -48,6 +48,8 @@ import type {
   AnnouncementRecord,
   BannerRecord,
 } from '@/lib/types';
+import { ConfirmModal } from '@/components/confirm-modal';
+import { ToastAlert } from '@/components/toast-alert';
 
 // ---------------------------------------------------------------------------
 // Types & Enums
@@ -227,6 +229,29 @@ export default function ContentManagementPage() {
   const [newBannerPos, setNewBannerPos] = useState('top');
   const [isSubmittingBanner, setIsSubmittingBanner] = useState(false);
 
+  // Modern Delete Confirmation Modal State
+  const [deleteTarget, setDeleteTarget] = useState<{
+    type: 'post' | 'announcement' | 'banner';
+    id: string;
+    title: string;
+  } | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  // Toast feedback state
+  const [toast, setToast] = useState<{
+    show: boolean;
+    type: 'success' | 'error' | 'info';
+    message: string;
+  }>({
+    show: false,
+    type: 'success',
+    message: '',
+  });
+
+  const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    setToast({ show: true, type, message });
+  };
+
   // Load Data
   const loadData = useCallback(async (isManual = false, isBackground = false) => {
     if (isManual) setIsRefreshing(true);
@@ -303,8 +328,9 @@ export default function ContentManagementPage() {
       setNewPostExcerpt('');
       setNewPostContent('');
       loadData(true);
+      showToast('Blog post created successfully', 'success');
     } catch (err: any) {
-      alert(`Failed to create post: ${err?.message || 'Server error'}`);
+      showToast(`Failed to create post: ${err?.message || 'Server error'}`, 'error');
     } finally {
       setIsSubmittingPost(false);
     }
@@ -327,8 +353,9 @@ export default function ContentManagementPage() {
       setNewAnnTitle('');
       setNewAnnMessage('');
       loadData(true);
+      showToast('Announcement published successfully', 'success');
     } catch (err: any) {
-      alert(`Failed to create announcement: ${err?.message || 'Server error'}`);
+      showToast(`Failed to create announcement: ${err?.message || 'Server error'}`, 'error');
     } finally {
       setIsSubmittingAnn(false);
     }
@@ -352,8 +379,9 @@ export default function ContentManagementPage() {
       setNewBannerDesc('');
       setNewBannerLink('');
       loadData(true);
+      showToast('Banner created successfully', 'success');
     } catch (err: any) {
-      alert(`Failed to create banner: ${err?.message || 'Server error'}`);
+      showToast(`Failed to create banner: ${err?.message || 'Server error'}`, 'error');
     } finally {
       setIsSubmittingBanner(false);
     }
@@ -364,21 +392,20 @@ export default function ContentManagementPage() {
     try {
       const newStatus = ann.status === 'PUBLISHED' ? 'DRAFT' : 'PUBLISHED';
       await updateAnnouncement(ann.id, { status: newStatus });
+      showToast(`Announcement set to ${newStatus.toLowerCase()}`, 'success');
       loadData(false, true);
     } catch (err: any) {
-      alert(`Failed to update announcement: ${err?.message}`);
+      showToast(`Failed to update announcement: ${err?.message}`, 'error');
     }
   };
 
-  // Handle Delete Announcement
-  const handleDeleteAnnouncement = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this announcement?')) return;
-    try {
-      await deleteAnnouncement(id);
-      loadData(true);
-    } catch (err: any) {
-      alert(`Failed to delete announcement: ${err?.message}`);
-    }
+  // Trigger Delete Announcement Confirmation
+  const handleDeleteAnnouncement = (id: string, title?: string) => {
+    setDeleteTarget({
+      type: 'announcement',
+      id,
+      title: title || 'Announcement',
+    });
   };
 
   // Handle Toggle Banner
@@ -386,31 +413,52 @@ export default function ContentManagementPage() {
     try {
       const newStatus = banner.status === 'PUBLISHED' ? 'DRAFT' : 'PUBLISHED';
       await updateBanner(banner.id, { status: newStatus });
+      showToast(`Banner set to ${newStatus.toLowerCase()}`, 'success');
       loadData(false, true);
     } catch (err: any) {
-      alert(`Failed to update banner: ${err?.message}`);
+      showToast(`Failed to update banner: ${err?.message}`, 'error');
     }
   };
 
-  // Handle Delete Banner
-  const handleDeleteBanner = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this banner?')) return;
-    try {
-      await deleteBanner(id);
-      loadData(true);
-    } catch (err: any) {
-      alert(`Failed to delete banner: ${err?.message}`);
-    }
+  // Trigger Delete Banner Confirmation
+  const handleDeleteBanner = (id: string, title?: string) => {
+    setDeleteTarget({
+      type: 'banner',
+      id,
+      title: title || 'Banner',
+    });
   };
 
-  // Handle Delete Post
-  const handleDeletePost = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this blog post?')) return;
+  // Trigger Delete Post Confirmation
+  const handleDeletePost = (id: string, title?: string) => {
+    setDeleteTarget({
+      type: 'post',
+      id,
+      title: title || 'Blog Post',
+    });
+  };
+
+  // Execute Confirmed Delete Action
+  const executeDelete = async () => {
+    if (!deleteTarget) return;
+    setIsDeleting(true);
     try {
-      await deletePost(id);
+      if (deleteTarget.type === 'post') {
+        await deletePost(deleteTarget.id);
+        showToast('Blog post deleted successfully', 'success');
+      } else if (deleteTarget.type === 'announcement') {
+        await deleteAnnouncement(deleteTarget.id);
+        showToast('Announcement deleted successfully', 'success');
+      } else if (deleteTarget.type === 'banner') {
+        await deleteBanner(deleteTarget.id);
+        showToast('Banner deleted successfully', 'success');
+      }
+      setDeleteTarget(null);
       loadData(true);
     } catch (err: any) {
-      alert(`Failed to delete post: ${err?.message}`);
+      showToast(`Failed to delete ${deleteTarget.type}: ${err?.message || 'Server error'}`, 'error');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -683,7 +731,7 @@ export default function ContentManagementPage() {
                       </div>
                       <div className="flex items-center gap-2">
                         <button
-                          onClick={() => handleDeletePost(post.id)}
+                          onClick={() => handleDeletePost(post.id, post.title)}
                           className="p-1.5 rounded-lg text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors"
                           title="Delete Post"
                         >
@@ -764,7 +812,7 @@ export default function ContentManagementPage() {
                         {ann.status === 'PUBLISHED' ? 'Active' : 'Draft'}
                       </button>
                       <button
-                        onClick={() => handleDeleteAnnouncement(ann.id)}
+                        onClick={() => handleDeleteAnnouncement(ann.id, ann.title)}
                         className="p-1.5 rounded-lg text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors"
                         title="Delete Announcement"
                       >
@@ -848,7 +896,7 @@ export default function ContentManagementPage() {
                           {banner.status === 'PUBLISHED' ? 'Active' : 'Draft'}
                         </button>
                         <button
-                          onClick={() => handleDeleteBanner(banner.id)}
+                          onClick={() => handleDeleteBanner(banner.id, banner.title)}
                           className="p-1.5 rounded-lg text-muted-foreground hover:text-red-400 hover:bg-red-500/10 transition-colors"
                           title="Delete Banner"
                         >
@@ -1199,6 +1247,45 @@ export default function ContentManagementPage() {
           </div>
         </div>
       )}
+
+      {/* Modern Confirmation Alert Modal */}
+      <ConfirmModal
+        isOpen={deleteTarget !== null}
+        onClose={() => !isDeleting && setDeleteTarget(null)}
+        onConfirm={executeDelete}
+        title={
+          deleteTarget?.type === 'post'
+            ? 'Delete Blog Post'
+            : deleteTarget?.type === 'announcement'
+            ? 'Delete Announcement'
+            : 'Delete Banner'
+        }
+        itemName={deleteTarget?.title}
+        message={
+          deleteTarget?.type === 'post'
+            ? 'Are you sure you want to delete this blog post? This action cannot be undone and will permanently remove this item from the platform.'
+            : deleteTarget?.type === 'announcement'
+            ? 'Are you sure you want to delete this announcement? This action cannot be undone and will immediately unpublish it from the platform.'
+            : 'Are you sure you want to delete this banner? It will immediately stop displaying across the platform.'
+        }
+        confirmText={
+          deleteTarget?.type === 'post'
+            ? 'Delete Post'
+            : deleteTarget?.type === 'announcement'
+            ? 'Delete Announcement'
+            : 'Delete Banner'
+        }
+        variant="danger"
+        isLoading={isDeleting}
+      />
+
+      {/* Modern Toast Alert */}
+      <ToastAlert
+        show={toast.show}
+        type={toast.type}
+        message={toast.message}
+        onClose={() => setToast((prev) => ({ ...prev, show: false }))}
+      />
     </div>
   );
 }

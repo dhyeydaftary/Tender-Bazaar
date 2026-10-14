@@ -517,13 +517,23 @@ export const eligibilityService = {
     }
 
     // Query tenders matching user's categories and states
+    const validCategories = (companyProfile.workCategories || []).filter(
+      (cat): cat is 'WORKS' | 'GOODS' | 'SERVICES' | 'CONSULTANCY' =>
+        ['WORKS', 'GOODS', 'SERVICES', 'CONSULTANCY'].includes(cat as any)
+    );
+
+    const orConditions: any[] = [];
+    if (validCategories.length > 0) {
+      orConditions.push({ category: { in: validCategories } });
+    }
+    if (Array.isArray(companyProfile.statesOperated) && companyProfile.statesOperated.length > 0) {
+      orConditions.push({ state: { in: companyProfile.statesOperated } });
+    }
+
     const tenders = await prisma.tender.findMany({
       where: {
         status: 'ACTIVE',
-        OR: [
-          { category: { in: companyProfile.workCategories as any } },
-          { state: { in: companyProfile.statesOperated } },
-        ],
+        ...(orConditions.length > 0 ? { OR: orConditions } : {}),
       },
       orderBy: { publishedDate: 'desc' },
       take: 50,
@@ -610,5 +620,25 @@ export const eligibilityService = {
     scoredTenders.sort((a, b) => b.matchScore - a.matchScore);
 
     return scoredTenders.slice(0, 20);
+  },
+
+  async getTenderEligibility(userId: string, tenderId: string) {
+    const check = await prisma.eligibilityCheck.findUnique({
+      where: {
+        userId_tenderId: { userId, tenderId },
+      },
+      include: {
+        tender: {
+          select: {
+            id: true,
+            title: true,
+            referenceNumber: true,
+            organization: true,
+          },
+        },
+      },
+    });
+
+    return check;
   },
 };

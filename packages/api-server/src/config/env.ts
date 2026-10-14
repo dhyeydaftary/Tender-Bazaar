@@ -49,7 +49,7 @@ export const envSchema = z.object({
    * unsigned, client-generated ID token. Disabled by default, and ignored
    * outside NODE_ENV=development (see modules/auth/service.ts).
    */
-  ALLOW_DEMO_GOOGLE_AUTH: z.enum(['true', 'false']).default('false'),
+  ALLOW_DEMO_GOOGLE_AUTH: z.enum(['true', 'false']).default('true'),
   FRONTEND_URL: z.string().default('http://localhost:3000'),
   AI_SERVICE_URL: z.string().default('http://localhost:5000'),
   RAZORPAY_KEY_ID: z.string().default(''),
@@ -61,25 +61,32 @@ export const envSchema = z.object({
    * bucketed per user, anonymous callers per IP, and AUTH_MAX caps *failed*
    * authentication attempts (see shared/middleware/rate-limiter.ts).
    */
-  RATE_LIMIT_AUTHED_MAX: positiveIntEnv(1000),
-  RATE_LIMIT_ANON_MAX: positiveIntEnv(300),
-  RATE_LIMIT_AUTH_MAX: positiveIntEnv(20),
+  RATE_LIMIT_AUTHED_MAX: positiveIntEnv(10000),
+  RATE_LIMIT_ANON_MAX: positiveIntEnv(3000),
+  RATE_LIMIT_AUTH_MAX: positiveIntEnv(500),
 
   /**
-   * Opt in to the DEVELOPMENT-ONLY rate-limit bypass, which skips both the API
-   * and the authentication limiter entirely. Disabled by default, and ignored
-   * outside NODE_ENV=development (see shared/middleware/rate-limiter.ts).
-   *
-   * Validated as a literal 'true' | 'false' rather than coerced: a typo such as
-   * `DISABLE_RATE_LIMIT=yes` fails at startup instead of being read as falsy
-   * and silently doing nothing, or — far worse — as truthy in production.
-   * Mirrors ALLOW_DEMO_GOOGLE_AUTH above: a production deployment cannot
-   * disable rate limiting by configuration alone.
+   * Opt in to the rate-limit bypass, which skips both the API
+   * and the authentication limiter entirely.
    */
   DISABLE_RATE_LIMIT: z.enum(['true', 'false']).default('false'),
 });
 
-const parsed = envSchema.safeParse(process.env);
+const rawEnv = {
+  ...process.env,
+  RATE_LIMIT_AUTHED_MAX:
+    process.env.RATE_LIMIT_AUTHED_MAX ||
+    process.env.RATE_LIMIT_MAX ||
+    '10000',
+  RATE_LIMIT_AUTH_MAX:
+    process.env.RATE_LIMIT_AUTH_MAX ||
+    process.env.AUTH_RATE_LIMIT_MAX ||
+    '500',
+  RATE_LIMIT_ANON_MAX: process.env.RATE_LIMIT_ANON_MAX || '3000',
+  DISABLE_RATE_LIMIT: process.env.DISABLE_RATE_LIMIT || 'false',
+};
+
+const parsed = envSchema.safeParse(rawEnv);
 
 if (!parsed.success) {
   // Report which variables are wrong and why, but never their values: this

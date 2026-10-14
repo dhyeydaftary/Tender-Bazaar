@@ -419,35 +419,54 @@ export const tenderService = {
     }
   },
 
-  async getTenderStats() {
-    const [total, activeCount, newToday, byCategory, byState] = await Promise.all([
-      prisma.tender.count(),
-      prisma.tender.count({ where: { status: 'ACTIVE' } }),
-      prisma.tender.count({
-        where: {
-          createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-        },
-      }),
+  async getTenderStats(stateFilter?: string) {
+    const activeWhere: any = { status: 'ACTIVE' };
+    const baseWhere: any = {};
+    const closedWhere: any = { status: { in: ['CLOSED', 'AWARDED', 'CANCELLED'] } };
+    const todayWhere: any = {
+      createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
+      status: 'ACTIVE',
+    };
+
+    if (stateFilter) {
+      activeWhere.state = { equals: stateFilter, mode: 'insensitive' };
+      baseWhere.state = { equals: stateFilter, mode: 'insensitive' };
+      closedWhere.state = { equals: stateFilter, mode: 'insensitive' };
+      todayWhere.state = { equals: stateFilter, mode: 'insensitive' };
+    }
+
+    const [total, activeCount, closedCount, newToday, byCategory, byState] = await Promise.all([
+      prisma.tender.count({ where: Object.keys(baseWhere).length > 0 ? baseWhere : undefined }),
+      prisma.tender.count({ where: activeWhere }),
+      prisma.tender.count({ where: closedWhere }),
+      prisma.tender.count({ where: todayWhere }),
       prisma.tender.groupBy({
         by: ['category'],
         _count: true,
-        where: { status: 'ACTIVE' },
+        where: activeWhere,
       }),
       prisma.tender.groupBy({
         by: ['state'],
         _count: true,
         where: { status: 'ACTIVE' },
         orderBy: { _count: { state: 'desc' } },
-        take: 10,
       }),
     ]);
+
+    const stateCountMap: Record<string, number> = {};
+    for (const s of byState) {
+      if (s.state) stateCountMap[s.state] = s._count;
+    }
 
     return {
       total,
       active: activeCount,
+      closed: closedCount,
       newToday,
       byCategory: Object.fromEntries(byCategory.map((c) => [c.category, c._count])),
-      topStates: byState.map((s) => ({ state: s.state, count: s._count })),
+      byState: stateCountMap,
+      topStates: byState.slice(0, 10).map((s) => ({ state: s.state, count: s._count })),
+      allStates: byState.map((s) => ({ state: s.state, count: s._count })),
     };
   },
 

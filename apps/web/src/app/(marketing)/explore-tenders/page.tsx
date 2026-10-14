@@ -2,8 +2,8 @@
 
 import { useState, useCallback } from 'react';
 import Link from 'next/link';
-import { cn } from '@/lib/utils';
-import { useTenderSearch } from '@/lib/hooks/use-tenders';
+import { cn, formatIndianNumber } from '@/lib/utils';
+import { useTenderSearch, useTenderCounts } from '@/lib/hooks/use-tenders';
 import {
   Search,
   MapPin,
@@ -130,6 +130,7 @@ export default function TendersPage() {
   const [selectedSort, setSelectedSort] = useState('Latest');
   const [showPaywall, setShowPaywall] = useState(false);
 
+  const counts = useTenderCounts();
   const { result, isLoading, error, updateFilters, filters, search, setFilters } =
     useTenderSearch({
       limit: ITEMS_PER_PAGE,
@@ -213,7 +214,7 @@ export default function TendersPage() {
             Government Tenders Across India
           </h1>
           <p className="text-lg text-muted-foreground mb-8 max-w-2xl mx-auto">
-            Browse 50,000+ active tenders from GeM, CPPP, and 28 state portals
+            Browse {counts.active > 0 ? `${formatIndianNumber(counts.active)}+` : '50,000+'} active tenders from GeM, CPPP, and 28 state portals
           </p>
 
           {/* Search Bar */}
@@ -373,10 +374,11 @@ export default function TendersPage() {
               const colors = CATEGORY_COLORS[category] || CATEGORY_COLORS['Services'];
 
               return (
-                <div
+                <Link
                   key={tender.id}
+                  href="/login"
                   className={cn(
-                    'bg-card border border-border rounded-lg p-5 shadow-card hover-lift transition-all border-l-4',
+                    'block group bg-card border border-border rounded-lg p-5 shadow-card hover-lift transition-all border-l-4 text-left',
                     colors.border
                   )}
                 >
@@ -437,16 +439,15 @@ export default function TendersPage() {
                         </span>
                       </div>
 
-                      <Link
-                        href="/login"
-                        className="inline-flex items-center gap-1 text-sm font-medium text-[#FF6B35] hover:text-[#FF6B35]/80 transition-colors mt-1"
+                      <span
+                        className="inline-flex items-center gap-1 text-sm font-medium text-[#FF6B35] group-hover:text-[#FF6B35]/80 transition-colors mt-1"
                       >
                         View Details
-                        <ArrowRight className="h-3.5 w-3.5" />
-                      </Link>
+                        <ArrowRight className="h-3.5 w-3.5 group-hover:translate-x-0.5 transition-transform" />
+                      </span>
                     </div>
                   </div>
-                </div>
+                </Link>
               );
             })}
 
@@ -546,13 +547,13 @@ export default function TendersPage() {
 
               <div className="flex flex-col sm:flex-row gap-3">
                 <Link
-                  href="/pricing"
+                  href="/login"
                   className="flex-1 px-5 py-3 border border-border rounded-lg font-medium text-foreground hover:bg-muted transition-colors text-center"
                 >
                   View Plans
                 </Link>
                 <Link
-                  href="/register"
+                  href="/login"
                   className="flex-1 px-5 py-3 bg-[#FF6B35] hover:bg-[#FF6B35]/90 text-white rounded-lg font-medium transition-colors text-center"
                 >
                   Start Free Trial
@@ -580,7 +581,11 @@ export default function TendersPage() {
                 <Wrench className="h-6 w-6 text-red-600 dark:text-red-400" />
               </div>
               <h3 className="font-semibold text-foreground mb-1">Works Tenders</h3>
-              <p className="text-sm text-muted-foreground">18,420 active tenders</p>
+              <p className="text-sm text-muted-foreground">
+                {counts.getCategoryCount('Works') > 0
+                  ? `${formatIndianNumber(counts.getCategoryCount('Works'))} active tenders`
+                  : '18,420 active tenders'}
+              </p>
             </Link>
 
             {/* Goods */}
@@ -592,7 +597,11 @@ export default function TendersPage() {
                 <Package className="h-6 w-6 text-blue-600 dark:text-blue-400" />
               </div>
               <h3 className="font-semibold text-foreground mb-1">Goods Tenders</h3>
-              <p className="text-sm text-muted-foreground">12,850 active tenders</p>
+              <p className="text-sm text-muted-foreground">
+                {counts.getCategoryCount('Goods') > 0
+                  ? `${formatIndianNumber(counts.getCategoryCount('Goods'))} active tenders`
+                  : '12,850 active tenders'}
+              </p>
             </Link>
 
             {/* Services */}
@@ -604,7 +613,11 @@ export default function TendersPage() {
                 <Settings className="h-6 w-6 text-teal-600 dark:text-teal-400" />
               </div>
               <h3 className="font-semibold text-foreground mb-1">Services Tenders</h3>
-              <p className="text-sm text-muted-foreground">11,340 active tenders</p>
+              <p className="text-sm text-muted-foreground">
+                {counts.getCategoryCount('Services') > 0
+                  ? `${formatIndianNumber(counts.getCategoryCount('Services'))} active tenders`
+                  : '11,340 active tenders'}
+              </p>
             </Link>
 
             {/* Consultancy */}
@@ -616,7 +629,11 @@ export default function TendersPage() {
                 <Briefcase className="h-6 w-6 text-purple-600 dark:text-purple-400" />
               </div>
               <h3 className="font-semibold text-foreground mb-1">Consultancy</h3>
-              <p className="text-sm text-muted-foreground">8,190 active tenders</p>
+              <p className="text-sm text-muted-foreground">
+                {counts.getCategoryCount('Consultancy') > 0
+                  ? `${formatIndianNumber(counts.getCategoryCount('Consultancy'))} active tenders`
+                  : '8,190 active tenders'}
+              </p>
             </Link>
           </div>
         </div>

@@ -124,11 +124,15 @@ async function main() {
       });
       const result: ScrapeResult = await scraper.scrape();
 
+      const duplicates = (result.skippedExisting ?? 0) + (result.updatedTenders ?? 0) > 0
+        ? (result.skippedExisting ?? 0) + (result.updatedTenders ?? 0)
+        : Math.max(0, result.totalFound - result.newTenders);
+
       await storageWriter.completeRun(run.id, {
         totalFound: result.totalFound,
         newTenders: result.newTenders,
         updatedTenders: result.updatedTenders,
-        duplicates: 0,
+        duplicates,
         errors: result.errors,
         pagesScraped: result.pagesScraped ?? 0,
       });
@@ -139,7 +143,7 @@ async function main() {
         totalFound: result.totalFound,
         newTenders: result.newTenders,
         updatedTenders: result.updatedTenders,
-        duplicates: 0,
+        duplicates,
         errors: result.errors,
         duration: result.duration,
         pagesScraped: result.pagesScraped ?? 0,
@@ -217,7 +221,10 @@ async function main() {
           portalName,
           tendersFound: result.totalFound,
           tendersNew: result.newTenders,
-          tendersDuplicate: result.updatedTenders,
+          tendersDuplicate:
+            (result.skippedExisting ?? 0) + (result.updatedTenders ?? 0) > 0
+              ? (result.skippedExisting ?? 0) + (result.updatedTenders ?? 0)
+              : Math.max(0, result.totalFound - result.newTenders),
           tendersFailed: result.errors,
           duration: Date.now() - started,
           errors: [],

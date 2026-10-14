@@ -95,6 +95,7 @@ export const subscriptionListQuerySchema = z.object({
   plan: z.string().optional(),
   status: z.enum(['ACTIVE', 'EXPIRED', 'CANCELLED', 'PAST_DUE']).optional(),
   billingCycle: z.enum(['MONTHLY', 'YEARLY']).optional(),
+  expiringBefore: z.string().optional(),
   sortBy: z.enum(['createdAt', 'startDate', 'endDate']).default('createdAt'),
   sortOrder: z.enum(['asc', 'desc']).default('desc'),
 });

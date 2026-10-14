@@ -629,10 +629,6 @@ export class ScrapingScheduler {
       {
         connection: this.bullConnection(),
         concurrency: this.concurrency,
-        limiter: {
-          max: 5,
-          duration: 60000, // Max 5 jobs per minute
-        },
       },
     );
 

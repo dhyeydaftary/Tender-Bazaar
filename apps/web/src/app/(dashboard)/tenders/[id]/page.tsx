@@ -32,7 +32,10 @@ import {
   Eye,
   Bell,
   Loader2,
+  CheckCircle2,
+  RefreshCw,
 } from 'lucide-react';
+import api from '@/lib/api';
 import { cn, formatCurrency, formatDate, getDeadlineInfo, getCategoryInfo } from '@/lib/utils';
 import { FeatureGate } from '@/components/subscription';
 import {
@@ -280,6 +283,53 @@ export default function TenderDetailPage() {
   // This hook hydrates from GET /saved and reconciles 409/404 with the server.
   const { saved: savedIds, toggleSave, error: saveError } = useSavedTenders();
   const isSaved = tenderId ? savedIds.has(tenderId) : false;
+
+  const [eligibilityCheck, setEligibilityCheck] = useState<any>(null);
+  const [checkingEligibility, setCheckingEligibility] = useState(false);
+  const [loadingEligibility, setLoadingEligibility] = useState(false);
+
+  useEffect(() => {
+    if (!tenderId) return;
+    let active = true;
+    setLoadingEligibility(true);
+    api
+      .get(`/eligibility/tender/${tenderId}`)
+      .then((res) => {
+        if (!active) return;
+        setEligibilityCheck(res.data?.data || null);
+      })
+      .catch(() => {
+        if (!active) return;
+        setEligibilityCheck(null);
+      })
+      .finally(() => {
+        if (active) setLoadingEligibility(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [tenderId]);
+
+  const handleRunEligibilityCheck = async () => {
+    if (!tenderId || checkingEligibility) return;
+    if (typeof window !== 'undefined' && !localStorage.getItem('accessToken')) {
+      toast.error('Please sign in to check eligibility.');
+      router.push(`/login?redirect=${encodeURIComponent(`/tenders/${tenderId}`)}`);
+      return;
+    }
+    setCheckingEligibility(true);
+    try {
+      const res = await api.post('/eligibility', { tenderId });
+      const check = res.data?.data?.eligibilityCheck || res.data?.data;
+      setEligibilityCheck(check);
+      toast.success('AI eligibility evaluation complete!');
+    } catch (err: any) {
+      toast.error(err?.response?.data?.error?.message || 'Failed to check eligibility');
+    } finally {
+      setCheckingEligibility(false);
+    }
+  };
 
   // Reset per-tender view state when navigating straight from one tender to
   // another (the Similar cards do exactly that): without this the new tender
@@ -565,7 +615,31 @@ export default function TenderDetailPage() {
           extra={deadline?.text}
           accentColor={deadline?.urgency === 'critical' ? '#EF4444' : deadline?.urgency === 'warning' ? '#F59E0B' : '#22C55E'}
         />
-        <MetricCard icon={Sparkles} label="AI Eligibility" value="—" extra="Not available" />
+        <MetricCard
+          icon={Sparkles}
+          label="AI Eligibility"
+          value={
+            eligibilityCheck
+              ? `${Math.round(eligibilityCheck.score)}%`
+              : loadingEligibility
+              ? '...'
+              : 'Not Checked'
+          }
+          extra={
+            eligibilityCheck
+              ? eligibilityCheck.isEligible
+                ? 'Eligible'
+                : 'Needs Review'
+              : 'Check Now'
+          }
+          accentColor={
+            eligibilityCheck
+              ? eligibilityCheck.isEligible
+                ? '#22C55E'
+                : '#F59E0B'
+              : '#00D4AA'
+          }
+        />
       </div>
 
       {/* ── Tab Navigation ────────────────────────────────────────── */}
@@ -684,15 +758,156 @@ export default function TenderDetailPage() {
       {/* ELIGIBILITY */}
       {activeTab === 'eligibility' && (
         <div className="space-y-6">
-          {/* No eligibility score in the tender detail response */}
-          <div className="bg-card border border-border rounded-xl p-8 text-center">
-            <Sparkles className="w-12 h-12 text-muted-foreground/30 mx-auto mb-4" />
-            <h3 className="text-heading-md text-foreground font-display mb-2">Eligibility check not available</h3>
-            <p className="text-body-sm text-muted-foreground">
-              No eligibility score or criteria-by-criteria comparison against your profile is available for this
-              tender yet. The requirements published with the tender are listed below.
-            </p>
-          </div>
+          {eligibilityCheck ? (
+            <>
+              {/* AI Score & Eligibility Summary */}
+              <div className="bg-card border border-border rounded-xl p-6">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                  <div className="flex items-center gap-4">
+                    <div
+                      className={cn(
+                        'w-16 h-16 rounded-2xl flex items-center justify-center font-display font-bold text-2xl border',
+                        eligibilityCheck.isEligible
+                          ? 'bg-green-500/10 border-green-500/30 text-green-500'
+                          : 'bg-amber-500/10 border-amber-500/30 text-amber-500'
+                      )}
+                    >
+                      {Math.round(eligibilityCheck.score)}%
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-heading-sm font-display text-foreground">
+                          {eligibilityCheck.isEligible ? 'Eligible to Bid' : 'Requirements Need Review'}
+                        </h3>
+                        <span
+                          className={cn(
+                            'px-2.5 py-0.5 rounded-full text-caption font-semibold uppercase tracking-wider border',
+                            eligibilityCheck.isEligible
+                              ? 'bg-green-500/15 text-green-500 border-green-500/30'
+                              : 'bg-amber-500/15 text-amber-500 border-amber-500/30'
+                          )}
+                        >
+                          {eligibilityCheck.isEligible ? 'Passed' : 'Partial Match'}
+                        </span>
+                      </div>
+                      <p className="text-body-sm text-muted-foreground mt-1">
+                        AI evaluation based on your company profile and tender requirements
+                      </p>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleRunEligibilityCheck}
+                    disabled={checkingEligibility}
+                    className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-muted hover:bg-muted/80 text-foreground text-caption font-semibold border border-border transition-colors disabled:opacity-50"
+                  >
+                    {checkingEligibility ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    )}
+                    Re-evaluate
+                  </button>
+                </div>
+              </div>
+
+              {/* Criteria Breakdown */}
+              {Array.isArray(eligibilityCheck.criteria) && eligibilityCheck.criteria.length > 0 && (
+                <div className="bg-card border border-border rounded-xl p-5 lg:p-6 space-y-3">
+                  <h3 className="text-heading-sm font-display text-foreground mb-4">Criteria Evaluation</h3>
+                  <div className="space-y-3">
+                    {eligibilityCheck.criteria.map((crit: any, idx: number) => {
+                      const status = (crit.status || '').toLowerCase();
+                      const isPass = status === 'pass' || status === 'met';
+                      const isPartial = status === 'partial' || status === 'partially_met';
+                      return (
+                        <div
+                          key={idx}
+                          className="flex items-start gap-3 p-3.5 rounded-xl border border-border bg-background/50"
+                        >
+                          <div className="mt-0.5 shrink-0">
+                            {isPass ? (
+                              <CheckCircle2 className="w-4 h-4 text-green-500" />
+                            ) : isPartial ? (
+                              <AlertTriangle className="w-4 h-4 text-amber-500" />
+                            ) : (
+                              <XIcon className="w-4 h-4 text-red-500" />
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-body-sm font-semibold text-foreground">{crit.name}</p>
+                              <span
+                                className={cn(
+                                  'text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-md border',
+                                  isPass
+                                    ? 'bg-green-500/10 text-green-500 border-green-500/20'
+                                    : isPartial
+                                    ? 'bg-amber-500/10 text-amber-500 border-amber-500/20'
+                                    : 'bg-red-500/10 text-red-500 border-red-500/20'
+                                )}
+                              >
+                                {isPass ? 'Met' : isPartial ? 'Partial' : 'Not Met'}
+                              </span>
+                            </div>
+                            {crit.detail && (
+                              <p className="text-caption text-muted-foreground mt-1 leading-relaxed">
+                                {crit.detail}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Suggestions */}
+              {Array.isArray(eligibilityCheck.suggestions) && eligibilityCheck.suggestions.length > 0 && (
+                <div className="bg-card border border-border rounded-xl p-5 lg:p-6">
+                  <h3 className="text-heading-sm font-display text-foreground mb-3 flex items-center gap-2">
+                    <Lightbulb className="w-4 h-4 text-amber-500" /> AI Recommendations
+                  </h3>
+                  <ul className="space-y-2">
+                    {eligibilityCheck.suggestions.map((sug: string, idx: number) => (
+                      <li key={idx} className="text-body-sm text-muted-foreground flex items-start gap-2">
+                        <span className="text-primary-500 font-bold">•</span>
+                        <span>{sug}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </>
+          ) : (
+            <div className="bg-card border border-border rounded-xl p-8 text-center">
+              <div className="w-14 h-14 rounded-2xl bg-primary-500/10 border border-primary-500/20 flex items-center justify-center mx-auto mb-4 text-primary-500">
+                <Sparkles className="w-7 h-7" />
+              </div>
+              <h3 className="text-heading-md text-foreground font-display mb-2">Check Your Eligibility with AI</h3>
+              <p className="text-body-sm text-muted-foreground max-w-lg mx-auto mb-6">
+                Evaluate your company profile against this tender's qualification criteria, turnover, experience,
+                and certifications to see your match score.
+              </p>
+              <button
+                onClick={handleRunEligibilityCheck}
+                disabled={checkingEligibility}
+                className="inline-flex items-center gap-2 px-6 py-2.5 bg-primary-500 hover:bg-primary-600 text-white text-body-sm font-semibold rounded-lg transition-colors disabled:opacity-50 shadow-lg shadow-primary-500/25"
+              >
+                {checkingEligibility ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Evaluating Requirements...
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-4 h-4" />
+                    Run AI Eligibility Check
+                  </>
+                )}
+              </button>
+            </div>
+          )}
 
           {/* Stated requirements — straight from the tender record */}
           <div className="bg-card border border-border rounded-xl p-5 lg:p-6">

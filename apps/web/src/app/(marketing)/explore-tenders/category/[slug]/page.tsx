@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { cn } from '@/lib/utils';
+import { useTenderCounts } from '@/lib/hooks/use-tenders';
 import {
   HardHat,
   Package,
@@ -438,6 +439,7 @@ export default function CategoryPage({
   params: { slug: string };
 }) {
   const { slug } = params;
+  const counts = useTenderCounts();
   const [selectedSubcategory, setSelectedSubcategory] = useState<string | null>(null);
   const [selectedState, setSelectedState] = useState('all');
   const [valueRange, setValueRange] = useState('all');
@@ -492,6 +494,9 @@ export default function CategoryPage({
     'Madhya Pradesh',
   ];
 
+  const activeTendersCount = counts.getCategoryCount(category.name) > 0 ? counts.getCategoryCount(category.name) : category.activeTenders;
+  const newTodayCount = counts.newToday > 0 ? counts.newToday : category.newToday;
+
   const relatedCategories = Object.entries(CATEGORY_DATA)
     .filter(([key]) => key !== slug)
     .map(([key, data]) => ({
@@ -500,7 +505,7 @@ export default function CategoryPage({
       icon: data.icon,
       color: data.color,
       bgColor: data.bgColor,
-      count: data.activeTenders,
+      count: counts.getCategoryCount(data.name) > 0 ? counts.getCategoryCount(data.name) : data.activeTenders,
     }));
 
   return (
@@ -551,12 +556,12 @@ export default function CategoryPage({
               <div className="flex items-center gap-4 text-sm">
                 <span className="flex items-center gap-1.5 text-foreground font-medium">
                   <TrendingUp className="w-4 h-4 text-primary-500" />
-                  {category.activeTenders.toLocaleString('en-IN')} active tenders
+                  {activeTendersCount.toLocaleString('en-IN')} active tenders
                 </span>
                 <span className="text-border">|</span>
                 <span className="flex items-center gap-1.5 text-foreground font-medium">
                   <Sparkles className="w-4 h-4 text-accent-500" />
-                  {category.newToday} new today
+                  {newTodayCount} new today
                 </span>
               </div>
             </div>

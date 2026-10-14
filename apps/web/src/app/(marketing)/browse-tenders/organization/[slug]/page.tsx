@@ -1,5 +1,6 @@
 import { Metadata } from 'next';
 import Link from 'next/link';
+import { OrgStatsRow } from './org-stats-row';
 
 /* ------------------------------------------------------------------ */
 /* Data                                                               */
@@ -334,27 +335,13 @@ export default function OrganizationPage({
           </div>
         </section>
 
-        {/* Stats */}
-        <section className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-10">
-          <div className="bg-card border border-border rounded-xl p-5">
-            <p className="text-sm text-muted-foreground mb-1">Total Tenders</p>
-            <p className="text-2xl font-bold text-foreground">
-              {formatINR(org.totalTenders)}
-            </p>
-          </div>
-          <div className="bg-card border border-border rounded-xl p-5">
-            <p className="text-sm text-muted-foreground mb-1">Active Tenders</p>
-            <p className="text-2xl font-bold text-accent-500">
-              {formatINR(org.activeTenders)}
-            </p>
-          </div>
-          <div className="bg-card border border-border rounded-xl p-5">
-            <p className="text-sm text-muted-foreground mb-1">Avg. Tender Value</p>
-            <p className="text-2xl font-bold text-primary-500">
-              &#8377;{formatINR(org.avgValue)}
-            </p>
-          </div>
-        </section>
+        {/* Real Dynamic Stats */}
+        <OrgStatsRow
+          orgName={org.name}
+          fallbackTotal={org.totalTenders}
+          fallbackActive={org.activeTenders}
+          fallbackAvgValue={org.avgValue}
+        />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Tender list */}

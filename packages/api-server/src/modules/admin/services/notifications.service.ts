@@ -77,6 +77,17 @@ export const notificationsService = {
   async getBroadcastStats() {
     await ensureBroadcastTable();
 
+    // Synchronize opened counts with live Notification table
+    await prisma.$executeRawUnsafe(`
+      UPDATE broadcast_campaigns bc
+      SET opened = COALESCE((
+        SELECT COUNT(*)::int
+        FROM "Notification" n
+        WHERE (n.data->>'broadcastId' = bc.id OR n.data->>'broadcast_id' = bc.id)
+          AND n."isRead" = true
+      ), 0)
+    `).catch(() => {});
+
     const rows: any = await prisma.$queryRawUnsafe(`
       SELECT
         COUNT(*)::int as total_broadcasts,
@@ -102,6 +113,17 @@ export const notificationsService = {
 
   async getBroadcastList(filters: BroadcastListFilters) {
     await ensureBroadcastTable();
+
+    // Synchronize opened counts with live Notification table
+    await prisma.$executeRawUnsafe(`
+      UPDATE broadcast_campaigns bc
+      SET opened = COALESCE((
+        SELECT COUNT(*)::int
+        FROM "Notification" n
+        WHERE (n.data->>'broadcastId' = bc.id OR n.data->>'broadcast_id' = bc.id)
+          AND n."isRead" = true
+      ), 0)
+    `).catch(() => {});
 
     const page = Math.max(1, Number(filters.page) || 1);
     const limit = Math.max(1, Number(filters.limit) || 10);

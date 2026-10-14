@@ -197,6 +197,7 @@ export type ScraperLatestRun = Pick<
   | 'duration'
   | 'startedAt'
   | 'completedAt'
+  | 'createdAt'
 >;
 
 /**
@@ -312,15 +313,37 @@ export interface RevenueReportData {
   monthlyRevenue: { month: string; amount: number }[];
   planBreakdown: { plan: string; amount: number; count: number }[];
   cycleBreakdown: { cycle: string; amount: number; count: number }[];
+  payments?: {
+    id: string;
+    userName: string;
+    userEmail: string;
+    plan: string;
+    cycle: string;
+    amount: number;
+    currency: string;
+    status: string;
+    gateway: string;
+    date: string;
+  }[];
   dateRange: { start: string; end: string };
 }
 
 export interface UserReportData {
   totalUsers: number;
+  totalNewUsers?: number;
   verifiedUsers: number;
   verificationRate: number;
   monthlySignups: { month: string; count: number }[];
   roleDistribution: { role: string; count: number }[];
+  byRole?: { role: string; count: number }[];
+  users?: {
+    id: string;
+    name: string;
+    email: string;
+    role: string;
+    isEmailVerified: boolean;
+    createdAt: string;
+  }[];
   dateRange: { start: string; end: string };
 }
 
@@ -332,6 +355,20 @@ export interface TenderReportData {
   byCategory: { category: string; count: number }[];
   byStatus: { status: string; count: number }[];
   byPortal: { portal: string; count: number }[];
+  tenders?: {
+    id: string;
+    referenceNumber: string | null;
+    title: string;
+    organization: string;
+    category: string;
+    state: string | null;
+    status: string;
+    sourcePortal: string;
+    estimatedValue: number | null;
+    bidSubmissionDeadline: string | null;
+    viewCount: number;
+    createdAt: string;
+  }[];
   dateRange: { start: string; end: string };
 }
 
@@ -340,6 +377,16 @@ export interface SubscriptionReportData {
   monthlySubscriptions: { month: string; count: number }[];
   byPlan: { plan: string; count: number }[];
   byStatus: { status: string; count: number }[];
+  subscriptions?: {
+    id: string;
+    userName: string;
+    userEmail: string;
+    plan: string;
+    cycle: string;
+    status: string;
+    startDate: string;
+    endDate: string;
+  }[];
   churnRate: number;
   dateRange: { start: string; end: string };
 }
@@ -474,5 +521,121 @@ export interface BannerRecord {
   impressions?: number;
   clicks?: number;
   ctaText?: string;
+}
+
+// ── Tenders (Admin) ────────────────────────────────────────────────────────
+
+export interface TenderAdminRecord {
+  id: string;
+  title: string;
+  referenceNumber: string;
+  organization: string;
+  department: string | null;
+  tenderType: string;
+  category: string;
+  status: 'ACTIVE' | 'CLOSED' | 'AWARDED' | 'CANCELLED' | 'CORRIGENDUM';
+  state: string;
+  district: string | null;
+  estimatedValue: number | null;
+  emdAmount: number | null;
+  publishedDate: string;
+  bidSubmissionDeadline: string;
+  bidOpeningDate: string | null;
+  sourcePortal: string;
+  sourceUrl: string | null;
+  viewCount: number;
+  createdAt: string;
+  _count?: {
+    savedBy: number;
+    eligibilityChecks: number;
+    documents: number;
+  };
+}
+
+export interface TenderListResponse {
+  tenders: TenderAdminRecord[];
+  total: number;
+  page: number;
+  limit: number;
+}
+
+export interface TenderStats {
+  total: number;
+  active: number;
+  closed: number;
+  addedThisMonth: number;
+  byCategory: { category: string; count: number }[];
+  byStatus: { status: string; count: number }[];
+  byState: { state: string; count: number }[];
+  byPortal: { sourcePortal: string; count: number }[];
+  avgValue: {
+    _avg: { estimatedValue: number | null };
+    _max: { estimatedValue: number | null };
+    _min: { estimatedValue: number | null };
+  };
+}
+
+// ── Support Tickets (Admin) ────────────────────────────────────────────────
+
+export type TicketStatus = 'OPEN' | 'IN_PROGRESS' | 'WAITING' | 'RESOLVED' | 'CLOSED';
+export type TicketPriority = 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+export type TicketCategory = 'Billing' | 'Technical' | 'Scraper Issue' | 'Account' | 'Feature Request' | 'Bug Report' | string;
+
+export interface SupportTicketUser {
+  id: string;
+  name: string;
+  email: string;
+  phone?: string | null;
+  subscription?: {
+    plan?: { name: string };
+    status?: string;
+  } | null;
+}
+
+export interface SupportMessageRecord {
+  id: string;
+  ticketId: string;
+  senderId: string;
+  senderRole: 'USER' | 'ADMIN' | 'SUPER_ADMIN';
+  message: string;
+  attachments?: string[];
+  createdAt: string;
+}
+
+export interface SupportTicketRecord {
+  id: string;
+  userId: string;
+  subject: string;
+  description: string;
+  status: TicketStatus;
+  priority: TicketPriority;
+  category: string;
+  assignedTo: string | null;
+  resolvedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  user: SupportTicketUser;
+  userPlan?: string;
+  lastMessage?: string;
+  messageCount?: number;
+  messages?: SupportMessageRecord[];
+}
+
+export interface SupportTicketStats {
+  total: number;
+  byStatus: {
+    open: number;
+    inProgress: number;
+    waiting: number;
+    resolved: number;
+    closed: number;
+  };
+  resolvedToday: number;
+  newLast24h: number;
+  newLast7d: number;
+  byPriority: Array<{ priority: string; count: number }>;
+  byCategory: Array<{ category: string; count: number }>;
+  avgResolutionHours: number;
+  csatScore: number;
 }
 

@@ -16,11 +16,15 @@ export const loginSchema = z.object({
 });
 
 export const sendOtpSchema = z.object({
-  phone: z.string().regex(/^[6-9]\d{9}$/, 'Invalid Indian phone number'),
+  phone: z.string().transform((v) => v.replace(/\D/g, '').slice(-10)).pipe(
+    z.string().regex(/^[6-9]\d{9}$/, 'Invalid Indian phone number')
+  ),
 });
 
 export const verifyOtpSchema = z.object({
-  phone: z.string().regex(/^[6-9]\d{9}$/, 'Invalid Indian phone number'),
+  phone: z.string().transform((v) => v.replace(/\D/g, '').slice(-10)).pipe(
+    z.string().regex(/^[6-9]\d{9}$/, 'Invalid Indian phone number')
+  ),
   otp: z.string().length(6, 'OTP must be 6 digits').regex(/^\d+$/, 'OTP must be numeric'),
 });
 
@@ -42,4 +46,12 @@ export const resetPasswordSchema = z.object({
     .min(8, 'Password must be at least 8 characters')
     .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
     .regex(/[0-9]/, 'Password must contain at least one number'),
+});
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, 'Current password is required'),
+  newPassword: z.string()
+    .min(8, 'New password must be at least 8 characters')
+    .regex(/[A-Z]/, 'New password must contain at least one uppercase letter')
+    .regex(/[0-9]/, 'New password must contain at least one number'),
 });

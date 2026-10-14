@@ -36,6 +36,7 @@ async function runStateScrapeLoop(
   let errors = 0;
   let skippedExisting = 0;
   let pagesScraped = 0;
+  let consecutivePageErrors = 0;
 
   const logger = {
     info: (msg: string, meta?: Record<string, unknown>) =>
@@ -62,6 +63,7 @@ async function runStateScrapeLoop(
             Accept: 'text/html,application/xhtml+xml',
           },
         });
+        consecutivePageErrors = 0;
 
         const listings = scraper.parseTenderList(listingHtml);
         if (listings.length === 0) {
@@ -130,8 +132,20 @@ async function runStateScrapeLoop(
         // One addBulk per page rather than one add per tender.
         await (scraper as any).flushTenderIndexQueue(`${scraper.portalName}:page-${page}`);
       } catch (err) {
+        // If page > 1 and 404, the portal simply has fewer pages than the requested budget
+        const is404 = (err as any)?.response?.status === 404 || String(err).includes('404');
+        if (page > 1 && is404) {
+          logger.info(`Reached end of listings at page ${page} (404), ending pagination`);
+          break;
+        }
+
         errors++;
+        consecutivePageErrors++;
         logger.error(`Failed to fetch page ${page}: ${(err as Error).message}`);
+        if (consecutivePageErrors >= 2) {
+          logger.warn(`Stopping pagination after ${consecutivePageErrors} consecutive page errors: ${(err as Error).message}`);
+          break;
+        }
       }
     }
   } finally {
@@ -169,7 +183,7 @@ async function runStateScrapeLoop(
 
 export class GujaratScraper extends BaseScraper {
   constructor(options?: StateScraperOptions) {
-    super('Gujarat (nProcure)', 'https://www.nprocure.com', {
+    super('Gujarat (nProcure)', 'https://tender.nprocure.com', {
       maxConcurrency: options?.maxConcurrency ?? 2,
       requestDelay: options?.requestDelay ?? 3000,
       retryCount: 3,
@@ -184,7 +198,9 @@ export class GujaratScraper extends BaseScraper {
   getMaxPages(): number { return 10; }
 
   buildListingUrl(page: number): string {
-    return `${this.portalUrl}/tender/search?page=${page}&state=Gujarat&status=active`;
+    return page === 1
+      ? `${this.portalUrl}/dashboard/getTenderClosingData`
+      : `${this.portalUrl}/dashboard/getTenderClosingData?page=${page}`;
   }
 
   buildDetailUrl(sourceId: string): string {
@@ -319,11 +335,11 @@ export class MaharashtraScraper extends BaseScraper {
   getMaxPages(): number { return 10; }
 
   buildListingUrl(page: number): string {
-    return `${this.portalUrl}/tender/active?page=${page}`;
+    return `${this.portalUrl}/nicgep/app?page=FrontEndLatestActiveTenders&service=page&pageNo=${page}`;
   }
 
   buildDetailUrl(sourceId: string): string {
-    return `${this.portalUrl}/tender/view/${sourceId}`;
+    return `${this.portalUrl}/nicgep/app?page=FrontEndTenderPreview&service=page&tenderid=${sourceId}`;
   }
 
   async scrape(): Promise<ScrapeResult> {
@@ -334,19 +350,22 @@ export class MaharashtraScraper extends BaseScraper {
     const tenders: Partial<ScrapedTender>[] = [];
     const $ = this.loadHtml(html);
 
-    $('table.tenderTable tbody tr, .tender-row, #tenderListTable tbody tr').each((_, row) => {
+    $('table.list_table tbody tr, table#activeTenders tbody tr, table.tenderTable tbody tr, #tenderListTable tbody tr').each((_, row) => {
       const $cols = $(row).find('td');
       if ($cols.length < 5) return;
 
-      const sourceId = this.cleanText(
-        $cols.eq(0).find('a').attr('href')?.match(/view\/(\w+)/)?.[1] || $cols.eq(0).text(),
-      );
-      const refNumber = this.cleanText($cols.eq(1).text());
-      const title = this.cleanText($cols.eq(2).text());
+      const slNo = this.cleanText($cols.eq(0).text());
+      if (!slNo || isNaN(parseInt(slNo))) return;
+
+      const $titleLink = $cols.eq(1).find('a');
+      const title = this.cleanText($titleLink.text() || $cols.eq(1).text());
+      const detailHref = $titleLink.attr('href') || '';
+      const sourceId = detailHref.match(/tenderid=(\d+)/)?.[1] || this.cleanText($cols.eq(0).text());
+
+      const refNumber = this.cleanText($cols.eq(2).text());
       const org = this.cleanText($cols.eq(3).text());
-      const department = this.cleanText($cols.eq(4).text());
-      const valueText = this.cleanText($cols.eq(5).text());
-      const closingDate = this.cleanText($cols.eq(6).text());
+      const closingDate = this.cleanText($cols.eq(4).text());
+      const valueText = $cols.length > 5 ? this.cleanText($cols.eq(5).text()) : '';
 
       if (!sourceId || !title) return;
 
@@ -355,7 +374,6 @@ export class MaharashtraScraper extends BaseScraper {
         referenceNumber: refNumber || sourceId,
         title,
         organization: org,
-        department,
         estimatedValue: this.parseIndianCurrency(valueText),
         bidSubmissionDeadline: this.parseIndianDate(closingDate),
         sourcePortal: this.portalName,
@@ -567,7 +585,7 @@ export class RajasthanScraper extends BaseScraper {
 
 export class KarnatakaScraper extends BaseScraper {
   constructor(options?: StateScraperOptions) {
-    super('Karnataka (eProc)', 'https://eproc.karnataka.gov.in', {
+    super('Karnataka (eProc)', 'https://kppp.karnataka.gov.in', {
       maxConcurrency: options?.maxConcurrency ?? 2,
       requestDelay: options?.requestDelay ?? 3000,
       retryCount: 3,
@@ -582,11 +600,11 @@ export class KarnatakaScraper extends BaseScraper {
   getMaxPages(): number { return 10; }
 
   buildListingUrl(page: number): string {
-    return `${this.portalUrl}/eprocurement/tenderList?page=${page}&status=active`;
+    return `${this.portalUrl}/ui/tenders?page=${page}`;
   }
 
   buildDetailUrl(sourceId: string): string {
-    return `${this.portalUrl}/eprocurement/tenderDetail?tenderId=${sourceId}`;
+    return `${this.portalUrl}/ui/tenders/${sourceId}`;
   }
 
   async scrape(): Promise<ScrapeResult> {

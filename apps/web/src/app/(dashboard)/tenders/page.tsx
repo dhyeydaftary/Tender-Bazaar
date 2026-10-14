@@ -21,7 +21,8 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { cn, formatCurrency, getDeadlineInfo, getCategoryInfo, formatIndianNumber } from '@/lib/utils';
-import { useTenderSearch, useSavedTenders } from '@/lib/hooks/use-tenders';
+import { useTenderSearch, useSavedTenders, useTenderCounts } from '@/lib/hooks/use-tenders';
+import { useDashboardStore } from '@/stores/dashboard-store';
 
 const SORT_OPTIONS = [
   { value: 'newest', label: 'Newest First', sortBy: 'publishedDate', sortOrder: 'desc' },
@@ -84,6 +85,7 @@ const VALUE_RANGES: Record<string, { min?: number; max?: number }> = {
 };
 
 export default function TendersPage() {
+  const [statusTab, setStatusTab] = useState<'ACTIVE' | 'CLOSED' | 'ALL'>('ACTIVE');
   const [searchInput, setSearchInput] = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
   const [sortKey, setSortKey] = useState('newest');
@@ -101,11 +103,15 @@ export default function TendersPage() {
 
   const sortOption = SORT_OPTIONS.find((o) => o.value === sortKey) || SORT_OPTIONS[0];
 
+  const { data: dashboard, fetchDashboard } = useDashboardStore();
+  const { active: activeStat, closed: closedStat, total: totalStat, refresh: refreshCounts, isLoading: countsLoading } = useTenderCounts();
+
   const { result, isLoading, error, updateFilters, search, filters } = useTenderSearch({
     page: 1,
     limit: ITEMS_PER_PAGE,
     sortBy: sortOption.sortBy,
     sortOrder: sortOption.sortOrder,
+    status: ['ACTIVE'],
   });
   const { saved: savedIds, toggleSave } = useSavedTenders();
 
@@ -113,6 +119,19 @@ export default function TendersPage() {
   const total = result?.total ?? 0;
   const currentPage = filters.page || 1;
   const totalPages = Math.max(1, Math.ceil(total / ITEMS_PER_PAGE));
+
+  // Dynamic counts backed by real PostgreSQL and Elasticsearch stats
+  const activeCount = activeStat > 0 ? activeStat : (dashboard?.stats?.activeTenders ?? (statusTab === 'ACTIVE' ? total : 0));
+  const closedCount = closedStat > 0 ? closedStat : (dashboard?.stats?.closedTenders ?? (statusTab === 'CLOSED' ? total : 0));
+  const totalCount = totalStat > 0 ? totalStat : (dashboard?.stats?.totalTenders ?? (activeCount + closedCount));
+
+  const handleStatusTabChange = (tab: 'ACTIVE' | 'CLOSED' | 'ALL') => {
+    setStatusTab(tab);
+    updateFilters({
+      status: tab === 'ALL' ? undefined : tab === 'CLOSED' ? ['CLOSED', 'AWARDED', 'CANCELLED'] : ['ACTIVE'],
+      page: 1,
+    });
+  };
 
   // Debounced search
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
@@ -198,6 +217,7 @@ export default function TendersPage() {
     setSelectedValueRange(null);
     setSpecialFilters({ msme: false, startup: false, emdExempt: false });
     updateFilters({
+      status: statusTab === 'ALL' ? undefined : [statusTab],
       categories: undefined,
       states: undefined,
       minValue: undefined,
@@ -302,9 +322,104 @@ export default function TendersPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-heading-lg text-foreground font-display">All Tenders</h1>
-        <p className="text-body-sm text-muted-foreground mt-0.5">Browse and search {total > 0 ? formatIndianNumber(total) : ''} active government tenders</p>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-heading-lg text-foreground font-display">All Tenders</h1>
+          <p className="text-body-sm text-muted-foreground mt-0.5">
+            {statusTab === 'ACTIVE'
+              ? `Showing ${formatIndianNumber(activeCount)} active tenders open for bidding`
+              : statusTab === 'CLOSED'
+              ? `Showing ${formatIndianNumber(closedCount)} closed & awarded tenders`
+              : `Showing all ${formatIndianNumber(totalCount)} tenders in the database (${formatIndianNumber(activeCount)} active, ${formatIndianNumber(closedCount)} closed)`}
+          </p>
+        </div>
+
+        {/* Status Pill Tabs & Refresh */}
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <div className="flex items-center gap-1.5 bg-muted/60 p-1 rounded-xl border border-border">
+            <button
+              type="button"
+              onClick={() => handleStatusTabChange('ACTIVE')}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5',
+                statusTab === 'ACTIVE'
+                  ? 'bg-primary-500 text-white shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              <span>Active</span>
+              <span
+                className={cn(
+                  'px-1.5 py-0.2 rounded-full text-[10px]',
+                  statusTab === 'ACTIVE'
+                    ? 'bg-white/20 text-white'
+                    : 'bg-muted text-muted-foreground'
+                )}
+              >
+                {formatIndianNumber(activeCount)}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleStatusTabChange('CLOSED')}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5',
+                statusTab === 'CLOSED'
+                  ? 'bg-primary-500 text-white shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              <span>Closed</span>
+              <span
+                className={cn(
+                  'px-1.5 py-0.2 rounded-full text-[10px]',
+                  statusTab === 'CLOSED'
+                    ? 'bg-white/20 text-white'
+                    : 'bg-muted text-muted-foreground'
+                )}
+              >
+                {formatIndianNumber(closedCount)}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleStatusTabChange('ALL')}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5',
+                statusTab === 'ALL'
+                  ? 'bg-primary-500 text-white shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              <span>All</span>
+              <span
+                className={cn(
+                  'px-1.5 py-0.2 rounded-full text-[10px]',
+                  statusTab === 'ALL'
+                    ? 'bg-white/20 text-white'
+                    : 'bg-muted text-muted-foreground'
+                )}
+              >
+                {formatIndianNumber(totalCount)}
+              </span>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={async () => {
+              await Promise.all([
+                refreshCounts(),
+                search(),
+                fetchDashboard({ force: true }),
+              ]);
+            }}
+            title="Refresh tenders and counts"
+            className="p-2 rounded-xl border border-border bg-card text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+          >
+            <RefreshCw className={cn('w-4 h-4', (isLoading || countsLoading) && 'animate-spin')} />
+          </button>
+        </div>
       </div>
 
       {/* Search */}

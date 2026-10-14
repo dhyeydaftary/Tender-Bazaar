@@ -299,7 +299,11 @@ export default function TenderResultsPage() {
       {/* ============================================================ */}
       <section className="px-4 pb-8">
         <div className="mx-auto max-w-5xl grid grid-cols-2 sm:grid-cols-4 gap-3">
-          <StatCard value="32,500+" label="Results Published" icon={Award} />
+          <StatCard
+            value={meta?.total !== undefined ? `${meta.total.toLocaleString('en-IN')}` : '32,500+'}
+            label="Results Published"
+            icon={Award}
+          />
           <StatCard value="₹4.2L Cr" label="Total Value Awarded" icon={IndianRupee} />
           <StatCard value="28" label="States Covered" icon={MapPin} />
           <StatCard value="Daily" label="Updated" icon={Clock} />

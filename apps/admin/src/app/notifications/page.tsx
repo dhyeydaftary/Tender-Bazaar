@@ -243,7 +243,7 @@ export default function NotificationsPage() {
       // Immediately refetch live stats & table
       loadData(true);
     } catch (err: any) {
-      alert(`Failed to send broadcast: ${err?.message || 'Server error'}`);
+      setError(`Failed to send broadcast: ${err?.message || 'Server error'}`);
     } finally {
       setIsSending(false);
     }

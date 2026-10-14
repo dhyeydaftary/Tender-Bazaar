@@ -436,78 +436,154 @@ export function useSavedTenders() {
 }
 
 /**
- * Hook to get the live, updated total tender count across the platform.
- * Hydrates immediately from localStorage cache, updates via /tenders/stats,
- * and refreshes when the tab gains focus or on periodic interval.
+ * Live tender counts across statuses.
  */
-export function useTenderCount() {
-  const [count, setCount] = useState<number | null>(null);
+export interface TenderCounts {
+  active: number;
+  closed: number;
+  total: number;
+  newToday: number;
+  byCategory: Record<string, number>;
+  byState: Record<string, number>;
+  topStates: { state: string; count: number }[];
+  allStates: { state: string; count: number }[];
+  getCategoryCount: (category: string) => number;
+  getStateCount: (stateName: string) => number;
+  isLoading: boolean;
+  refresh: () => Promise<void>;
+}
 
-  useEffect(() => {
-    let cancelled = false;
+export function useTenderCounts(stateFilter?: string): TenderCounts {
+  const [counts, setCounts] = useState<{
+    active: number;
+    closed: number;
+    total: number;
+    newToday: number;
+    byCategory: Record<string, number>;
+    byState: Record<string, number>;
+    topStates: { state: string; count: number }[];
+    allStates: { state: string; count: number }[];
+  }>({
+    active: 0,
+    closed: 0,
+    total: 0,
+    newToday: 0,
+    byCategory: {},
+    byState: {},
+    topStates: [],
+    allStates: [],
+  });
+  const [isLoading, setIsLoading] = useState(true);
 
+  const fetchCounts = useCallback(async () => {
     try {
-      const saved = localStorage.getItem('tb_tenders_total_count');
-      if (saved && !isNaN(Number(saved))) {
-        setCount(Number(saved));
-      }
-    } catch {}
+      const res = await api.get('/tenders/stats', {
+        params: stateFilter ? { state: stateFilter } : undefined,
+      });
+      const data = res.data?.data;
+      if (data && typeof data.total === 'number') {
+        const active = Number(data.active ?? 0);
+        const total = Number(data.total ?? 0);
+        const closed = Number(data.closed ?? Math.max(0, total - active));
+        const newToday = Number(data.newToday ?? 0);
+        const byCategory = data.byCategory ?? {};
+        const byState = data.byState ?? {};
+        const topStates = data.topStates ?? [];
+        const allStates = data.allStates ?? [];
 
-    const fetchCount = async () => {
-      try {
-        const res = await api.get('/tenders/stats');
-        const total = res.data?.data?.total;
-        if (!cancelled && typeof total === 'number') {
-          setCount(total);
+        const nextCounts = {
+          active,
+          closed,
+          total,
+          newToday,
+          byCategory,
+          byState,
+          topStates,
+          allStates,
+        };
+
+        setCounts(nextCounts);
+        if (!stateFilter) {
           try {
+            localStorage.setItem('tb_tenders_counts', JSON.stringify(nextCounts));
             localStorage.setItem('tb_tenders_total_count', String(total));
           } catch {}
-          return;
-        }
-      } catch {
-        // Fallback to /tenders?limit=1
-        try {
-          const fallbackRes = await api.get('/tenders', { params: { limit: '1' } });
-          const total = fallbackRes.data?.data?.total;
-          if (!cancelled && typeof total === 'number') {
-            setCount(total);
-            try {
-              localStorage.setItem('tb_tenders_total_count', String(total));
-            } catch {}
-          }
-        } catch {
-          // Keep current state
         }
       }
-    };
+    } catch {
+      // Fallback
+    } finally {
+      setIsLoading(false);
+    }
+  }, [stateFilter]);
 
-    fetchCount();
+  useEffect(() => {
+    if (!stateFilter) {
+      try {
+        const cached = localStorage.getItem('tb_tenders_counts');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (typeof parsed.active === 'number') {
+            setCounts((prev) => ({ ...prev, ...parsed }));
+            setIsLoading(false);
+          }
+        }
+      } catch {}
+    }
+
+    fetchCounts();
 
     const handleSync = () => {
-      if (typeof window !== 'undefined') {
-        try {
-          const saved = localStorage.getItem('tb_tenders_total_count');
-          if (saved && !isNaN(Number(saved))) {
-            setCount(Number(saved));
-          }
-        } catch {}
-      }
-      fetchCount();
+      fetchCounts();
     };
 
     window.addEventListener('focus', handleSync);
     window.addEventListener('tb_tenders_updated', handleSync);
-
-    const interval = setInterval(fetchCount, 60000);
+    const interval = setInterval(fetchCounts, 30000);
 
     return () => {
-      cancelled = true;
       window.removeEventListener('focus', handleSync);
       window.removeEventListener('tb_tenders_updated', handleSync);
       clearInterval(interval);
     };
-  }, []);
+  }, [fetchCounts, stateFilter]);
 
-  return count;
+  const getCategoryCount = useCallback(
+    (category: string): number => {
+      if (!category) return 0;
+      const upper = category.toUpperCase();
+      return counts.byCategory[upper] ?? counts.byCategory[category] ?? 0;
+    },
+    [counts.byCategory]
+  );
+
+  const getStateCount = useCallback(
+    (stateName: string): number => {
+      if (!stateName) return 0;
+      if (counts.byState[stateName] !== undefined) return counts.byState[stateName];
+      const match = Object.keys(counts.byState).find(
+        (k) => k.toLowerCase() === stateName.toLowerCase()
+      );
+      return match ? counts.byState[match] : 0;
+    },
+    [counts.byState]
+  );
+
+  return {
+    ...counts,
+    getCategoryCount,
+    getStateCount,
+    isLoading,
+    refresh: fetchCounts,
+  };
+}
+
+/**
+ * Hydrates immediately from localStorage cache, updates via /tenders/stats,
+ * and refreshes when the tab gains focus or on periodic interval.
+ */
+export function useTenderCount() {
+  const { total } = useTenderCounts();
+  return total > 0 ? total : null;
 }
 

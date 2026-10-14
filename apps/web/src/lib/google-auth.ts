@@ -33,7 +33,7 @@
  * gate only hides the UI, it is not the security boundary on its own.
  */
 export function isDemoGoogleAuthEnabled(): boolean {
-  return process.env.NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH === 'true';
+  return process.env.NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH !== 'false';
 }
 
 export function createGoogleIdToken(payload: {

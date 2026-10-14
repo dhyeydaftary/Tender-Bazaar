@@ -15,19 +15,56 @@ let transporter: nodemailer.Transporter | null = null;
 async function getTransporter(): Promise<nodemailer.Transporter> {
   if (transporter) return transporter;
 
-  if (config.isDev) {
-    // In development, use a JSON transport that logs to console
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS;
+
+  const gmailUser = process.env.GMAIL_USER;
+  const gmailPass = process.env.GMAIL_APP_PASSWORD;
+
+  const sesKey = process.env.AWS_SES_ACCESS_KEY;
+  const sesSecret = process.env.AWS_SES_SECRET_KEY;
+
+  if (smtpHost && smtpUser && smtpPass) {
     transporter = nodemailer.createTransport({
-      jsonTransport: true,
+      host: smtpHost,
+      port: Number(process.env.SMTP_PORT) || 587,
+      secure: Number(process.env.SMTP_PORT) === 465,
+      auth: {
+        user: smtpUser,
+        pass: smtpPass,
+      },
     });
-    console.log('[Email] Using JSON transport (dev mode)');
-  } else {
-    // In production, use AWS SES
-    const ses = new SES({ region: config.aws.region });
+    console.log(`[Email] Using custom SMTP transport (${smtpHost})`);
+  } else if (gmailUser && gmailPass) {
+    transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: gmailUser,
+        pass: gmailPass,
+      },
+    });
+    console.log(`[Email] Using Gmail SMTP transport (${gmailUser})`);
+  } else if (sesKey && sesKey !== 'your-ses-access-key' && sesSecret && sesSecret !== 'your-ses-secret-key') {
+    const ses = new SES({
+      region: config.aws.region,
+      credentials: {
+        accessKeyId: sesKey,
+        secretAccessKey: sesSecret,
+      },
+    });
     transporter = nodemailer.createTransport({
       SES: { ses, aws: { SES } },
     } as nodemailer.TransportOptions);
     console.log('[Email] Using AWS SES transport');
+  } else {
+    // Unconfigured fallback: logs to console
+    transporter = nodemailer.createTransport({
+      jsonTransport: true,
+    });
+    console.log(
+      '[Email] No live SMTP / AWS SES credentials configured in .env. Messages will log to service console. Set SMTP_HOST/USER/PASS or GMAIL_USER/GMAIL_APP_PASSWORD for internet email dispatch.'
+    );
   }
 
   return transporter;

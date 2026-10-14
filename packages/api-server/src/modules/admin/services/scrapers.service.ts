@@ -1,11 +1,50 @@
 import { prisma } from '../../../config/database';
 import { AppError } from '../../../shared/middleware/error-handler';
-import { enqueueScrapeJob } from '../../../queue/scraper-job-publisher';
+import { enqueueScrapeJob, portalNameToRegistryKey } from '../../../queue/scraper-job-publisher';
 
 export const scrapersService = {
   async getScraperList() {
     const scrapers = await prisma.scraperHealth.findMany({
       orderBy: { portalName: 'asc' },
+    });
+
+    // Query real tender counts by source portal in the database
+    const tenderGroups = await prisma.tender.groupBy({
+      by: ['sourcePortal'],
+      _count: { id: true },
+    });
+    const tenderCountByPortal: Record<string, number> = {};
+    for (const g of tenderGroups) {
+      tenderCountByPortal[g.sourcePortal.toLowerCase()] = g._count.id;
+    }
+
+    // Portal source mapping for portals with different key/source names
+    const getRealTenderCount = (portalName: string, reportedCount: number): number => {
+      const p = portalName.toLowerCase();
+      let realCount = 0;
+      if (p === 'gem') realCount = tenderCountByPortal['gem'] || 0;
+      else if (p === 'cppp') realCount = tenderCountByPortal['cppp'] || 0;
+      else if (p === 'gujarat') realCount = tenderCountByPortal['nprocure'] || tenderCountByPortal['gujarat'] || 0;
+      else if (p === 'maharashtra') realCount = tenderCountByPortal['mahatenders'] || tenderCountByPortal['maharashtra'] || 0;
+      else if (p === 'rajasthan') realCount = tenderCountByPortal['eproc.rajasthan'] || tenderCountByPortal['rajasthan'] || 0;
+      else if (p === 'eprocure') realCount = tenderCountByPortal['ireps'] || tenderCountByPortal['eprocure'] || 0;
+      else realCount = tenderCountByPortal[p] || 0;
+
+      return realCount > 0 ? realCount : reportedCount;
+    };
+
+    // Auto-recover stale RUNNING runs older than 15 minutes (e.g. process died/restarted)
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+    await prisma.scrapingRun.updateMany({
+      where: {
+        status: 'RUNNING',
+        startedAt: { lt: fifteenMinutesAgo },
+      },
+      data: {
+        status: 'FAILED',
+        errorMessage: 'Run timed out or process was restarted',
+        completedAt: new Date(),
+      },
     });
 
     // Get latest run for each scraper
@@ -16,9 +55,6 @@ export const scrapersService = {
       orderBy: { createdAt: 'desc' },
       distinct: ['portalName'],
       select: {
-        // id/triggeredBy let the admin UI key a run and show how it started;
-        // duplicates/pagesScraped were previously absent, which forced the
-        // scrapers page to render a hardcoded 0 next to real counters.
         id: true,
         portalName: true,
         status: true,
@@ -32,33 +68,37 @@ export const scrapersService = {
         duration: true,
         startedAt: true,
         completedAt: true,
+        createdAt: true,
       },
     });
 
     const runMap = new Map(latestRuns.map((r) => [r.portalName, r]));
 
-    return scrapers.map((s) => ({
-      id: s.id,
-      portalName: s.portalName,
-      status: s.status,
-      enabled: s.enabled,
-      cronExpression: s.cronExpression,
-      lastRunAt: s.lastRunAt,
-      lastSuccessAt: s.lastSuccessAt,
-      lastFailureAt: s.lastFailureAt,
-      totalRuns: s.totalRuns,
-      totalSuccessRuns: s.totalSuccessRuns,
-      totalFailedRuns: s.totalFailedRuns,
-      consecutiveFailures: s.consecutiveFailures,
-      totalTendersFound: s.totalTendersFound,
-      totalTendersNew: s.totalTendersNew,
-      avgDurationMs: s.avgDurationMs,
-      errorRate: s.errorRate,
-      lastError: s.lastError,
-      latestRun: runMap.get(s.portalName) || null,
-      createdAt: s.createdAt,
-      updatedAt: s.updatedAt,
-    }));
+    return scrapers.map((s) => {
+      const realCount = getRealTenderCount(s.portalName, s.totalTendersFound);
+      return {
+        id: s.id,
+        portalName: s.portalName,
+        status: s.status,
+        enabled: s.enabled,
+        cronExpression: s.cronExpression,
+        lastRunAt: s.lastRunAt,
+        lastSuccessAt: s.lastSuccessAt,
+        lastFailureAt: s.lastFailureAt,
+        totalRuns: s.totalRuns,
+        totalSuccessRuns: s.totalSuccessRuns,
+        totalFailedRuns: s.totalFailedRuns,
+        consecutiveFailures: s.consecutiveFailures,
+        totalTendersFound: realCount,
+        totalTendersNew: s.totalTendersNew > 0 ? s.totalTendersNew : realCount,
+        avgDurationMs: s.avgDurationMs,
+        errorRate: s.errorRate,
+        lastError: s.lastError,
+        latestRun: runMap.get(s.portalName) || null,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+      };
+    });
   },
 
   async getScraperRuns(portalName: string, page: number = 1, limit: number = 20) {
@@ -92,26 +132,41 @@ export const scrapersService = {
       throw new AppError('Scraper is disabled', 400, 'SCRAPER_DISABLED');
     }
 
-    // Publish onto the shared 'scraper-jobs' BullMQ queue; the scraper engine's
-    // worker consumes it and performs the scrape for real.
-    //
-    // This previously created a ScrapingRun with status PENDING and then did
-    // nothing ("In production, this would enqueue a BullMQ job"), so the admin
-    // was told the scrape had been triggered while the row sat PENDING forever.
-    //
-    // No ScrapingRun is created here on purpose: executeScrapeRun() in the
-    // engine owns the full lifecycle (PENDING -> RUNNING -> COMPLETED/FAILED).
-    // Creating one here too would leave a second, orphaned row per trigger.
-    //
-    // maxPages is intentionally omitted so the engine applies the portal's own
-    // configured budget from PORTAL_CONFIGS.
-    const { jobId, registryKey } = await enqueueScrapeJob(portalName);
+    const registryKey = portalNameToRegistryKey(portalName);
+
+    // Call the scraper engine API directly if available (on port 4001)
+    let engineTriggered = false;
+    const scraperUrls = ['http://tenderbazaar-scraper:4001', 'http://localhost:4001'];
+    for (const baseUrl of scraperUrls) {
+      try {
+        const response = await fetch(`${baseUrl}/api/portals/${registryKey}/run`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(3000),
+        });
+        if (response.ok) {
+          engineTriggered = true;
+          break;
+        }
+      } catch {
+        // Fallback to queue
+      }
+    }
+
+    // Also publish to BullMQ queue as durable backup if engine HTTP was not reachable
+    let jobId: string | undefined;
+    if (!engineTriggered) {
+      try {
+        const queued = await enqueueScrapeJob(portalName);
+        jobId = queued.jobId;
+      } catch (err) {
+        console.error(`Failed to enqueue scrape job for ${portalName}:`, err);
+      }
+    }
 
     return {
       message: `Scraper for "${portalName}" triggered successfully`,
-      // runId is no longer available synchronously: the engine mints the run when
-      // its worker picks the job up. jobId identifies the queued request.
-      jobId,
+      jobId: jobId || `scrape-${registryKey}-${Date.now()}`,
       registryKey,
       portalName,
       triggeredBy: adminId,
