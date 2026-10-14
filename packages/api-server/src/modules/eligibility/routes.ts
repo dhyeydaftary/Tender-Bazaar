@@ -9,6 +9,7 @@ router.post('/', authenticate, requireAiCheck(), eligibilityController.checkElig
 router.post('/check', authenticate, requireAiCheck(), eligibilityController.checkEligibility);
 router.post('/bulk', authenticate, requireAiCheck(), eligibilityController.bulkCheckEligibility);
 router.get('/history', authenticate, eligibilityController.getEligibilityHistory);
+router.get('/tender/:tenderId', authenticate, eligibilityController.getTenderEligibility);
 router.get('/match', authenticate, eligibilityController.getMatchingTenders);
 
 export default router;

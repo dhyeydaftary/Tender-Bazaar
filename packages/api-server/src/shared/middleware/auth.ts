@@ -51,6 +51,16 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
       throw new AppError('User not found', 401, 'USER_NOT_FOUND');
     }
 
+    // Check maintenance mode for non-admin users
+    if (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN') {
+      const maintenanceSetting = await prisma.adminSetting.findUnique({
+        where: { category_key: { category: 'general', key: 'maintenanceMode' } },
+      });
+      if (maintenanceSetting && maintenanceSetting.value === true) {
+        throw new AppError('Platform is currently under maintenance. Please try again later.', 503, 'MAINTENANCE_MODE');
+      }
+    }
+
     (req as any).user = user;
     next();
   } catch (error) {

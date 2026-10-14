@@ -64,9 +64,10 @@ export const tenderController = {
     }
   },
 
-  async getTenderStats(_req: Request, res: Response, next: NextFunction) {
+  async getTenderStats(req: Request, res: Response, next: NextFunction) {
     try {
-      const stats = await tenderService.getTenderStats();
+      const state = req.query.state as string | undefined;
+      const stats = await tenderService.getTenderStats(state);
       res.json({ success: true, data: stats });
     } catch (error) {
       next(error);

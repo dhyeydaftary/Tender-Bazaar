@@ -115,6 +115,8 @@ export const dashboardService = {
         newToday,
         newTodayChangePct,
         activeTenders: tenderStats.active,
+        closedTenders: tenderStats.closed,
+        totalTenders: tenderStats.total,
         activeAddedThisWeek: newThisWeek,
         savedCount,
         savedExpiringSoon,

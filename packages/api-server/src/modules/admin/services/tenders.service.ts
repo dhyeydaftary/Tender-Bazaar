@@ -27,10 +27,13 @@ export const tendersService = {
         { referenceNumber: { contains: search, mode: 'insensitive' } },
         { organization: { contains: search, mode: 'insensitive' } },
         { department: { contains: search, mode: 'insensitive' } },
+        { state: { contains: search, mode: 'insensitive' } },
       ];
     }
 
-    if (sourcePortal) where.sourcePortal = sourcePortal;
+    if (sourcePortal) {
+      where.sourcePortal = { contains: sourcePortal, mode: 'insensitive' };
+    }
     if (category) where.category = category;
     if (status) where.status = status;
     if (state) where.state = state;
@@ -175,7 +178,7 @@ export const tendersService = {
     ] = await Promise.all([
       prisma.tender.count(),
       prisma.tender.count({ where: { status: 'ACTIVE' } }),
-      prisma.tender.count({ where: { status: 'CLOSED' } }),
+      prisma.tender.count({ where: { status: { in: ['CLOSED', 'AWARDED', 'CANCELLED'] } } }),
       prisma.tender.count({ where: { createdAt: { gte: startOfMonth } } }),
       prisma.tender.groupBy({
         by: ['category'],

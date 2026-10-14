@@ -148,8 +148,12 @@ export const resultsService = {
 
     // Build filter for tenders in matching categories/states
     const tenderWhere: any = {};
-    if (categories.length > 0) {
-      tenderWhere.category = { in: categories };
+    const validCategories = (categories || []).filter(
+      (cat): cat is 'WORKS' | 'GOODS' | 'SERVICES' | 'CONSULTANCY' =>
+        ['WORKS', 'GOODS', 'SERVICES', 'CONSULTANCY'].includes(cat as any)
+    );
+    if (validCategories.length > 0) {
+      tenderWhere.category = { in: validCategories };
     }
     if (states.length > 0) {
       tenderWhere.state = { in: states };

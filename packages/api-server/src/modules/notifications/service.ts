@@ -76,6 +76,21 @@ export const notificationService = {
     // Invalidate unread count cache
     await redis.del(`unread:${userId}`);
 
+    // Update broadcast campaigns opened count if this notification belongs to a broadcast
+    if (updated.data && typeof updated.data === 'object' && ((updated.data as any).broadcastId || (updated.data as any).broadcast_id)) {
+      const bId = (updated.data as any).broadcastId || (updated.data as any).broadcast_id;
+      await prisma.$executeRawUnsafe(`
+        UPDATE broadcast_campaigns
+        SET opened = (
+          SELECT COUNT(*)::int
+          FROM "Notification"
+          WHERE (data->>'broadcastId' = $1 OR data->>'broadcast_id' = $1)
+            AND "isRead" = true
+        )
+        WHERE id = $1
+      `, bId).catch(() => {});
+    }
+
     return updated;
   },
 
@@ -88,6 +103,17 @@ export const notificationService = {
     // Invalidate unread count cache
     await redis.del(`unread:${userId}`);
 
+    // Sync broadcast campaign opened counts
+    await prisma.$executeRawUnsafe(`
+      UPDATE broadcast_campaigns bc
+      SET opened = COALESCE((
+        SELECT COUNT(*)::int
+        FROM "Notification" n
+        WHERE (n.data->>'broadcastId' = bc.id OR n.data->>'broadcast_id' = bc.id)
+          AND n."isRead" = true
+      ), 0)
+    `).catch(() => {});
+
     return { markedCount: result.count };
   },
 
@@ -99,6 +125,17 @@ export const notificationService = {
 
     // Invalidate unread count cache
     await redis.del(`unread:${userId}`);
+
+    // Sync broadcast campaign opened counts
+    await prisma.$executeRawUnsafe(`
+      UPDATE broadcast_campaigns bc
+      SET opened = COALESCE((
+        SELECT COUNT(*)::int
+        FROM "Notification" n
+        WHERE (n.data->>'broadcastId' = bc.id OR n.data->>'broadcast_id' = bc.id)
+          AND n."isRead" = true
+      ), 0)
+    `).catch(() => {});
 
     return { markedCount: result.count };
   },

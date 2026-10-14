@@ -9,6 +9,7 @@ import {
   googleAuthSchema,
   forgotPasswordSchema,
   resetPasswordSchema,
+  changePasswordSchema,
 } from './validation';
 import { AppError } from '../../shared/middleware/error-handler';
 
@@ -90,6 +91,17 @@ export const authController = {
     try {
       const data = resetPasswordSchema.parse(req.body);
       const result = await authService.resetPassword(data.token, data.password);
+      res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async changePassword(req: Request, res: Response, next: NextFunction) {
+    try {
+      const data = changePasswordSchema.parse(req.body);
+      const userId = (req as any).user?.id || (req as any).user?.userId;
+      const result = await authService.changePassword(userId, data);
       res.json({ success: true, data: result });
     } catch (error) {
       next(error);

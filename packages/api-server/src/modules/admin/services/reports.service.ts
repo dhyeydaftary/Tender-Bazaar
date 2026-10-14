@@ -8,7 +8,7 @@ interface ReportFilters {
 
 export const reportsService = {
   async getRevenueReport(filters: ReportFilters) {
-    const startDate = filters.startDate ? new Date(filters.startDate) : new Date(new Date().getFullYear(), 0, 1);
+    const startDate = filters.startDate ? new Date(filters.startDate) : new Date(0);
     const endDate = filters.endDate ? new Date(filters.endDate) : new Date();
 
     const payments = await prisma.payment.findMany({
@@ -16,13 +16,11 @@ export const reportsService = {
         status: 'SUCCESS',
         createdAt: { gte: startDate, lte: endDate },
       },
-      orderBy: { createdAt: 'asc' },
-      select: {
-        amount: true,
-        planSlug: true,
-        billingCycle: true,
-        createdAt: true,
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: { select: { name: true, email: true } },
       },
+      take: 2000,
     });
 
     const totalRevenue = payments.reduce((sum, p) => sum + p.amount, 0);
@@ -85,19 +83,42 @@ export const reportsService = {
       monthlyRevenue: Array.from(monthlyMap.entries()).map(([month, amount]) => ({ month, amount })),
       planBreakdown: Array.from(planMap.entries()).map(([plan, data]) => ({ plan, ...data })),
       cycleBreakdown: Array.from(cycleMap.entries()).map(([cycle, data]) => ({ cycle, ...data })),
+      payments: payments.map((p) => ({
+        id: p.id,
+        userName: p.user?.name || 'N/A',
+        userEmail: p.user?.email || 'N/A',
+        plan: p.planSlug || 'N/A',
+        cycle: p.billingCycle || 'N/A',
+        amount: p.amount,
+        currency: p.currency || 'INR',
+        status: p.status,
+        gateway: p.razorpayPaymentId ? 'Razorpay' : 'Direct',
+        date: p.createdAt.toISOString(),
+      })),
       dateRange: { start: startDate.toISOString(), end: endDate.toISOString() },
     };
   },
 
   async getUserReport(filters: ReportFilters) {
-    const startDate = filters.startDate ? new Date(filters.startDate) : new Date(new Date().getFullYear(), 0, 1);
+    const startDate = filters.startDate ? new Date(filters.startDate) : new Date(0);
     const endDate = filters.endDate ? new Date(filters.endDate) : new Date();
 
-    const users = await prisma.user.findMany({
-      where: { createdAt: { gte: startDate, lte: endDate } },
-      select: { role: true, isEmailVerified: true, createdAt: true },
-      orderBy: { createdAt: 'asc' },
-    });
+    const [users, totalUsersCount] = await Promise.all([
+      prisma.user.findMany({
+        where: { createdAt: { gte: startDate, lte: endDate } },
+        select: {
+          id: true,
+          name: true,
+          email: true,
+          role: true,
+          isEmailVerified: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 2000,
+      }),
+      prisma.user.count(),
+    ]);
 
     // By month
     const monthlyMap = new Map<string, number>();
@@ -122,32 +143,53 @@ export const reportsService = {
       prisma.user.count({ where: { companyProfile: null } }),
     ]);
 
+    const verificationRate = users.length > 0 ? Math.round((verified / users.length) * 100) : 0;
+    const roleDist = Array.from(roleMap.entries()).map(([role, count]) => ({ role, count }));
+
     return {
+      totalUsers: totalUsersCount,
       totalNewUsers: users.length,
+      verifiedUsers: verified,
+      verificationRate,
+      roleDistribution: roleDist,
+      byRole: roleDist,
       monthlySignups: Array.from(monthlyMap.entries()).map(([month, count]) => ({ month, count })),
-      byRole: Array.from(roleMap.entries()).map(([role, count]) => ({ role, count })),
       verification: { verified, unverified },
       profileCompletion: { withProfile, withoutProfile },
+      users: users.map((u) => ({
+        id: u.id,
+        name: u.name || 'N/A',
+        email: u.email,
+        role: u.role,
+        isEmailVerified: u.isEmailVerified,
+        createdAt: u.createdAt.toISOString(),
+      })),
       dateRange: { start: startDate.toISOString(), end: endDate.toISOString() },
     };
   },
 
   async getTenderReport(filters: ReportFilters) {
-    const startDate = filters.startDate ? new Date(filters.startDate) : new Date(new Date().getFullYear(), 0, 1);
+    const startDate = filters.startDate ? new Date(filters.startDate) : new Date(0);
     const endDate = filters.endDate ? new Date(filters.endDate) : new Date();
 
     const tenders = await prisma.tender.findMany({
       where: { createdAt: { gte: startDate, lte: endDate } },
       select: {
+        id: true,
+        referenceNumber: true,
+        title: true,
+        organization: true,
         category: true,
         status: true,
         state: true,
         sourcePortal: true,
         estimatedValue: true,
+        bidSubmissionDeadline: true,
         viewCount: true,
         createdAt: true,
       },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { createdAt: 'desc' },
+      take: 2000,
     });
 
     // Monthly
@@ -187,19 +229,37 @@ export const reportsService = {
       byCategory: Array.from(catMap.entries()).map(([category, count]) => ({ category, count })),
       byStatus: Array.from(statusMap.entries()).map(([status, count]) => ({ status, count })),
       byPortal: Array.from(portalMap.entries()).map(([portal, count]) => ({ portal, count })),
+      tenders: tenders.map((t) => ({
+        id: t.id,
+        referenceNumber: t.referenceNumber,
+        title: t.title,
+        organization: t.organization,
+        category: t.category,
+        state: t.state,
+        status: t.status,
+        sourcePortal: t.sourcePortal,
+        estimatedValue: t.estimatedValue,
+        bidSubmissionDeadline: t.bidSubmissionDeadline ? t.bidSubmissionDeadline.toISOString() : null,
+        viewCount: t.viewCount,
+        createdAt: t.createdAt.toISOString(),
+      })),
       dateRange: { start: startDate.toISOString(), end: endDate.toISOString() },
     };
   },
 
   async getSubscriptionReport(filters: ReportFilters) {
-    const startDate = filters.startDate ? new Date(filters.startDate) : new Date(new Date().getFullYear(), 0, 1);
+    const startDate = filters.startDate ? new Date(filters.startDate) : new Date(0);
     const endDate = filters.endDate ? new Date(filters.endDate) : new Date();
 
     // All subscriptions created in the period
     const subscriptions = await prisma.subscription.findMany({
       where: { createdAt: { gte: startDate, lte: endDate } },
-      include: { plan: { select: { name: true, slug: true, monthlyPrice: true, yearlyPrice: true } } },
-      orderBy: { createdAt: 'asc' },
+      include: {
+        user: { select: { name: true, email: true } },
+        plan: { select: { name: true, slug: true, monthlyPrice: true, yearlyPrice: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 2000,
     });
 
     // Monthly new subscriptions
@@ -231,6 +291,16 @@ export const reportsService = {
       byPlan: Array.from(planMap.entries()).map(([plan, count]) => ({ plan, count })),
       byStatus: Array.from(statusMap.entries()).map(([status, count]) => ({ status, count })),
       churnRate,
+      subscriptions: subscriptions.map((s) => ({
+        id: s.id,
+        userName: s.user?.name || 'N/A',
+        userEmail: s.user?.email || 'N/A',
+        plan: s.plan.name,
+        cycle: s.billingCycle,
+        status: s.status,
+        startDate: s.startDate.toISOString(),
+        endDate: s.endDate.toISOString(),
+      })),
       dateRange: { start: startDate.toISOString(), end: endDate.toISOString() },
     };
   },
