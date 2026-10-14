@@ -249,11 +249,16 @@ function FormSelect({
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        className="w-full px-4 py-2.5 border border-border rounded-lg bg-background text-body-sm text-foreground focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent hover:border-border/80 transition-colors"
+        className={cn(
+          'w-full px-4 py-2.5 border border-border rounded-lg bg-background text-body-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent hover:border-border/80 transition-colors',
+          !value ? 'text-muted-foreground' : 'text-foreground'
+        )}
       >
-        <option value="">{placeholder || 'Select...'}</option>
+        <option value="" className="text-muted-foreground">
+          {placeholder || 'Select...'}
+        </option>
         {options.map((opt) => (
-          <option key={opt.value} value={opt.value}>
+          <option key={opt.value} value={opt.value} className="text-foreground">
             {opt.label}
           </option>
         ))}
@@ -562,7 +567,7 @@ function ProfileTab() {
             required
             value={name}
             onChange={setName}
-            placeholder="Enter your full name"
+            placeholder="e.g. John Doe"
           />
 
           <FormInput
@@ -582,7 +587,7 @@ function ProfileTab() {
             type="tel"
             value={phone}
             onChange={setPhone}
-            placeholder="+91 98765 43210"
+            placeholder="e.g. +91 98765 43210"
           />
         </div>
 
@@ -610,18 +615,19 @@ function ProfileTab() {
 /* ================================================================== */
 
 function CompanyProfileTab() {
-  const [companyName, setCompanyName] = useState('ABC Infra Pvt Ltd');
-  const [gstin, setGstin] = useState('22AAAAA0000A1Z5');
-  const [industry, setIndustry] = useState('Construction & Infrastructure');
-  const [annualTurnover, setAnnualTurnover] = useState('5cr_25cr');
-  const [experience, setExperience] = useState('5_10');
-  const [selectedStates, setSelectedStates] = useState<string[]>(['Gujarat', 'Rajasthan', 'Maharashtra']);
-  const [selectedCategories, setSelectedCategories] = useState<string[]>(['Construction', 'Road Construction', 'Civil Works']);
-  const [msmeEnabled, setMsmeEnabled] = useState(true);
-  const [udyamNumber, setUdyamNumber] = useState('UDYAM-GJ-01-0012345');
-  const [certifications, setCertifications] = useState<string[]>(['ISO 9001', 'ISO 14001']);
+  const [companyName, setCompanyName] = useState('');
+  const [gstin, setGstin] = useState('');
+  const [industry, setIndustry] = useState('');
+  const [annualTurnover, setAnnualTurnover] = useState('');
+  const [experience, setExperience] = useState('');
+  const [selectedStates, setSelectedStates] = useState<string[]>([]);
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
+  const [msmeEnabled, setMsmeEnabled] = useState(false);
+  const [udyamNumber, setUdyamNumber] = useState('');
+  const [certifications, setCertifications] = useState<string[]>([]);
   const [certInput, setCertInput] = useState('');
   const [isSaving, setIsSaving] = useState(false);
+  const [isLoadingProfile, setIsLoadingProfile] = useState(true);
 
   const [showStatesDropdown, setShowStatesDropdown] = useState(false);
   const [showCategoriesDropdown, setShowCategoriesDropdown] = useState(false);
@@ -629,6 +635,62 @@ function CompanyProfileTab() {
   const [categoriesSearch, setCategoriesSearch] = useState('');
   const statesRef = useRef<HTMLDivElement>(null);
   const categoriesRef = useRef<HTMLDivElement>(null);
+
+  // Fetch saved company profile on mount
+  useEffect(() => {
+    let active = true;
+    api
+      .get('/profile')
+      .then((res) => {
+        if (!active) return;
+        const comp = res.data?.data?.companyProfile;
+        if (comp) {
+          if (comp.companyName) setCompanyName(comp.companyName);
+          if (comp.gstin) setGstin(comp.gstin);
+          if (comp.industry) setIndustry(comp.industry);
+          if (comp.annualTurnover) {
+            if (typeof comp.annualTurnover === 'number') {
+              const val = comp.annualTurnover;
+              if (val <= 2500000) setAnnualTurnover('below_25l');
+              else if (val <= 10000000) setAnnualTurnover('25l_1cr');
+              else if (val <= 50000000) setAnnualTurnover('1cr_5cr');
+              else if (val <= 250000000) setAnnualTurnover('5cr_25cr');
+              else if (val <= 1000000000) setAnnualTurnover('25cr_100cr');
+              else if (val <= 5000000000) setAnnualTurnover('100cr_500cr');
+              else setAnnualTurnover('above_500cr');
+            } else if (typeof comp.annualTurnover === 'string') {
+              setAnnualTurnover(comp.annualTurnover);
+            }
+          }
+          if (comp.experience) {
+            setExperience(comp.experience);
+          } else if (typeof comp.yearsInBusiness === 'number' && comp.yearsInBusiness > 0) {
+            const y = comp.yearsInBusiness;
+            if (y <= 1) setExperience('0_1');
+            else if (y <= 3) setExperience('1_3');
+            else if (y <= 5) setExperience('3_5');
+            else if (y <= 10) setExperience('5_10');
+            else if (y <= 20) setExperience('10_20');
+            else setExperience('above_20');
+          }
+          if (Array.isArray(comp.statesOperated)) setSelectedStates(comp.statesOperated);
+          if (Array.isArray(comp.workCategories)) setSelectedCategories(comp.workCategories);
+          if (typeof comp.msmeRegistered === 'boolean') setMsmeEnabled(comp.msmeRegistered);
+          if (comp.msmeNumber) setUdyamNumber(comp.msmeNumber);
+          if (Array.isArray(comp.certifications)) setCertifications(comp.certifications);
+        }
+      })
+      .catch(() => {
+        // Fallback to empty default state so placeholders are shown
+      })
+      .finally(() => {
+        if (active) setIsLoadingProfile(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Close dropdowns on outside click
   useEffect(() => {
@@ -723,7 +785,7 @@ function CompanyProfileTab() {
             label="GSTIN"
             value={gstin}
             onChange={(val) => setGstin(val.toUpperCase())}
-            placeholder="22AAAAA0000A1Z5"
+            placeholder="e.g. 22AAAAA0000A1Z5"
             helpText="15-character GST Identification Number"
           />
           <FormSelect
@@ -922,7 +984,7 @@ function CompanyProfileTab() {
               label="Udyam Registration Number"
               value={udyamNumber}
               onChange={setUdyamNumber}
-              placeholder="UDYAM-XX-00-0000000"
+              placeholder="e.g. UDYAM-XX-00-0000000"
               helpText="Your Udyam registration number from the MSME portal"
             />
           </div>

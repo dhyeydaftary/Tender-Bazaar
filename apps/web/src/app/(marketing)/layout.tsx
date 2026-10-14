@@ -11,7 +11,7 @@ import { cn } from '@/lib/utils';
    ═══════════════════════════════════════════════════════════════════════════ */
 
 const NAV_LINKS = [
-  { label: 'Browse Tenders', href: '/explore-tenders' },
+  { label: 'Browse Tenders', href: '/login' },
   { label: 'Services', href: '/services' },
   { label: 'Pricing', href: '/pricing' },
   { label: 'About', href: '/about' },
@@ -60,7 +60,7 @@ function Navbar() {
             const isActive = pathname === l.href || (l.href !== '/' && pathname.startsWith(l.href));
             return (
               <Link
-                key={l.href}
+                key={l.label}
                 href={l.href}
                 className={cn(
                   'px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
@@ -84,7 +84,7 @@ function Navbar() {
             Login
           </Link>
           <Link
-            href="/register"
+            href="/login"
             className="group bg-primary-500 hover:bg-primary-600 text-foreground px-5 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 shadow-glow hover:shadow-glow flex items-center gap-2"
           >
             Start Free
@@ -108,7 +108,7 @@ function Navbar() {
           <nav className="flex flex-col px-6 py-8 gap-1">
             {NAV_LINKS.map((l) => (
               <Link
-                key={l.href}
+                key={l.label}
                 href={l.href}
                 onClick={() => setMobileOpen(false)}
                 className="text-muted-foreground hover:text-foreground text-lg font-medium py-3 px-4 rounded-lg hover:bg-muted transition-colors"
@@ -125,7 +125,7 @@ function Navbar() {
               Login
             </Link>
             <Link
-              href="/register"
+              href="/login"
               onClick={() => setMobileOpen(false)}
               className="bg-primary-500 hover:bg-primary-600 text-foreground text-center px-5 py-3 rounded-lg text-lg font-semibold transition-colors mt-2"
             >
@@ -146,12 +146,12 @@ const FOOTER_COLS = [
   {
     title: 'Product',
     links: [
-      { label: 'Dashboard', href: '/dashboard' },
-      { label: 'Search Tenders', href: '/tenders' },
-      { label: 'AI Eligibility', href: '/eligibility' },
-      { label: 'Smart Alerts', href: '/alerts' },
-      { label: 'Mobile App', href: '#' },
-      { label: 'API', href: '/settings/api' },
+      { label: 'Dashboard', href: '/login' },
+      { label: 'Search Tenders', href: '/login' },
+      { label: 'AI Eligibility', href: '/login' },
+      { label: 'Smart Alerts', href: '/login' },
+      { label: 'Mobile App', href: '/login' },
+      { label: 'API', href: '/login' },
     ],
   },
   {
@@ -168,7 +168,7 @@ const FOOTER_COLS = [
     links: [
       { label: 'Blog', href: '/blog' },
       { label: 'Help Center', href: '/help' },
-      { label: 'API Documentation', href: '/settings/api' },
+      { label: 'API Documentation', href: '/login' },
       { label: 'Status Page', href: '#' },
     ],
   },
@@ -220,9 +220,12 @@ function Footer() {
                 placeholder="Your email"
                 className="flex-1 bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2.5 placeholder:text-muted-foreground focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition-all max-w-[200px]"
               />
-              <button className="bg-primary-500 hover:bg-primary-600 text-foreground px-4 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap">
+              <Link
+                href="/login"
+                className="bg-primary-500 hover:bg-primary-600 text-foreground px-4 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap"
+              >
                 Subscribe
-              </button>
+              </Link>
             </div>
           </div>
 

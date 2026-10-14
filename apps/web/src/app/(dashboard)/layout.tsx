@@ -465,19 +465,21 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const router = useRouter();
+  const pathname = usePathname();
   const fetchSubscriptionData = useSubscriptionStore((s) => s.fetchAll);
 
+  // Enforce authentication on all dashboard routes (including tender details)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const token = localStorage.getItem('accessToken');
+      if (!token) {
+        router.replace(`/login?redirect=${encodeURIComponent(pathname)}`);
+      }
+    }
+  }, [pathname, router]);
+
   // Hydrate the subscription store once for the whole dashboard.
-  //
-  // useFeatureGate/useLimitGate derive access from `currentPlan` in this store.
-  // It used to be populated only by the Subscription page, and the store is not
-  // persisted — so on any other route (and after every refresh) `currentPlan`
-  // was null, every limit read as 0, and paid users were shown the same
-  // "upgrade to Starter" gates as free users on Alerts, Saved Tenders and
-  // Eligibility.
-  //
-  // This is display-only: the API still enforces entitlements server-side via
-  // requireLimit/requireFeature, which remain the authority.
   useEffect(() => {
     fetchSubscriptionData();
   }, [fetchSubscriptionData]);

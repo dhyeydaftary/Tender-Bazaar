@@ -12,6 +12,8 @@ export interface DashboardStats {
   /** Day-over-day change; null when yesterday had no intake to compare against. */
   newTodayChangePct: number | null;
   activeTenders: number;
+  closedTenders?: number;
+  totalTenders?: number;
   activeAddedThisWeek: number;
   savedCount: number;
   savedExpiringSoon: number;

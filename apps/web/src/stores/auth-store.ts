@@ -19,7 +19,7 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   register: (data: { name: string; email: string; password: string; phone?: string }) => Promise<void>;
   googleAuth: (idToken: string) => Promise<void>;
-  sendOtp: (phone: string) => Promise<void>;
+  sendOtp: (phone: string) => Promise<{ message?: string; otp?: string }>;
   verifyOtp: (phone: string, otp: string) => Promise<void>;
   forgotPassword: (email: string) => Promise<{ message: string }>;
   resetPassword: (token: string, password: string) => Promise<void>;
@@ -95,7 +95,8 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   sendOtp: async (phone) => {
-    await api.post('/auth/send-otp', { phone });
+    const res = await api.post('/auth/send-otp', { phone });
+    return res.data?.data;
   },
 
   verifyOtp: async (phone, otp) => {
