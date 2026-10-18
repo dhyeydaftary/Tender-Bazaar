@@ -228,6 +228,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # check-prod-ports.py (the last step of this job) imports PyYAML, and the
+      # ubuntu-latest runner image does not ship it for the system python3 — the
+      # step exited with "PyYAML is required: pip install pyyaml", failing this
+      # job. Ubuntu 24.04 also marks its system python as externally managed
+      # (PEP 668), so `pip install` has to go to a setup-python interpreter
+      # rather than the system one.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the port check's dependency
+        run: pip install pyyaml
+
       - name: Validate the DEVELOPMENT file set
         run: |
           cp .env.example .env
