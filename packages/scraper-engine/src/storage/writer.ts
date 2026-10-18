@@ -281,9 +281,15 @@ export class StorageWriter {
         cronExpression: cronExpression ?? null,
         status: 'HEALTHY',
       },
-      update: {
-        cronExpression: cronExpression ?? undefined,
-      },
+      // Deliberately empty: the registry value seeds the row when it is first
+      // created and must NOT be written again.
+      //
+      // This used to set `cronExpression` on every boot, and main() calls it
+      // for all 13 portals at startup — so an administrator's edited cadence
+      // was silently reverted to the registry default by the next container
+      // restart. ScraperHealth is the authoritative schedule source, so
+      // clobbering it here undid the operator's change everywhere.
+      update: {},
     });
   }
 
@@ -324,6 +330,83 @@ export class StorageWriter {
       orderBy: { createdAt: 'desc' },
       take: limit,
     });
+  }
+
+  /**
+   * Operator scheduling overrides, read from PostgreSQL.
+   *
+   * ScraperHealth is where the admin dashboard writes `enabled` and
+   * `cronExpression`, but the scheduler used to read both exclusively from the
+   * Redis key tb:scheduler:schedules, so disabling a portal or editing its cron
+   * in the admin UI reported success and changed nothing: the old cadence kept
+   * firing. PostgreSQL is now authoritative for operator intent and Redis is
+   * only a cache of the resolved set.
+   *
+   * Keyed by ScraperHealth.portalName (the human-readable name); the scheduler
+   * maps those onto registry keys.
+   */
+  async getScheduleOverrides(): Promise<
+    Array<{ portalName: string; enabled: boolean; cronExpression: string | null }>
+  > {
+    return this.prisma.scraperHealth.findMany({
+      select: { portalName: true, enabled: true, cronExpression: true },
+    });
+  }
+
+  /**
+   * Whether an administrator has paused automatic scheduling.
+   *
+   * Stored in AdminSetting so the decision survives a container restart —
+   * POST /api/scheduler/stop previously only flipped an in-memory boolean, so
+   * scheduling silently resumed on the next deploy or restart.
+   */
+  async getSchedulerPaused(): Promise<boolean> {
+    const row = await this.prisma.adminSetting.findUnique({
+      where: { category_key: { category: 'scraper', key: 'schedulerPaused' } },
+      select: { value: true },
+    });
+    return row?.value === true;
+  }
+
+  /** Persist the administrator's pause/resume decision. */
+  async setSchedulerPaused(paused: boolean, updatedBy?: string): Promise<void> {
+    await this.prisma.adminSetting.upsert({
+      where: { category_key: { category: 'scraper', key: 'schedulerPaused' } },
+      create: {
+        category: 'scraper',
+        key: 'schedulerPaused',
+        value: paused,
+        description: 'When true, the scraper engine registers no cron schedules.',
+        updatedBy,
+      },
+      update: { value: paused, updatedBy },
+    });
+  }
+
+  /**
+   * Fail ScrapingRun rows still marked RUNNING from a previous process.
+   *
+   * A container that is killed mid-scrape leaves its run row RUNNING forever.
+   * The only cleanup used to live inside the admin dashboard's LIST handler, so
+   * it ran only if a human happened to open that page — and it mutated data on
+   * a GET. This runs at startup instead, and is also safe to call periodically.
+   *
+   * Returns the number of rows recovered.
+   */
+  async recoverStaleRuns(olderThanMinutes = 15): Promise<number> {
+    const cutoff = new Date(Date.now() - olderThanMinutes * 60 * 1000);
+    const result = await this.prisma.scrapingRun.updateMany({
+      where: {
+        status: 'RUNNING',
+        OR: [{ startedAt: { lt: cutoff } }, { startedAt: null, createdAt: { lt: cutoff } }],
+      },
+      data: {
+        status: 'FAILED',
+        errorMessage: 'Run interrupted: the scraper process stopped before completion',
+        completedAt: new Date(),
+      },
+    });
+    return result.count;
   }
 
   /**

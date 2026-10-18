@@ -41,24 +41,36 @@ if (process.env.NODE_ENV !== 'development') {
 
 // Middleware
 app.use(helmet());
-const allowedOrigins = [
-  process.env.FRONTEND_URL,
-  process.env.ADMIN_URL,
+const DEV_ORIGINS = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
   'http://localhost:3001',
   'http://127.0.0.1:3001',
   'http://localhost:3002',
   'http://127.0.0.1:3002',
+];
+
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  process.env.ADMIN_URL,
+  ...(process.env.NODE_ENV === 'development' ? DEV_ORIGINS : []),
 ].filter(Boolean) as string[];
+
+// Any http://localhost:* / http://127.0.0.1:* origin used to be allowed with
+// credentials, in production too, so a page served from any port on a user's
+// machine could make credentialed cross-origin calls to the production API.
+// The loopback allowance is now development-only; production uses exactly the
+// configured origins (FRONTEND_URL / ADMIN_URL), which docker-compose.prod.yml
+// requires to be set.
+const allowLoopbackOrigins = process.env.NODE_ENV === 'development';
 
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
     if (
-      allowedOrigins.includes(origin) ||
-      origin.startsWith('http://localhost:') ||
-      origin.startsWith('http://127.0.0.1:')
+      allowLoopbackOrigins &&
+      (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:'))
     ) {
       return callback(null, true);
     }

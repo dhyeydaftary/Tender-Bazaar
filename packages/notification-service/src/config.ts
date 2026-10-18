@@ -16,6 +16,20 @@ export const config = {
   },
   firebase: {
     projectId: process.env.FIREBASE_PROJECT_ID || '',
+    /**
+     * Path to a Firebase service-account JSON key, mounted as a secret.
+     *
+     * Required for push to work at all: FIREBASE_PROJECT_ID alone made
+     * Firebase Admin fall back to Application Default Credentials, which do
+     * not exist in this container, so every send failed silently.
+     */
+    serviceAccountPath: process.env.FIREBASE_SERVICE_ACCOUNT_PATH || '',
+    /**
+     * When true, the service refuses to start without a usable push
+     * credential. Default false: push is treated as an optional channel and
+     * reported as disabled, so email/SMS/WhatsApp keep working.
+     */
+    required: (process.env.PUSH_NOTIFICATIONS_REQUIRED || 'false') === 'true',
   },
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
   nodeEnv: process.env.NODE_ENV || 'development',

@@ -17,7 +17,11 @@ COPY packages/shared/package.json packages/shared/
 COPY prisma/ prisma/
 
 # Install dependencies
-RUN pnpm install --frozen-lockfile
+# A BuildKit cache mount for pnpm's content-addressable store. Packages
+# downloaded by one build are reused by the next, so rebuilds (and CI runs with
+# a warm cache) skip the network entirely instead of re-fetching the whole tree.
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store \
+    pnpm install --frozen-lockfile --store-dir=/pnpm-store
 
 # Copy source code
 COPY packages/api-server/ packages/api-server/

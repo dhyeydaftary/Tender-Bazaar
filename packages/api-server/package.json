@@ -7,7 +7,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "lint": "eslint src/",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test": "tsx src/tests/rate-limiter.test.ts && tsx src/tests/jwt-secrets.test.ts && tsx src/tests/razorpay-config.test.ts && tsx src/tests/payment-mock-mode.test.ts && tsx src/tests/env-inventory.test.ts && tsx src/tests/cron-schedule.test.ts && tsx src/tests/alert-pipeline.test.ts && tsx src/tests/eligibility-pipeline.test.ts && tsx src/tests/elasticsearch-index-setup.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.577.0",

@@ -169,6 +169,19 @@ const INITIAL_TEMPLATES: ReportTemplate[] = [
   },
 ];
 
+/**
+ * DEMO DATA — not real scheduled reports.
+ *
+ * Nothing in this repository dispatches report emails: there is no scheduler,
+ * route or worker behind these rows, and the toggle below only changes local
+ * component state. They are retained as a UI placeholder, and the panel is
+ * labelled accordingly, because an operator could otherwise reasonably believe
+ * a "Daily Scraper Sync Audit" email was arriving every morning.
+ *
+ * To make these real, add persistence plus a dispatch job (the BullMQ repeat
+ * pattern in packages/api-server/src/queue/alert-scheduler.ts is the closest
+ * existing example) and replace this constant with a fetch.
+ */
 const INITIAL_SCHEDULED: ScheduledReport[] = [
   {
     id: 'sched-1',
@@ -857,10 +870,17 @@ export default function ReportsPage() {
       {/* Scheduled Automation                                              */}
       {/* ================================================================== */}
       <div className="space-y-4">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Mail className="w-5 h-5 text-primary-500" />
           <h2 className="text-xl font-bold text-foreground">Scheduled Report Dispatches</h2>
+          <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wide bg-amber-500/15 text-amber-600 border border-amber-500/30">
+            Demo data
+          </span>
         </div>
+        <p className="text-xs text-muted-foreground -mt-2">
+          Placeholder only — no report emails are dispatched by the platform yet, and
+          toggling a row does not persist.
+        </p>
 
         <div className="bg-card border border-border rounded-xl divide-y divide-border">
           {scheduled.map((item) => (

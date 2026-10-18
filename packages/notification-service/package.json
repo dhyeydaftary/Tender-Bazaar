@@ -6,7 +6,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "type-check": "tsc --noEmit"
+    "type-check": "tsc --noEmit",
+    "test": "tsx src/tests/firebase-credentials.test.ts && tsx src/tests/push-status.test.ts"
   },
   "dependencies": {
     "bullmq": "^5.7.0",

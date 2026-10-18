@@ -1,11 +1,49 @@
-# Production overrides — use with:
+# ───────────────────────────────────────────────────────────────────────────
+# Production overrides — ALWAYS use with an explicit file list:
+#
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# or scripts/docker-start.sh --prod. A bare `docker compose up -d` would load
+# docker-compose.override.yml (development) instead of this file.
+#
+# Required in .env before starting (Compose fails fast if any is missing):
+#   POSTGRES_PASSWORD, REDIS_PASSWORD, SCRAPER_API_TOKEN, FRONTEND_URL,
+#   ADMIN_URL, JWT_SECRET, JWT_REFRESH_SECRET
+#
+# Two different files, and the difference matters:
+#   .env             read by COMPOSE ITSELF, to interpolate ${...} below.
+#   .env.production  injected INTO the backend containers as their runtime
+#                    environment (JWT secrets, Razorpay, SES, WATI, FCM, ...).
+# The base file deliberately declares no env_file at all, because Compose
+# merges env_file lists and an override cannot take an entry back — so
+# `env_file: .env` in the base file handed every production container the
+# developer's environment. .env.production is declared `required: false`: the
+# ${VAR:?...} guards below and api-server's own startup validation are what
+# actually enforce the critical values, so a deploy that keeps its secrets in
+# the orchestrator's own secret store rather than a file still works.
+# Required before `docker compose … build` (baked into the browser bundle):
+#   NEXT_PUBLIC_API_URL  (and NEXT_PUBLIC_GOOGLE_CLIENT_ID if Google sign-in
+#   is used)
+# Passwords are interpolated into connection URLs, so they must be URL-safe
+# (A-Z a-z 0-9 - _ . ~) or percent-encoded.
+# ───────────────────────────────────────────────────────────────────────────
+
+# NOTE ON PORTS: this file deliberately contains no `ports:` keys. An empty
+# `ports: []` does NOT clear a list inherited from docker-compose.yml — Compose
+# merges list fields, so it silently kept postgres:5432, redis:6379,
+# elasticsearch:9200/9300, ai-service:5050 and scraper:4001 published in
+# production. Infrastructure and scraper ports are now published only by
+# docker-compose.override.yml (development), which this file set never loads.
+#
+# Authenticated Redis URL, defined once and aliased by every consumer. ai-service
+# is included: it was previously left on an unauthenticated URL and could not
+# reach Redis once a password was required.
+x-redis-url: &redis-url-auth redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be set to a strong value for production}@redis:6379
 
 services:
   postgres:
-    ports: []
     environment:
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set for production}
     deploy:
       resources:
         limits:
@@ -18,8 +56,23 @@ services:
         max-file: '3'
 
   redis:
-    ports: []
-    command: redis-server --requirepass ${REDIS_PASSWORD:-changeme} --maxmemory 256mb --maxmemory-policy allkeys-lru
+    # appendonly yes: the scheduler keeps operator overrides (per-portal enable
+    # flags, edited cron expressions, scheduler stop state) in Redis, so losing
+    # the dataset silently reverts them to the registry defaults. AOF costs a
+    # little disk and fsync overhead; RDB-only snapshots would lose up to the
+    # last snapshot interval. See docs/DEPLOYMENT.md § Redis persistence.
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD:?REDIS_PASSWORD must be set to a strong value for production}
+      --appendonly yes
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
+    # redis-cli reads REDISCLI_AUTH from the environment, so the password is not
+    # visible in healthcheck process arguments or `docker inspect` output of the
+    # exec. The base healthcheck asserts a literal PONG, so a NOAUTH error reply
+    # fails the check instead of silently passing.
+    environment:
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?REDIS_PASSWORD must be set to a strong value for production}
     deploy:
       resources:
         limits:
@@ -32,7 +85,6 @@ services:
         max-file: '3'
 
   elasticsearch:
-    ports: []
     environment:
       - 'ES_JAVA_OPTS=-Xms1g -Xmx1g'
     deploy:
@@ -46,8 +98,23 @@ services:
         max-size: '10m'
         max-file: '3'
 
+  db-init:
+    env_file:
+      - path: .env.production
+        required: false
+    environment:
+      # Never seed automatically in production: the seed creates/updates
+      # administrator accounts and demo tenders.
+      DB_INIT_SEED: 'false'
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
   ai-service:
-    ports: []
+    environment:
+      REDIS_URL: *redis-url-auth
     deploy:
       resources:
         limits:
@@ -60,10 +127,23 @@ services:
         max-file: '3'
 
   api-server:
+    env_file:
+      - path: .env.production
+        required: false
     environment:
-      - NODE_ENV=production
-      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/tenderbazaar
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379
+      NODE_ENV: production
+      # Explicitly re-asserted: the development baseline switches these on, and
+      # compose merges environment maps, so they would otherwise carry over.
+      # (Both are also ignored outside NODE_ENV=development by the application.)
+      DISABLE_RATE_LIMIT: 'false'
+      ALLOW_DEMO_GOOGLE_AUTH: 'false'
+      RATE_LIMIT_AUTHED_MAX: ${RATE_LIMIT_AUTHED_MAX:-600}
+      RATE_LIMIT_ANON_MAX: ${RATE_LIMIT_ANON_MAX:-120}
+      RATE_LIMIT_AUTH_MAX: ${RATE_LIMIT_AUTH_MAX:-20}
+      REDIS_URL: *redis-url-auth
+      FRONTEND_URL: ${FRONTEND_URL:?FRONTEND_URL must be set to the public web origin for production}
+      ADMIN_URL: ${ADMIN_URL:?ADMIN_URL must be set to the public admin origin for production}
+      SCRAPER_API_TOKEN: ${SCRAPER_API_TOKEN:?SCRAPER_API_TOKEN must be set to a strong shared secret for production}
     deploy:
       resources:
         limits:
@@ -76,8 +156,12 @@ services:
         max-file: '5'
 
   web:
+    # No env_file. A browser bundle's configuration is baked at BUILD time from
+    # the NEXT_PUBLIC_* build args, and the Next.js standalone server needs only
+    # PORT/HOSTNAME (set in the base file). Handing it the backend environment
+    # would put server-side secrets in a container that has no use for them.
     environment:
-      - NODE_ENV=production
+      NODE_ENV: production
     deploy:
       resources:
         limits:
@@ -90,8 +174,9 @@ services:
         max-file: '3'
 
   admin:
+    # No env_file — see the note on web.
     environment:
-      - NODE_ENV=production
+      NODE_ENV: production
     deploy:
       resources:
         limits:
@@ -104,10 +189,13 @@ services:
         max-file: '3'
 
   scraper:
+    env_file:
+      - path: .env.production
+        required: false
     environment:
-      - NODE_ENV=production
-      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/tenderbazaar
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379
+      NODE_ENV: production
+      REDIS_URL: *redis-url-auth
+      SCRAPER_API_TOKEN: ${SCRAPER_API_TOKEN:?SCRAPER_API_TOKEN must be set to a strong shared secret for production}
     deploy:
       resources:
         limits:
@@ -120,10 +208,23 @@ services:
         max-file: '5'
 
   notification-service:
+    env_file:
+      - path: .env.production
+        required: false
+    # Push notifications need a Firebase service-account key, supplied as a
+    # read-only mount. That mount is deliberately NOT declared here: a bind
+    # mount whose source file is absent makes `docker compose up` fail, so
+    # declaring it unconditionally would stop the notification service — and
+    # with it email, SMS and WhatsApp — on every deployment that does not use
+    # push.
+    #
+    # Enable push by adding docker-compose.push.yml to the file list:
+    #   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+    #                  -f docker-compose.push.yml up -d
+    # See docs/DEPLOYMENT.md § Push notification setup.
     environment:
-      - NODE_ENV=production
-      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/tenderbazaar
-      - REDIS_URL=redis://:${REDIS_PASSWORD:-changeme}@redis:6379
+      NODE_ENV: production
+      REDIS_URL: *redis-url-auth
     deploy:
       resources:
         limits:

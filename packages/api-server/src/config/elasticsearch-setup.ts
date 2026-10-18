@@ -88,11 +88,96 @@ export function toTenderDocument(tender: any) {
   };
 }
 
-export async function createTenderIndex() {
+/**
+ * The outcome of one `createTenderIndex()` call.
+ *
+ * It used to return nothing and swallow every error into a `console.error`, so
+ * the caller could not tell success from failure — and `bootstrap()` went on to
+ * print "Elasticsearch index ready" unconditionally. A timed-out index creation
+ * therefore produced a log that said the index was ready and, immediately
+ * after, that creating it had failed. Returning a status is what lets the
+ * caller tell the truth.
+ */
+export interface IndexSetupResult {
+  ok: boolean;
+  /** 'created' | 'mapping-updated' when ok; otherwise a short failure reason. */
+  detail: string;
+  /** How many attempts were made (>1 means a transient failure was retried). */
+  attempts: number;
+}
+
+/** Attempts for a transient failure. A cold/loaded cluster times out easily. */
+const INDEX_SETUP_ATTEMPTS = 3;
+/** Base backoff; doubles per attempt. Kept short so boot is not delayed much. */
+const INDEX_SETUP_BACKOFF_MS = 2000;
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Create the tender index, or bring its mapping up to date.
+ *
+ * Deliberately NOT fatal: the API still starts without a usable index, because
+ * `/health` already reports `index "<name>" missing` and returns 503, which the
+ * container healthcheck acts on. What changed is that failure is now **reported
+ * to the caller and retried**, instead of being logged once and forgotten —
+ * previously a single transient timeout left the index missing until somebody
+ * restarted the container, because nothing ever re-attempted creation.
+ */
+export async function createTenderIndex(
+  attempts = INDEX_SETUP_ATTEMPTS,
+): Promise<IndexSetupResult> {
+  return createTenderIndexWith(esClient.indices as TenderIndicesClient, attempts);
+}
+
+/**
+ * The slice of the Elasticsearch client this module actually uses.
+ *
+ * Declared so the retry behaviour can be driven directly in tests with a stub,
+ * instead of intercepting module resolution to replace the client — the setup
+ * module builds a real client at import time, and swapping that out through the
+ * require cache proved both fragile and easy to get silently wrong.
+ */
+export interface TenderIndicesClient {
+  exists(args: { index: string }): Promise<boolean>;
+  create(args: unknown): Promise<unknown>;
+  putMapping(args: unknown): Promise<unknown>;
+}
+
+/** `createTenderIndex` against an explicit client. See TenderIndicesClient. */
+export async function createTenderIndexWith(
+  indices: TenderIndicesClient,
+  attempts = INDEX_SETUP_ATTEMPTS,
+): Promise<IndexSetupResult> {
+  let lastError = '';
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const result = await attemptTenderIndexSetup(indices);
+    if (result.ok) return { ...result, attempts: attempt };
+
+    lastError = result.detail;
+    if (attempt < attempts) {
+      const wait = INDEX_SETUP_BACKOFF_MS * 2 ** (attempt - 1);
+      console.error(
+        `Tender index setup attempt ${attempt}/${attempts} failed (${result.detail}) — retrying in ${wait}ms`,
+      );
+      await sleep(wait);
+    }
+  }
+
+  console.error(
+    `Failed to create or update tender index after ${attempts} attempt(s): ${lastError}. ` +
+      `Tender search will be DEGRADED until the index exists — /health reports this and returns 503.`,
+  );
+  return { ok: false, detail: lastError, attempts };
+}
+
+async function attemptTenderIndexSetup(
+  indices: TenderIndicesClient,
+): Promise<Omit<IndexSetupResult, 'attempts'>> {
   try {
-    const exists = await esClient.indices.exists({ index: TENDER_INDEX });
+    const exists = await indices.exists({ index: TENDER_INDEX });
     if (!exists) {
-      await esClient.indices.create({
+      await indices.create({
         index: TENDER_INDEX,
         body: {
           settings: {
@@ -103,7 +188,7 @@ export async function createTenderIndex() {
         },
       });
       console.log('✅ Tender index created');
-      return;
+      return { ok: true, detail: 'created' };
     }
 
     // The index already exists (the common case). Creating it is skipped, so any
@@ -115,13 +200,17 @@ export async function createTenderIndex() {
     // operation: it cannot change or remove existing fields and needs no reindex.
     // Anything beyond adding fields (changing a field's type) still requires a
     // real reindex and is deliberately NOT attempted here.
-    await esClient.indices.putMapping({
+    await indices.putMapping({
       index: TENDER_INDEX,
       body: tenderMapping,
     });
     console.log('✅ Tender index mapping up to date');
+    return { ok: true, detail: 'mapping-updated' };
   } catch (error) {
-    console.error('Failed to create or update tender index:', error);
+    // Only the reason is kept, never the whole error object: Elasticsearch
+    // client errors carry the request (including headers) in `meta`.
+    const detail = error instanceof Error ? `${error.name}: ${error.message}` : 'unknown error';
+    return { ok: false, detail };
   }
 }
 

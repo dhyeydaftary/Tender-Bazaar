@@ -155,6 +155,31 @@ async function runStateScrapeLoop(
   }
 
   const duration = Date.now() - startTime;
+
+  // A run that scraped NOTHING because every listing request failed is a
+  // failure, not a success.
+  //
+  // The loop above deliberately tolerates individual page errors (a portal
+  // dropping one page should not discard the rest), but it also absorbed the
+  // case where the portal was entirely unavailable: it stopped after two
+  // consecutive errors and returned a normal result with `errors: n`. The
+  // caller then recorded the run COMPLETED, BullMQ marked the job completed —
+  // so the configured retries/backoff never engaged — and StorageWriter
+  // counted it as a SUCCESS, refreshing lastSuccessAt. A portal that was 100%
+  // down therefore stayed HEALTHY for ever and never reached DEGRADED.
+  //
+  // Throwing here routes the run through the failure path: the run is recorded
+  // FAILED, portal health degrades, and BullMQ applies attempts + backoff.
+  if (pagesScraped === 0 && errors > 0) {
+    logger.error('Scraping failed: every listing request failed', {
+      errors,
+      durationMs: duration,
+    });
+    throw new Error(
+      `${scraper.portalName}: all ${errors} listing page request(s) failed; no page could be scraped`,
+    );
+  }
+
   logger.info('Scraping complete', {
     totalFound,
     newTenders,
