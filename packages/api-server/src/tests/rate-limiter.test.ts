@@ -104,9 +104,16 @@ function parseFlag(value?: string) {
 {
   const defaults = envSchema.safeParse({});
   assert.ok(defaults.success, 'Default environment must parse');
-  assert.equal(defaults.success && defaults.data.RATE_LIMIT_AUTHED_MAX, 1000);
-  assert.equal(defaults.success && defaults.data.RATE_LIMIT_ANON_MAX, 300);
-  assert.equal(defaults.success && defaults.data.RATE_LIMIT_AUTH_MAX, 20);
+  // These are the permissive DEVELOPMENT defaults carried by the schema. They
+  // are deliberately not the production posture: docker-compose.prod.yml pins
+  // RATE_LIMIT_AUTHED_MAX / ANON_MAX / AUTH_MAX to 600/120/20 explicitly, so a
+  // deployment never inherits the values below.
+  // (This assertion previously expected 1000/300/20 and had been failing since
+  // the schema defaults were raised — the package had no `test` script, so it
+  // was never executed.)
+  assert.equal(defaults.success && defaults.data.RATE_LIMIT_AUTHED_MAX, 10000);
+  assert.equal(defaults.success && defaults.data.RATE_LIMIT_ANON_MAX, 3000);
+  assert.equal(defaults.success && defaults.data.RATE_LIMIT_AUTH_MAX, 500);
 
   const custom = envSchema.safeParse({ RATE_LIMIT_AUTHED_MAX: '2500' });
   assert.equal(custom.success && custom.data.RATE_LIMIT_AUTHED_MAX, 2500);

@@ -67,6 +67,12 @@ export {
   WestBengalScraper,
 };
 
+// ── Local test portal (opt-in; see config.PORTAL_TEST_ENABLED) ──────────────
+
+import { TestPortalScraper } from './scrapers/test-portal-scraper';
+
+export { TestPortalScraper, TEST_PORTAL_KEY, TEST_PORTAL_NAME } from './scrapers/test-portal-scraper';
+
 // ── Convenience: map of all scraper classes by portal key ───────────────────
 
 export function getAllScraperClasses() {
@@ -84,6 +90,9 @@ export function getAllScraperClasses() {
     delhi: DelhiScraper,
     kerala: KeralaScraper,
     westbengal: WestBengalScraper,
+    // Resolved only when PORTAL_TEST_ENABLED=true puts 'testportal' in the
+    // registry; an unregistered key can never reach the worker.
+    testportal: TestPortalScraper,
   } as const;
 }
 

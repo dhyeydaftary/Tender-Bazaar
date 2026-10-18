@@ -45,10 +45,21 @@ for arg in "$@"; do
   esac
 done
 
+# ── Compose file selection ────────────────────────────────────
+# Production MUST name both files explicitly: a bare `docker compose` also
+# loads docker-compose.override.yml, which publishes the database, Redis,
+# Elasticsearch and the scraper control API to the host and leaves the API in
+# development mode.
+if [ "$MODE" = "prod" ]; then
+  COMPOSE_CMD="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
+else
+  COMPOSE_CMD="docker compose"
+fi
+
 # ── Teardown actions ──────────────────────────────────────────
 if [ "$ACTION" = "down" ]; then
   log "Stopping all TenderBazaar containers..."
-  docker compose down
+  $COMPOSE_CMD down
   ok "All containers stopped."
   exit 0
 fi
@@ -61,7 +72,7 @@ if [ "$ACTION" = "reset" ]; then
     exit 0
   fi
   log "Stopping containers and removing volumes..."
-  docker compose down -v
+  $COMPOSE_CMD down -v
   ok "Clean slate. Re-run without --reset to start fresh."
   exit 0
 fi
@@ -87,7 +98,19 @@ fi
 ok "Docker is running."
 
 # ── Create .env if missing ───────────────────────────────────
+# Development only. Copying the example in production would deploy the
+# repository's placeholder secrets (and Compose now refuses to start without
+# real ones anyway), so --prod stops instead.
 if [ ! -f .env ]; then
+  if [ "$MODE" = "prod" ]; then
+    err ".env not found. Production will not be started from .env.example:"
+    err "  it ships placeholder secrets and a development database password."
+    err "Create .env and set at least:"
+    err "  POSTGRES_PASSWORD REDIS_PASSWORD SCRAPER_API_TOKEN"
+    err "  JWT_SECRET JWT_REFRESH_SECRET FRONTEND_URL ADMIN_URL NEXT_PUBLIC_API_URL"
+    err "See .env.example for the full checklist."
+    exit 1
+  fi
   warn ".env file not found — copying from .env.example"
   cp .env.example .env
   ok "Created .env from .env.example"
@@ -96,13 +119,49 @@ if [ ! -f .env ]; then
   echo ""
 fi
 
-# ── Build compose command ────────────────────────────────────
-COMPOSE_CMD="docker compose"
+# ── Production pre-flight: required settings ──────────────────
 if [ "$MODE" = "prod" ]; then
-  COMPOSE_CMD="docker compose -f docker-compose.yml -f docker-compose.prod.yml"
-  log "Using PRODUCTION configuration"
+  log "Checking production configuration (names only, never values)..."
+  MISSING=""
+  for required in POSTGRES_PASSWORD REDIS_PASSWORD SCRAPER_API_TOKEN                   JWT_SECRET JWT_REFRESH_SECRET FRONTEND_URL ADMIN_URL                   NEXT_PUBLIC_API_URL; do
+    # `|| true`: under `set -e` a non-matching grep inside a command
+    # substitution would abort the script before it could report anything.
+    value="$(grep -E "^${required}=" .env 2>/dev/null | head -n1 | cut -d= -f2- || true)"
+    if [ -z "$value" ]; then
+      MISSING="$MISSING $required"
+    fi
+  done
+
+  if [ -n "$MISSING" ]; then
+    err "These required production settings are missing or empty in .env:"
+    for name in $MISSING; do err "  - $name"; done
+    err "Compose would refuse to start; fix .env and re-run."
+    exit 1
+  fi
+
+  # Catch the two placeholders that are most likely to survive a copy/paste.
+  if grep -qE '^REDIS_PASSWORD=changeme$' .env; then
+    err "REDIS_PASSWORD is still 'changeme'. Set a real password."
+    exit 1
+  fi
+  if grep -qE '^POSTGRES_PASSWORD=postgres$' .env; then
+    err "POSTGRES_PASSWORD is still the development default 'postgres'. Set a real password."
+    exit 1
+  fi
+  if grep -qE '^NEXT_PUBLIC_API_URL=http://localhost' .env; then
+    err "NEXT_PUBLIC_API_URL still points at localhost. It is baked into the"
+    err "browser bundle at build time, so production users would call their own"
+    err "machine. Set the public API URL before building."
+    exit 1
+  fi
+  ok "Production configuration looks complete."
+fi
+
+# ── Announce the configuration ───────────────────────────────
+if [ "$MODE" = "prod" ]; then
+  log "Using PRODUCTION configuration (docker-compose.yml + docker-compose.prod.yml)"
 else
-  log "Using DEVELOPMENT configuration"
+  log "Using DEVELOPMENT configuration (docker-compose.yml + docker-compose.override.yml)"
 fi
 
 # ── Build & start ────────────────────────────────────────────
@@ -160,7 +219,7 @@ wait_for_service "tenderbazaar-redis" 30
 wait_for_service "tenderbazaar-elasticsearch" 90
 
 # Wait for db-init to complete
-log "Waiting for database migration & seed..."
+log "Waiting for database migrations (prisma migrate deploy)..."
 MAX_INIT_WAIT=120
 INIT_ELAPSED=0
 while [ $INIT_ELAPSED -lt $MAX_INIT_WAIT ]; do
@@ -168,7 +227,7 @@ while [ $INIT_ELAPSED -lt $MAX_INIT_WAIT ]; do
   init_exit=$(docker inspect --format='{{.State.ExitCode}}' "tenderbazaar-db-init" 2>/dev/null || echo "-1")
   if [ "$init_status" = "exited" ]; then
     if [ "$init_exit" = "0" ]; then
-      ok "Database schema pushed & seeded successfully"
+      ok "Database migrations applied successfully"
       break
     else
       err "Database init failed (exit code $init_exit). Check logs:"
@@ -199,9 +258,13 @@ echo -e "  ${CYAN}API Server${NC}        http://localhost:4000"
 echo -e "  ${CYAN}AI Service${NC}        http://localhost:5050"
 echo ""
 if [ "$MODE" = "dev" ]; then
-echo -e "  ${CYAN}PostgreSQL${NC}        localhost:5432  (user: postgres / pass: postgres)"
+echo -e "  ${CYAN}PostgreSQL${NC}        localhost:5432  (user: postgres / password: see .env)"
 echo -e "  ${CYAN}Redis${NC}             localhost:6379"
 echo -e "  ${CYAN}Elasticsearch${NC}     http://localhost:9200"
+echo -e "  ${CYAN}Scraper API${NC}       http://localhost:4001/api/ready"
+echo ""
+echo -e "  ${YELLOW}Note:${NC} db-init applies migrations only. To load demo data run:"
+echo -e "          DB_INIT_SEED=true docker compose up db-init"
 echo ""
 fi
 echo -e "  ${YELLOW}Stop:${NC}    ./scripts/docker-start.sh --down"

@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 import { prisma } from '../../config/database';
 import { env } from '../../config/env';
-import razorpay from '../../config/razorpay';
+import { getRazorpayClient, isRazorpayConfigured } from '../../config/razorpay';
 import { AppError } from '../../shared/middleware/error-handler';
 import { planConfigService } from '../subscriptions/plan-config.service';
 import { invalidateUnreadCount } from '../notifications/service';
@@ -33,17 +33,25 @@ function calculatePriceWithGST(basePrice: number) {
  * not configured Razorpay still gets a working mock checkout.
  */
 function isRazorpayMockMode(): boolean {
-  const keyId = env.RAZORPAY_KEY_ID;
-  const keySecret = env.RAZORPAY_KEY_SECRET;
+  // SECURITY: mock mode is a DEVELOPMENT convenience and must never engage in
+  // production.
+  //
+  // verifyPayment() skips HMAC signature verification when this returns true.
+  // RAZORPAY_KEY_ID defaults to '' and nothing rejected that in production, so
+  // a production server with Razorpay unconfigured would have skipped
+  // verification and activated subscriptions WITHOUT PAYMENT. Until now the
+  // only thing preventing it was that the server crashed at boot on the empty
+  // key (config/razorpay.ts) — an accident, not a control. Making the client
+  // lazy removes that crash, so the guard has to be explicit:
+  //
+  //   production + unconfigured  -> NOT mock mode. The real branch runs,
+  //                                 getRazorpayClient() raises a controlled
+  //                                 PAYMENTS_NOT_CONFIGURED error, and
+  //                                 signature verification is never skipped.
+  //   development + unconfigured -> mock mode, exactly as before.
+  if (env.NODE_ENV === 'production') return false;
 
-  return (
-    !keyId ||
-    keyId.includes('xxxx') ||
-    keyId === 'your-razorpay-key-id' ||
-    !keySecret ||
-    keySecret === 'your-razorpay-secret' ||
-    keySecret.includes('xxxx')
-  );
+  return !isRazorpayConfigured();
 }
 
 /** Plan display order for upgrade/downgrade detection */
@@ -106,7 +114,7 @@ export const paymentService = {
       razorpayOrderId = `order_mock_${crypto.randomBytes(8).toString('hex')}`;
     } else {
       try {
-        const order = await razorpay.orders.create({
+        const order = await getRazorpayClient().orders.create({
           amount: amountInPaise,
           currency: 'INR',
           receipt: `rcpt_${userId.slice(-8)}_${Date.now()}`,
@@ -486,7 +494,7 @@ export const paymentService = {
       razorpayOrderId = `order_mock_${crypto.randomBytes(8).toString('hex')}`;
     } else {
       try {
-        const order = await razorpay.orders.create({
+        const order = await getRazorpayClient().orders.create({
           amount: amountInPaise,
           currency: 'INR',
           receipt: `retry_${userId.slice(-8)}_${Date.now()}`,

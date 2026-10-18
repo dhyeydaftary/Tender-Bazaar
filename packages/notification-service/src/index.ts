@@ -7,6 +7,10 @@ import {
 
 import type { NotificationJobData, NotificationChannel } from './queue/notification-queue';
 
+import { config } from './config';
+import { getPushStatus } from './providers/push';
+import { describePushCredential } from './providers/firebase-credentials';
+
 // Re-export provider functions for direct use by API server
 export { sendEmail, sendTenderAlertEmail, sendDeadlineReminderEmail, sendWelcomeEmail } from './providers/email';
 export { sendWhatsAppMessage, sendTenderAlertWhatsApp } from './providers/whatsapp';
@@ -45,6 +49,38 @@ if (isMainModule) {
   console.log('[NotificationService] Starting notification worker...');
   console.log(`[NotificationService] Worker concurrency: 5`);
   console.log(`[NotificationService] Queue: notifications`);
+
+  // ── Push-channel credential status ────────────────────────────────────
+  //
+  // Push used to look configured whenever FIREBASE_PROJECT_ID was set, while
+  // Firebase Admin had no credential and every send failed silently. The state
+  // is now reported explicitly at startup, and PUSH_NOTIFICATIONS_REQUIRED
+  // decides whether an absent credential is fatal.
+  //
+  // Default (not required): the service starts and push is reported disabled,
+  // so email, SMS and WhatsApp keep working — they are independent providers.
+  {
+    const pushStatus = getPushStatus();
+    const summary = describePushCredential(pushStatus);
+
+    if (pushStatus.state === 'configured') {
+      console.log(`[NotificationService] ${summary}`);
+    } else if (config.firebase.required) {
+      console.error(`[NotificationService] ${summary}`);
+      console.error(
+        '[NotificationService] PUSH_NOTIFICATIONS_REQUIRED=true and push is not usable — ' +
+          'refusing to start. Set FIREBASE_SERVICE_ACCOUNT_PATH to a mounted service-account ' +
+          'key, or set PUSH_NOTIFICATIONS_REQUIRED=false to run without push.',
+      );
+      process.exit(1);
+    } else {
+      console.warn(`[NotificationService] ${summary}`);
+      console.warn(
+        '[NotificationService] Continuing without push. Other channels are unaffected. ' +
+          'Set PUSH_NOTIFICATIONS_REQUIRED=true to make this fatal instead.',
+      );
+    }
+  }
 
   async function shutdown(signal: string) {
     console.log(`\n[NotificationService] Received ${signal}, shutting down gracefully...`);

@@ -15,16 +15,20 @@
     "db:studio": "prisma studio",
     "db:migrate": "prisma migrate dev",
     "docker:up": "docker compose up -d",
-    "docker:down": "docker compose down"
+    "docker:down": "docker compose down",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:migrate:status": "prisma migrate status"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
     "prisma": "^5.14.0",
     "tsx": "^4.21.0",
     "turbo": "^2.0.0",
     "typescript": "^5.4.0"
   },
   "dependencies": {
-    "@prisma/client": "^5.14.0"
+    "@prisma/client": "^5.14.0",
+    "bcryptjs": "^2.4.3"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

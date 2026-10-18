@@ -1,32 +1,80 @@
+# ───────────────────────────────────────────────────────────────────────────
+# TenderBazaar — base Compose definition (development defaults)
+#
+#   Development:  docker compose up -d
+#                 …also loads docker-compose.override.yml automatically.
+#   Production:   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#                 …docker-compose.override.yml is deliberately NOT loaded, so
+#                 development-only settings cannot leak into production.
+#
+# Use scripts/docker-start.sh (--prod) to get the right file set without
+# remembering the flags. See docs/DEPLOYMENT.md.
+#
+# NOTE ON env_file: this file deliberately declares NO `env_file`. Compose
+# MERGES env_file lists across files, exactly as it merges `ports`, so an
+# override cannot remove an entry the base file contributed — `env_file: .env`
+# here meant every production service was handed the developer's own .env
+# (its DATABASE_URL and REDIS_URL, plus live Anthropic/AWS/Razorpay/WATI/
+# Firebase keys). Loading the development .env now lives only in
+# docker-compose.override.yml, and production supplies .env.production. Same
+# reasoning as the ports note in docker-compose.prod.yml.
+#
+# POSTGRES_PASSWORD and REDIS_PASSWORD are interpolated into the connection
+# URLs below, so they must contain only URL-unreserved characters
+# (A-Z a-z 0-9 - _ . ~) or be percent-encoded. db-init verifies this at startup
+# and refuses to run otherwise. Development falls back to a throwaway password.
+# ───────────────────────────────────────────────────────────────────────────
+
+# Connection URLs are defined once here and aliased by every service that needs
+# them. Previously each service carried its own hardcoded copy, so changing the
+# database password for production left db-init pointing at postgres:postgres —
+# it failed, and every service gated on it never started.
+x-database-url: &database-url postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/tenderbazaar
+x-redis-url: &redis-url redis://redis:6379
+
 services:
   postgres:
     image: postgres:16-alpine
     container_name: tenderbazaar-postgres
     restart: unless-stopped
-    ports:
-      - '5432:5432'
+    # Not published here. docker-compose.override.yml (development) publishes
+    # it; production therefore never exposes the database to the host.
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
       POSTGRES_DB: tenderbazaar
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    # start_period covers first boot. `initdb` on an empty volume takes minutes
+    # on a cold or slow host (measured: ~4 min on a loaded Windows/WSL2 Docker
+    # Desktop), and 5 retries at 10s gives up after 50 seconds — so a perfectly
+    # healthy first boot reported `unhealthy` for minutes. Failures during
+    # start_period do not count against `retries`, so the container now stays
+    # `starting` until Postgres is genuinely accepting connections. Compose's
+    # `service_healthy` gating was already correct; what this fixes is every
+    # monitor, orchestrator and operator that reads health status and sees a
+    # fresh deploy as a failed one.
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U postgres']
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 300s
 
   redis:
     image: redis:7-alpine
     container_name: tenderbazaar-redis
     restart: unless-stopped
-    ports:
-      - '6379:6379'
+    # Not published here — see the note on postgres.
     volumes:
       - redis-data:/data
+    # `grep -q PONG` rather than bare `redis-cli ping`: an error reply (for
+    # example NOAUTH once a password is required) must fail the check loudly
+    # instead of depending on redis-cli's exit code. The production override
+    # supplies credentials via REDISCLI_AUTH, which redis-cli reads from the
+    # environment so the password never appears in process arguments.
     healthcheck:
-      test: ['CMD', 'redis-cli', 'ping']
+      test: ['CMD-SHELL', 'redis-cli ping | grep -q PONG']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -35,9 +83,7 @@ services:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
     container_name: tenderbazaar-elasticsearch
     restart: unless-stopped
-    ports:
-      - '9200:9200'
-      - '9300:9300'
+    # Not published here — see the note on postgres.
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
@@ -45,21 +91,26 @@ services:
       - 'ES_JAVA_OPTS=-Xms512m -Xmx512m'
     volumes:
       - elasticsearch-data:/usr/share/elasticsearch/data
+    # See the note on postgres: a cold JVM start plus index recovery routinely
+    # outlasts 5 retries at 15s, and production raises the heap to 1g.
     healthcheck:
       test: ['CMD-SHELL', 'curl -f http://localhost:9200/_cluster/health || exit 1']
       interval: 15s
       timeout: 10s
       retries: 5
+      start_period: 300s
 
-  # ── Init: push schema & seed DB ─────────────────────────────────
+  # ── Init: apply Prisma migrations (never seeds unless asked) ─────────────
+  # Seeding is opt-in via DB_INIT_SEED=true and is intended for development and
+  # fresh demo environments only — see docker/db-init-entrypoint.sh.
   db-init:
     build:
       context: .
       dockerfile: docker/Dockerfile.db-init
     container_name: tenderbazaar-db-init
-    env_file: .env
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/tenderbazaar
+      DATABASE_URL: *database-url
+      DB_INIT_SEED: ${DB_INIT_SEED:-false}
     depends_on:
       postgres:
         condition: service_healthy
@@ -71,11 +122,11 @@ services:
       dockerfile: Dockerfile
     container_name: tenderbazaar-ai-service
     restart: unless-stopped
-    ports:
-      - '5050:5000'
+    # Internal service; reached as http://ai-service:5000 on the Compose
+    # network. docker-compose.override.yml publishes it for development.
     environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - REDIS_URL=redis://redis:6379
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      REDIS_URL: *redis-url
     depends_on:
       redis:
         condition: service_healthy
@@ -93,19 +144,23 @@ services:
     restart: unless-stopped
     ports:
       - '4000:4000'
-    env_file: .env
     environment:
-      - NODE_ENV=development
-      - DISABLE_RATE_LIMIT=true
-      - RATE_LIMIT_AUTHED_MAX=10000
-      - RATE_LIMIT_ANON_MAX=3000
-      - RATE_LIMIT_AUTH_MAX=500
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/tenderbazaar
-      - REDIS_URL=redis://redis:6379
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - AI_SERVICE_URL=http://ai-service:5000
-      - FRONTEND_URL=http://localhost:3000
-      - ALLOW_DEMO_GOOGLE_AUTH=true
+      NODE_ENV: development
+      DISABLE_RATE_LIMIT: 'true'
+      RATE_LIMIT_AUTHED_MAX: '10000'
+      RATE_LIMIT_ANON_MAX: '3000'
+      RATE_LIMIT_AUTH_MAX: '500'
+      DATABASE_URL: *database-url
+      REDIS_URL: *redis-url
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      AI_SERVICE_URL: http://ai-service:5000
+      FRONTEND_URL: http://localhost:3000
+      ALLOW_DEMO_GOOGLE_AUTH: 'true'
+      # Shared secret for the scraper engine's control API (see
+      # packages/scraper-engine/src/api/server.ts). Production must supply a
+      # real value; this development default is rejected in production.
+      SCRAPER_API_URL: http://scraper:4001
+      SCRAPER_API_TOKEN: ${SCRAPER_API_TOKEN:-dev-scraper-api-token}
     depends_on:
       postgres:
         condition: service_healthy
@@ -120,22 +175,24 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
+      # NEXT_PUBLIC_* values are inlined into the client bundle at BUILD time;
+      # setting them only under `environment:` has no effect on the browser.
+      # Set them in .env before `docker compose build`.
       args:
-        - NEXT_PUBLIC_API_URL=http://localhost:4000/api/v1
-        - NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH=true
-        - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-your-google-client-id}
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:4000/api/v1}
+        - NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH=${NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH:-true}
+        - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
     container_name: tenderbazaar-web
     restart: unless-stopped
     ports:
       - '3000:3000'
       - '3002:3000'
-    env_file: .env
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:4000/api/v1
-      - NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH=true
-      - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-your-google-client-id}
-      - PORT=3000
-      - HOSTNAME=0.0.0.0
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000/api/v1}
+      NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH: ${NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH:-true}
+      NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
+      PORT: '3000'
+      HOSTNAME: 0.0.0.0
     depends_on:
       - api-server
 
@@ -144,16 +201,15 @@ services:
       context: .
       dockerfile: apps/admin/Dockerfile
       args:
-        - NEXT_PUBLIC_API_URL=http://localhost:4000/api/v1
+        - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:4000/api/v1}
     container_name: tenderbazaar-admin
     restart: unless-stopped
     ports:
       - '3001:3001'
-    env_file: .env
     environment:
-      - NEXT_PUBLIC_API_URL=http://localhost:4000/api/v1
-      - PORT=3001
-      - HOSTNAME=0.0.0.0
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000/api/v1}
+      PORT: '3001'
+      HOSTNAME: 0.0.0.0
     depends_on:
       - api-server
 
@@ -163,17 +219,18 @@ services:
       dockerfile: packages/scraper-engine/Dockerfile
     container_name: tenderbazaar-scraper
     restart: unless-stopped
-    ports:
-      - '4001:4001'
-    env_file: .env
+    # The control API is NOT published here. api-server reaches it at
+    # http://scraper:4001 on the Compose network and the healthcheck runs
+    # inside the container. docker-compose.override.yml publishes it for
+    # local development only.
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/tenderbazaar
-      - REDIS_URL=redis://redis:6379
-      - ELASTICSEARCH_URL=http://elasticsearch:9200
-      - SCRAPER_API_PORT=4001
-      - SCRAPER_API_ENABLED=true
-      - NODE_ENV=production
-      - NODE_TLS_REJECT_UNAUTHORIZED=0
+      NODE_ENV: ${NODE_ENV:-development}
+      DATABASE_URL: *database-url
+      REDIS_URL: *redis-url
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      SCRAPER_API_PORT: '4001'
+      SCRAPER_API_ENABLED: 'true'
+      SCRAPER_API_TOKEN: ${SCRAPER_API_TOKEN:-dev-scraper-api-token}
     depends_on:
       postgres:
         condition: service_healthy
@@ -181,8 +238,13 @@ services:
         condition: service_healthy
       elasticsearch:
         condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    # /api/ready fails when the scheduler is not running, so a scheduler-less
+    # container can no longer report itself healthy. /api/health stays as the
+    # liveness view of the process.
     healthcheck:
-      test: ['CMD-SHELL', 'curl -f http://localhost:4001/api/health || exit 1']
+      test: ['CMD-SHELL', 'curl -f http://localhost:4001/api/ready || exit 1']
       interval: 60s
       timeout: 15s
       retries: 3
@@ -193,13 +255,18 @@ services:
       dockerfile: packages/notification-service/Dockerfile
     container_name: tenderbazaar-notification-service
     restart: unless-stopped
-    env_file: .env
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/tenderbazaar
-      - REDIS_URL=redis://redis:6379
+      DATABASE_URL: *database-url
+      REDIS_URL: *redis-url
+    # This service reads the database through Prisma, so it waits for Postgres
+    # and for schema initialization just like api-server does.
     depends_on:
+      postgres:
+        condition: service_healthy
       redis:
         condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
 
 volumes:
   postgres-data:

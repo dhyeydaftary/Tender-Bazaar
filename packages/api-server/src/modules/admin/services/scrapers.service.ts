@@ -1,6 +1,12 @@
 import { prisma } from '../../../config/database';
+import { env } from '../../../config/env';
 import { AppError } from '../../../shared/middleware/error-handler';
 import { enqueueScrapeJob, portalNameToRegistryKey } from '../../../queue/scraper-job-publisher';
+import {
+  isValidCronExpression,
+  nextCronRun,
+  hasMissedSchedule,
+} from '../../../shared/utils/cron-schedule';
 
 export const scrapersService = {
   async getScraperList() {
@@ -33,19 +39,10 @@ export const scrapersService = {
       return realCount > 0 ? realCount : reportedCount;
     };
 
-    // Auto-recover stale RUNNING runs older than 15 minutes (e.g. process died/restarted)
-    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
-    await prisma.scrapingRun.updateMany({
-      where: {
-        status: 'RUNNING',
-        startedAt: { lt: fifteenMinutesAgo },
-      },
-      data: {
-        status: 'FAILED',
-        errorMessage: 'Run timed out or process was restarted',
-        completedAt: new Date(),
-      },
-    });
+    // NOTE: this handler used to fail stale RUNNING rows here, i.e. an ordinary
+    // GET mutated data, and recovery happened only if a human opened this page.
+    // The scraper engine now recovers interrupted runs at startup and on a
+    // timer (StorageWriter.recoverStaleRuns), so listing is read-only.
 
     // Get latest run for each scraper
     const latestRuns = await prisma.scrapingRun.findMany({
@@ -73,9 +70,21 @@ export const scrapersService = {
     });
 
     const runMap = new Map(latestRuns.map((r) => [r.portalName, r]));
+    const now = new Date();
 
     return scrapers.map((s) => {
       const realCount = getRealTenderCount(s.portalName, s.totalTendersFound);
+
+      // Derived rather than stored: no schema change, and it cannot go stale.
+      // All cron expressions are evaluated in UTC, matching the scraper engine.
+      const cronValid = s.cronExpression ? isValidCronExpression(s.cronExpression) : false;
+      const nextRunAt =
+        s.enabled && cronValid ? nextCronRun(s.cronExpression as string, now) : null;
+      const missedSchedule =
+        s.enabled && cronValid
+          ? hasMissedSchedule(s.cronExpression, s.lastRunAt, now)
+          : false;
+
       return {
         id: s.id,
         portalName: s.portalName,
@@ -95,6 +104,10 @@ export const scrapersService = {
         errorRate: s.errorRate,
         lastError: s.lastError,
         latestRun: runMap.get(s.portalName) || null,
+        // Scheduling visibility (previously absent entirely):
+        cronValid,
+        nextRunAt,
+        missedSchedule,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
       };
@@ -134,22 +147,64 @@ export const scrapersService = {
 
     const registryKey = portalNameToRegistryKey(portalName);
 
-    // Call the scraper engine API directly if available (on port 4001)
+    // Call the scraper engine's control API if it is reachable.
+    //
+    // POST /api/portals/:key/run now requires the shared secret
+    // SCRAPER_API_TOKEN; without it the engine answers 401 and we fall through
+    // to the durable queue below, which is the same path used when the engine
+    // is simply down.
     let engineTriggered = false;
-    const scraperUrls = ['http://tenderbazaar-scraper:4001', 'http://localhost:4001'];
+    const scraperUrls = [
+      env.SCRAPER_API_URL,
+      'http://tenderbazaar-scraper:4001',
+      'http://localhost:4001',
+    ].filter((url, index, all) => url && all.indexOf(url) === index);
+
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (env.SCRAPER_API_TOKEN) {
+      headers.Authorization = `Bearer ${env.SCRAPER_API_TOKEN}`;
+    }
+
     for (const baseUrl of scraperUrls) {
       try {
         const response = await fetch(`${baseUrl}/api/portals/${registryKey}/run`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers,
           signal: AbortSignal.timeout(3000),
         });
         if (response.ok) {
           engineTriggered = true;
           break;
         }
-      } catch {
-        // Fallback to queue
+        // 409: the engine REFUSED because a run for this portal is already
+        // queued or in progress.
+        //
+        // This must not fall through to the durable-queue fallback below. That
+        // fallback exists for an unreachable engine; using it here would publish
+        // a second job for a portal the engine is deliberately protecting with
+        // its per-portal lock — turning a correct refusal into the duplicate
+        // run the lock exists to prevent. Surface it to the operator instead.
+        if (response.status === 409) {
+          throw new AppError(
+            `A scraping run for "${portalName}" is already queued or in progress. ` +
+              'No new job was queued.',
+            409,
+            'RUN_ALREADY_IN_PROGRESS',
+          );
+        }
+        if (response.status === 401) {
+          console.error(
+            '[scrapers] Scraper control API rejected our token (401). ' +
+              'Check that SCRAPER_API_TOKEN matches on api-server and scraper. ' +
+              'Falling back to the job queue.',
+          );
+          break;
+        }
+      } catch (err) {
+        // A 409 is a real answer from the engine, not a connectivity problem,
+        // so it propagates instead of being retried against the next URL.
+        if (err instanceof AppError) throw err;
+        // Unreachable on this URL — try the next, then fall back to the queue.
       }
     }
 
@@ -194,6 +249,19 @@ export const scrapersService = {
     }
 
     if (data.cronExpression !== undefined && data.cronExpression !== health.cronExpression) {
+      // Reject unparseable expressions instead of storing them and reporting
+      // success: the scheduler would discard such a value and keep the old
+      // cadence, so the UI would show a schedule that never takes effect.
+      if (data.cronExpression !== null && data.cronExpression !== '') {
+        if (!isValidCronExpression(data.cronExpression)) {
+          throw new AppError(
+            'Invalid cron expression. Use 5 space-separated fields, for example "0 */4 * * *" ' +
+              '(minute hour day-of-month month day-of-week, evaluated in UTC).',
+            400,
+            'INVALID_CRON_EXPRESSION',
+          );
+        }
+      }
       changes.cronExpression = { old: health.cronExpression, new: data.cronExpression };
       updateData.cronExpression = data.cronExpression;
     }

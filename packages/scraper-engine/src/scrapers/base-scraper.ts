@@ -1,8 +1,38 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 import https from 'node:https';
 
+/**
+ * Shared HTTPS agent for all scraper requests.
+ *
+ * Certificate verification is ON. It was previously hardcoded to
+ * `rejectUnauthorized: false`, which — together with
+ * `NODE_TLS_REJECT_UNAUTHORIZED=0` on the scraper container — meant every
+ * request to every government portal accepted any certificate, so the scraped
+ * content (and anything else on those connections) was trivially
+ * machine-in-the-middle-able.
+ *
+ * Some state portals genuinely do serve incomplete chains. The escape hatch is
+ * explicit, opt-in, and refuses to engage in production:
+ *
+ *   SCRAPER_ALLOW_INSECURE_TLS=true   (ignored when NODE_ENV=production)
+ *
+ * Use it only against a portal you are actively debugging. The correct fix for
+ * a missing intermediate certificate is NODE_EXTRA_CA_CERTS, not disabling
+ * verification.
+ */
+const allowInsecureTls =
+  process.env.SCRAPER_ALLOW_INSECURE_TLS === 'true' &&
+  process.env.NODE_ENV !== 'production';
+
+if (allowInsecureTls) {
+  console.warn(
+    '[BaseScraper] WARNING: TLS certificate verification is DISABLED ' +
+      '(SCRAPER_ALLOW_INSECURE_TLS=true). Never use this outside local debugging.',
+  );
+}
+
 const defaultHttpsAgent = new https.Agent({
-  rejectUnauthorized: false,
+  rejectUnauthorized: !allowInsecureTls,
   keepAlive: true,
 });
 import * as cheerio from 'cheerio';

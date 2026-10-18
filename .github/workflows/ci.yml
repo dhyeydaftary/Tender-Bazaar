@@ -1,10 +1,13 @@
 name: CI
 
 on:
+  # `dev` is this repository's integration branch and the base for pull
+  # requests, but CI only watched main/develop — so nothing merged to dev was
+  # ever checked, and a failing api-server test sat unnoticed.
   pull_request:
-    branches: [main, develop]
+    branches: [main, dev, develop]
   push:
-    branches: [main, develop]
+    branches: [main, dev, develop]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -32,6 +35,11 @@ jobs:
       - name: Generate Prisma client
         run: pnpm db:generate
 
+      - name: Validate Prisma schema
+        run: npx prisma validate
+        env:
+          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/tenderbazaar_validation
+
       - name: Type Check - Shared
         run: pnpm --filter @tenderbazaar/shared type-check
 
@@ -49,6 +57,67 @@ jobs:
 
       - name: Type Check - Notification Service
         run: pnpm --filter @tenderbazaar/notification-service type-check
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-test-password
+          POSTGRES_DB: tenderbazaar_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Disposable CI databases. The scheduler and stale-run suites only touch
+      # what they are pointed at explicitly, and skip when these are unset.
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+      TEST_DATABASE_URL: postgresql://postgres:ci-test-password@127.0.0.1:5432/tenderbazaar_test
+      DATABASE_URL: postgresql://postgres:ci-test-password@127.0.0.1:5432/tenderbazaar_test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v2
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Apply migrations to the disposable test database
+        run: npx prisma migrate deploy
+
+      - name: Re-apply migrations (must be a no-op)
+        run: npx prisma migrate deploy
+
+      - name: API server tests
+        run: pnpm --filter @tenderbazaar/api-server test
+
+      - name: Scraper engine tests
+        run: pnpm --filter @tenderbazaar/scraper-engine test
 
   build:
     name: Build
@@ -76,6 +145,137 @@ jobs:
         run: pnpm build
         env:
           SKIP_ENV_VALIDATION: 'true'
+
+  docker-images:
+    name: Docker Images
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Nothing built these images in CI, so a broken Dockerfile or a mistake in
+      # the partial workspace copy only surfaced on a deployment attempt.
+      - name: Build db-init image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.db-init
+          push: false
+          cache-from: type=gha,scope=db-init
+          cache-to: type=gha,mode=max,scope=db-init
+
+      - name: Build api-server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/api-server/Dockerfile
+          push: false
+          cache-from: type=gha,scope=api-server
+          cache-to: type=gha,mode=max,scope=api-server
+
+      - name: Build scraper-engine image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/scraper-engine/Dockerfile
+          push: false
+          cache-from: type=gha,scope=scraper
+          cache-to: type=gha,mode=max,scope=scraper
+
+      - name: Build notification-service image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: packages/notification-service/Dockerfile
+          push: false
+          cache-from: type=gha,scope=notification
+          cache-to: type=gha,mode=max,scope=notification
+
+      - name: Build web image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: false
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://api.ci.invalid/api/v1
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      - name: Build admin image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/admin/Dockerfile
+          push: false
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://api.ci.invalid/api/v1
+          cache-from: type=gha,scope=admin
+          cache-to: type=gha,mode=max,scope=admin
+
+      - name: Build ai-service image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./packages/ai-service
+          file: ./packages/ai-service/Dockerfile
+          push: false
+          cache-from: type=gha,scope=ai
+          cache-to: type=gha,mode=max,scope=ai
+
+  compose-config:
+    name: Compose Configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # check-prod-ports.py (the last step of this job) imports PyYAML, and the
+      # ubuntu-latest runner image does not ship it for the system python3 — the
+      # step exited with "PyYAML is required: pip install pyyaml", failing this
+      # job. Ubuntu 24.04 also marks its system python as externally managed
+      # (PEP 668), so `pip install` has to go to a setup-python interpreter
+      # rather than the system one.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the port check's dependency
+        run: pip install pyyaml
+
+      - name: Validate the DEVELOPMENT file set
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          echo "development compose config OK"
+
+      - name: Production must REFUSE an incomplete configuration
+        run: |
+          rm -f .env
+          if docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet 2>/dev/null; then
+            echo "FAIL: production config validated without the required secrets"
+            exit 1
+          fi
+          echo "OK: production refused an incomplete configuration"
+
+      - name: Validate the PRODUCTION file set (throwaway CI values)
+        run: |
+          {
+            echo "POSTGRES_PASSWORD=ci-throwaway-pg-password"
+            echo "REDIS_PASSWORD=ci-throwaway-redis-password"
+            echo "SCRAPER_API_TOKEN=ci-throwaway-scraper-api-token"
+            echo "FRONTEND_URL=https://app.ci.invalid"
+            echo "ADMIN_URL=https://admin.ci.invalid"
+            echo "NEXT_PUBLIC_API_URL=https://api.ci.invalid/api/v1"
+            echo "ANTHROPIC_API_KEY=ci-throwaway"
+          } > .env
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
+          echo "production compose config OK"
+
+      - name: Production must not publish infrastructure ports
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config > /tmp/prod.yml
+          python3 scripts/check-prod-ports.py /tmp/prod.yml
 
   ai-service:
     name: AI Service Check

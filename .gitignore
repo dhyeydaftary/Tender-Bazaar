@@ -64,3 +64,10 @@ dist/
 
 # os
 Thumbs.db
+
+# ─── Deployment secrets ────────────────────────────────────────────────────
+# Firebase service-account key and any other mounted credential. These are
+# injected as read-only bind mounts (docker-compose.push.yml) and must never be
+# committed or copied into an image.
+secrets/
+*-firebase-adminsdk-*.json
