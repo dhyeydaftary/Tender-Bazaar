@@ -380,6 +380,12 @@ export class ScrapingScheduler {
    */
   private bullConnection(): Redis {
     const connection = this.redis.duplicate({ maxRetriesPerRequest: null });
+    // An 'error' event with no listener on an EventEmitter causes Node to crash.
+    // BullMQ removes its listeners when components close, so ensure the raw connection
+    // never emits an unhandled error during shutdown or disconnects.
+    connection.on('error', (error: Error) => {
+      console.warn('[Scheduler] Bull connection error:', error.message);
+    });
     // BullMQ does not close connections it was handed, so stop() must. Without
     // this, every stop/start cycle (the API exposes both) leaked three Redis
     // connections and kept the event loop alive after shutdown.
@@ -599,9 +605,16 @@ export class ScrapingScheduler {
    * Graceful shutdown.
    */
   async stop(): Promise<void> {
-    if (!this.running) return;
+    if (!this.running && (!this.queue || this.queue.closing) && this.bullConnections.length === 0) {
+      return;
+    }
 
-    console.log('[Scheduler] Shutting down...');
+    const wasRunning = this.running;
+    this.running = false;
+
+    if (wasRunning) {
+      console.log('[Scheduler] Shutting down...');
+    }
 
     // Stop all cron jobs
     for (const [name, task] of this.cronJobs) {
@@ -616,13 +629,9 @@ export class ScrapingScheduler {
       this.reconcileTimer = null;
     }
 
-
     if (this.missedWindowTimer) {
-
       clearInterval(this.missedWindowTimer);
-
       this.missedWindowTimer = null;
-
     }
 
     // Close worker (wait for current jobs to complete, 30s timeout)
@@ -638,7 +647,9 @@ export class ScrapingScheduler {
     }
 
     // Close queue
-    await this.queue.close();
+    if (this.queue && !this.queue.closing) {
+      await this.queue.close();
+    }
 
     // Stop any lock renewals still ticking for in-flight portals.
     for (const portalName of [...this.lockRenewals.keys()]) {
@@ -646,15 +657,23 @@ export class ScrapingScheduler {
     }
 
     // Close the connections we duplicated for BullMQ (it does not own them).
-    await Promise.all(
-      this.bullConnections.map((connection) =>
-        connection.quit().catch(() => connection.disconnect()),
-      ),
-    );
+    const connectionsToClose = this.bullConnections;
     this.bullConnections = [];
+    await Promise.all(
+      connectionsToClose.map(async (connection) => {
+        try {
+          if (connection.status !== 'end' && connection.status !== 'close') {
+            await connection.quit().catch(() => connection.disconnect());
+          }
+        } catch {
+          connection.disconnect();
+        }
+      }),
+    );
 
-    this.running = false;
-    console.log('[Scheduler] Shutdown complete');
+    if (wasRunning) {
+      console.log('[Scheduler] Shutdown complete');
+    }
   }
 
   // ─── Schedule Management ──────────────────────────────────────────────────────
@@ -1395,10 +1414,10 @@ export class ScrapingScheduler {
     this.worker.on('completed', (job: Job<ScraperJobData, ScraperJobResult>) => {
       const result = job.returnvalue;
       // Terminal state: release the portal so the next schedule can run.
-      void this.releasePortalLock(
+      this.releasePortalLock(
         job.data.portalName,
         `worker:${process.pid}:${job.id}`,
-      );
+      ).catch(() => {});
 
       if (result?.skipped) {
         console.warn(
@@ -1424,15 +1443,15 @@ export class ScrapingScheduler {
         // pending, so a cron firing in the meantime must not enqueue a second
         // job. Release only once no attempt remains.
         if (exhausted) {
-          void this.releasePortalLock(
+          this.releasePortalLock(
             job.data.portalName,
             `worker:${process.pid}:${job.id}`,
-          );
+          ).catch(() => {});
         } else {
-          void this.takePortalLock(
+          this.takePortalLock(
             job.data.portalName,
             `retry:${process.pid}:${job.id}`,
-          );
+          ).catch(() => {});
         }
 
         console.error(

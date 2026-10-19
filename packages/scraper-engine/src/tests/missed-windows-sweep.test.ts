@@ -64,10 +64,13 @@ async function main(): Promise<void> {
   }
 
   const redis = new Redis(TEST_REDIS_URL, { maxRetriesPerRequest: 3 });
+  redis.on('error', (err) => console.warn('[Test] Redis error:', err.message));
   const inspectConnection = new Redis(TEST_REDIS_URL, { maxRetriesPerRequest: null });
+  inspectConnection.on('error', (err) => console.warn('[Test] Inspect connection error:', err.message));
   const inspect = new Queue<{ triggeredBy?: string }, ScraperJobResult>(QUEUE_NAME, {
     connection: inspectConnection,
   });
+  inspect.on('error', (err) => console.warn('[Test] Inspect queue error:', err.message));
 
   async function reset(): Promise<void> {
     for (const key of await redis.keys('tb:scheduler:lock:*')) await redis.del(key);
@@ -247,6 +250,10 @@ async function main(): Promise<void> {
     );
 
     release();
+    await waitFor('the in-flight run to finish', async () => {
+      const s = await scheduler.getQueueStatus();
+      return s.active === 0;
+    });
     await scheduler.stop().catch(() => {});
     console.log('✓ The per-portal lock prevents a catch-up duplicating an in-flight run');
   }
@@ -289,6 +296,10 @@ async function main(): Promise<void> {
     );
 
     release();
+    await waitFor('the in-flight catch-up to finish', async () => {
+      const s = await scheduler.getQueueStatus();
+      return s.active === 0;
+    });
     await scheduler.stop().catch(() => {});
     console.log('✓ Repeated sweeps do not stack duplicate catch-up jobs');
   }
@@ -323,8 +334,12 @@ async function main(): Promise<void> {
 
   await reset();
   await inspect.close().catch(() => {});
-  inspectConnection.disconnect();
-  await redis.quit().catch(() => {});
+  if (inspectConnection.status !== 'end' && inspectConnection.status !== 'close') {
+    await inspectConnection.quit().catch(() => inspectConnection.disconnect());
+  }
+  if (redis.status !== 'end' && redis.status !== 'close') {
+    await redis.quit().catch(() => {});
+  }
 
   console.log('--- All Missed-Window Sweep Tests Passed ---');
 }
