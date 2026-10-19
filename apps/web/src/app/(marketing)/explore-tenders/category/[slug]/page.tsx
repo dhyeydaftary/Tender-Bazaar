@@ -711,7 +711,7 @@ export default function CategoryPage({
                     </div>
                   </div>
                   <Link
-                    href="/login"
+                    href={`/tenders/${tender.id}`}
                     className="px-4 py-2 bg-primary-500 text-white text-sm font-medium rounded-lg hover:bg-primary-500/90 transition-colors whitespace-nowrap"
                   >
                     View Details

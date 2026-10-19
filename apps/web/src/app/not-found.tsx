@@ -18,7 +18,7 @@ export default function NotFound() {
         </p>
 
         {/* Search bar */}
-        <form action="/dashboard/tenders" method="GET" className="mt-8 max-w-md mx-auto">
+        <form action="/explore-tenders" method="GET" className="mt-8 max-w-md mx-auto">
           <div className="relative">
             <input
               type="text"
@@ -51,7 +51,7 @@ export default function NotFound() {
             Go Home
           </Link>
           <Link
-            href="/dashboard/tenders"
+            href="/explore-tenders"
             className="bg-muted hover:bg-muted/80 text-foreground px-6 py-3 rounded-xl text-sm font-semibold transition-colors border border-border w-full sm:w-auto"
           >
             Browse Tenders

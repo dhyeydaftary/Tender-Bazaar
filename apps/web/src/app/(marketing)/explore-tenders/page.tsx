@@ -376,7 +376,7 @@ export default function TendersPage() {
               return (
                 <Link
                   key={tender.id}
-                  href="/login"
+                  href={`/tenders/${tender.id}`}
                   className={cn(
                     'block group bg-card border border-border rounded-lg p-5 shadow-card hover-lift transition-all border-l-4 text-left',
                     colors.border
@@ -547,13 +547,13 @@ export default function TendersPage() {
 
               <div className="flex flex-col sm:flex-row gap-3">
                 <Link
-                  href="/login"
+                  href="/pricing"
                   className="flex-1 px-5 py-3 border border-border rounded-lg font-medium text-foreground hover:bg-muted transition-colors text-center"
                 >
                   View Plans
                 </Link>
                 <Link
-                  href="/login"
+                  href="/register"
                   className="flex-1 px-5 py-3 bg-[#FF6B35] hover:bg-[#FF6B35]/90 text-white rounded-lg font-medium transition-colors text-center"
                 >
                   Start Free Trial

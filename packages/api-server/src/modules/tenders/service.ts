@@ -3,6 +3,7 @@ import esClient, { isElasticsearchAlive, markElasticsearchDown, checkElasticsear
 import redis from '../../config/redis';
 import { TENDER_INDEX, indexTender } from '../../config/elasticsearch-setup';
 import { AppError } from '../../shared/middleware/error-handler';
+import { enrichTenderDetails } from './tender-enricher';
 
 interface SearchFilters {
   query?: string;
@@ -338,7 +339,11 @@ export const tenderService = {
     // Track trending in Redis (sorted set by views in last 7 days)
     redis.zincrby('trending:tenders:7d', 1, tender.id).catch(() => { });
 
-    return tender;
+    // Dynamically enrich all requirements, dates, organization type, district, and documents for UI display
+    // Keep in-memory only to preserve original scraped database record integrity
+    const enriched = enrichTenderDetails(tender as any);
+
+    return enriched;
   },
 
   async getSimilarTenders(tenderId: string) {
@@ -420,6 +425,42 @@ export const tenderService = {
   },
 
   async getTenderStats(stateFilter?: string) {
+    // Dynamically update tender statuses based on deadline expiration
+    try {
+      const expired = await prisma.tender.updateMany({
+        where: {
+          status: 'ACTIVE',
+          bidSubmissionDeadline: { lt: new Date() },
+        },
+        data: {
+          status: 'CLOSED',
+        },
+      });
+
+      if (expired.count > 0 && isElasticsearchAlive()) {
+        esClient
+          .updateByQuery({
+            index: TENDER_INDEX,
+            conflicts: 'proceed',
+            body: {
+              script: {
+                source: "ctx._source.status = 'CLOSED'",
+                lang: 'painless',
+              },
+              query: {
+                bool: {
+                  must: [
+                    { term: { status: 'ACTIVE' } },
+                    { range: { bidSubmissionDeadline: { lt: new Date().toISOString() } } },
+                  ],
+                },
+              },
+            },
+          })
+          .catch(() => {});
+      }
+    } catch {}
+
     const activeWhere: any = { status: 'ACTIVE' };
     const baseWhere: any = {};
     const closedWhere: any = { status: { in: ['CLOSED', 'AWARDED', 'CANCELLED'] } };
