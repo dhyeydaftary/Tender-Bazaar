@@ -255,6 +255,10 @@ export interface TenderDetail {
   reservedForMSME?: boolean;
   reservedForStartups?: boolean;
   emdExemptMSME?: boolean;
+  organizationType?: string | null;
+  tenderFee?: number | null;
+  completionPeriod?: string | null;
+  inferredFields?: string[];
   viewCount?: number;
   documents?: TenderDocument[];
   results?: TenderResult[];
@@ -366,6 +370,9 @@ export function useSavedTenders() {
     let cancelled = false;
 
     (async () => {
+      if (typeof window !== 'undefined' && !localStorage.getItem('accessToken')) {
+        return;
+      }
       try {
         const res = await api.get('/saved', { params: { limit: 200 } });
         if (cancelled) return;
@@ -478,7 +485,10 @@ export function useTenderCounts(stateFilter?: string): TenderCounts {
   const fetchCounts = useCallback(async () => {
     try {
       const res = await api.get('/tenders/stats', {
-        params: stateFilter ? { state: stateFilter } : undefined,
+        params: {
+          ...(stateFilter ? { state: stateFilter } : {}),
+          _t: Date.now(),
+        },
       });
       const data = res.data?.data;
       if (data && typeof data.total === 'number') {

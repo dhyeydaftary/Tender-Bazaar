@@ -25,6 +25,7 @@ interface AuthState {
   resetPassword: (token: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
   fetchUser: () => Promise<void>;
+  initAuth: () => void;
   setUser: (user: User | null) => void;
 }
 
@@ -140,9 +141,18 @@ export const useAuthStore = create<AuthState>((set) => ({
     }
   },
 
+  initAuth: () => {
+    if (typeof window === 'undefined') return;
+    const initialUser = getInitialUser();
+    const token = localStorage.getItem('accessToken');
+    if (initialUser || token) {
+      set({ user: initialUser, isAuthenticated: !!token });
+    }
+  },
+
   fetchUser: async () => {
     try {
-      const token = localStorage.getItem('accessToken');
+      const token = typeof window !== 'undefined' ? localStorage.getItem('accessToken') : null;
       if (!token) {
         const storedAvatar = typeof window !== 'undefined' ? localStorage.getItem('tb_user_avatar') : null;
         if (storedAvatar) {
@@ -152,19 +162,35 @@ export const useAuthStore = create<AuthState>((set) => ({
         }
         return;
       }
-      const res = await api.get('/auth/me');
-      const fetchedUser = res.data.data.user;
-      const storedAvatar = typeof window !== 'undefined' ? localStorage.getItem('tb_user_avatar') : null;
-      if (storedAvatar && !fetchedUser.avatarUrl) {
-        fetchedUser.avatarUrl = storedAvatar;
+
+      // If user isn't populated in memory yet, immediately use cached user from storage
+      const cached = getInitialUser();
+      if (cached) {
+        set((state) => (state.user ? state : { user: cached, isAuthenticated: true }));
       }
-      localStorage.setItem('tb_user', JSON.stringify(fetchedUser));
-      set({ user: fetchedUser, isAuthenticated: true });
-    } catch {
-      localStorage.removeItem('accessToken');
-      localStorage.removeItem('refreshToken');
-      localStorage.removeItem('tb_user');
-      set({ user: null, isAuthenticated: false });
+
+      const res = await api.get('/auth/me');
+      const fetchedUser = res.data?.data?.user;
+      if (fetchedUser) {
+        const storedAvatar = typeof window !== 'undefined' ? localStorage.getItem('tb_user_avatar') : null;
+        if (storedAvatar && !fetchedUser.avatarUrl) {
+          fetchedUser.avatarUrl = storedAvatar;
+        }
+        if (typeof window !== 'undefined') {
+          localStorage.setItem('tb_user', JSON.stringify(fetchedUser));
+        }
+        set({ user: fetchedUser, isAuthenticated: true });
+      }
+    } catch (err: any) {
+      // Only clear user credentials if server explicitly rejected auth with 401
+      if (err.response?.status === 401) {
+        if (typeof window !== 'undefined') {
+          localStorage.removeItem('accessToken');
+          localStorage.removeItem('refreshToken');
+          localStorage.removeItem('tb_user');
+        }
+        set({ user: null, isAuthenticated: false });
+      }
     }
   },
 

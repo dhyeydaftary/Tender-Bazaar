@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Menu, X, ArrowRight, Twitter, Linkedin, Youtube, MessageCircle } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -11,7 +12,7 @@ import { cn } from '@/lib/utils';
    ═══════════════════════════════════════════════════════════════════════════ */
 
 const NAV_LINKS = [
-  { label: 'Browse Tenders', href: '/login' },
+  { label: 'Browse Tenders', href: '/explore-tenders' },
   { label: 'Services', href: '/services' },
   { label: 'Pricing', href: '/pricing' },
   { label: 'About', href: '/about' },
@@ -84,7 +85,7 @@ function Navbar() {
             Login
           </Link>
           <Link
-            href="/login"
+            href="/register"
             className="group bg-primary-500 hover:bg-primary-600 text-foreground px-5 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 shadow-glow hover:shadow-glow flex items-center gap-2"
           >
             Start Free
@@ -125,7 +126,7 @@ function Navbar() {
               Login
             </Link>
             <Link
-              href="/login"
+              href="/register"
               onClick={() => setMobileOpen(false)}
               className="bg-primary-500 hover:bg-primary-600 text-foreground text-center px-5 py-3 rounded-lg text-lg font-semibold transition-colors mt-2"
             >
@@ -146,12 +147,12 @@ const FOOTER_COLS = [
   {
     title: 'Product',
     links: [
-      { label: 'Dashboard', href: '/login' },
-      { label: 'Search Tenders', href: '/login' },
-      { label: 'AI Eligibility', href: '/login' },
-      { label: 'Smart Alerts', href: '/login' },
-      { label: 'Mobile App', href: '/login' },
-      { label: 'API', href: '/login' },
+      { label: 'Dashboard', href: '/dashboard' },
+      { label: 'Search Tenders', href: '/explore-tenders' },
+      { label: 'AI Eligibility', href: '/eligibility' },
+      { label: 'Smart Alerts', href: '/alerts' },
+      { label: 'Mobile App', href: '#' },
+      { label: 'API', href: '/settings/api' },
     ],
   },
   {
@@ -168,7 +169,7 @@ const FOOTER_COLS = [
     links: [
       { label: 'Blog', href: '/blog' },
       { label: 'Help Center', href: '/help' },
-      { label: 'API Documentation', href: '/login' },
+      { label: 'API Documentation', href: '/settings/api' },
       { label: 'Status Page', href: '#' },
     ],
   },
@@ -212,7 +213,18 @@ function Footer() {
               checking across 50+ government portals.
             </p>
             {/* Newsletter */}
-            <div className="flex gap-2">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (email.trim()) {
+                  toast.success('Thank you for subscribing to TenderBazaar updates!');
+                  setEmail('');
+                } else {
+                  toast.error('Please enter a valid email address');
+                }
+              }}
+              className="flex gap-2"
+            >
               <input
                 type="email"
                 value={email}
@@ -220,13 +232,13 @@ function Footer() {
                 placeholder="Your email"
                 className="flex-1 bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2.5 placeholder:text-muted-foreground focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition-all max-w-[200px]"
               />
-              <Link
-                href="/login"
-                className="bg-primary-500 hover:bg-primary-600 text-foreground px-4 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap"
+              <button
+                type="submit"
+                className="bg-primary-500 hover:bg-primary-600 text-foreground px-4 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap cursor-pointer"
               >
                 Subscribe
-              </Link>
-            </div>
+              </button>
+            </form>
           </div>
 
           {/* Link columns */}

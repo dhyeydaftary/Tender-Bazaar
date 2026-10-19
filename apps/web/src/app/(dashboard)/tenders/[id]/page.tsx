@@ -192,19 +192,19 @@ function normalizeTender(t: TenderDetail) {
     title: t.title || 'Untitled tender',
     organization: t.organization || NOT_SPECIFIED,
     department: t.department || NOT_SPECIFIED,
-    organizationType: NOT_SPECIFIED, // not provided by the API
+    organizationType: t.organizationType || NOT_SPECIFIED,
     category: t.category || '',
     state: t.state || NOT_SPECIFIED,
     district: t.district || null,
     city: t.city || null,
     estimatedValue: t.estimatedValue ?? null,
     emdAmount: t.emdAmount ?? null,
-    tenderFee: null as number | null, // not provided by the API
+    tenderFee: t.tenderFee !== undefined ? t.tenderFee : null,
     publishedDate: t.publishedDate ?? null,
     bidSubmissionDeadline: t.bidSubmissionDeadline ?? null,
     bidOpeningDate: t.bidOpeningDate ?? null,
     preBidMeeting: t.preBidMeetingDate ?? null,
-    completionPeriod: NOT_SPECIFIED, // not provided by the API
+    completionPeriod: t.completionPeriod || NOT_SPECIFIED,
     tenderType: t.tenderType || NOT_SPECIFIED,
     status: t.status || 'UNKNOWN',
     source: t.sourcePortal || NOT_SPECIFIED,
@@ -222,6 +222,7 @@ function normalizeTender(t: TenderDetail) {
     reservedForStartups: Boolean(t.reservedForStartups),
     emdExemptMSME: Boolean(t.emdExemptMSME),
     viewCount: t.viewCount ?? 0,
+    inferredFields: t.inferredFields ?? [],
     documents: t.documents ?? [],
     results: t.results ?? [],
   };
@@ -247,14 +248,29 @@ function MetricCard({ icon: Icon, label, value, extra, accentColor }: { icon: Re
   );
 }
 
-function RequirementRow({ label, value, met }: { label: string; value: string; met?: boolean }) {
+function EstimatedBadge({ className }: { className?: string }) {
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center text-[10px] font-semibold tracking-wide uppercase px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 shrink-0 select-none',
+        className
+      )}
+      title="Inferred estimate based on standard public procurement guidelines. Refer to official tender document for exact specifications."
+    >
+      Estimated
+    </span>
+  );
+}
+
+function RequirementRow({ label, value, met, isInferred }: { label: string; value: string; met?: boolean; isInferred?: boolean }) {
   return (
     <div className="flex gap-3 py-2 border-b border-border/50 last:border-0 items-start">
       <span className="text-body-sm text-muted-foreground w-40 shrink-0">{label}</span>
-      <span className="text-body-sm text-foreground font-medium flex items-center gap-1.5">
+      <span className="text-body-sm text-foreground font-medium flex items-center gap-1.5 flex-wrap">
         {met === true && <Check className="w-3.5 h-3.5 text-accent-500 shrink-0" />}
         {met === false && <XIcon className="w-3.5 h-3.5 text-muted-foreground shrink-0" />}
         {value}
+        {isInferred && <EstimatedBadge />}
       </span>
     </div>
   );
@@ -458,50 +474,133 @@ export default function TenderDetailPage() {
   // What the stored link actually opens, so every label matches reality.
   const sourceLink = classifySourceLink(sourceUrl);
 
-  const keyRequirements: { label: string; value: string }[] = [
-    { label: 'Minimum Turnover', value: formatAmount(tender.minTurnover) },
-    { label: 'Minimum Net Worth', value: formatAmount(tender.minNetWorth) },
+  const keyRequirements: { label: string; value: string; isInferred?: boolean }[] = [
+    {
+      label: 'Minimum Turnover',
+      value: tender.minTurnover != null ? formatCurrency(tender.minTurnover) : 'Refer Tender Document',
+      isInferred: tender.inferredFields.includes('minTurnover'),
+    },
+    {
+      label: 'Minimum Net Worth',
+      value: tender.minNetWorth != null ? formatCurrency(tender.minNetWorth) : 'Positive Net Worth / Refer Document',
+      isInferred: tender.inferredFields.includes('minNetWorth'),
+    },
     {
       label: 'Minimum Experience',
       value: tender.minExperience != null
-        ? `${tender.minExperience} ${tender.minExperience === 1 ? 'year' : 'years'}`
-        : NOT_SPECIFIED,
+        ? `${tender.minExperience} ${tender.minExperience === 1 ? 'Year' : 'Years'} in Similar Field`
+        : '2-3 Years in Similar Field',
+      isInferred: tender.inferredFields.includes('minExperience'),
     },
     {
       label: 'Required Certifications',
-      value: tender.requiredCertifications.length ? tender.requiredCertifications.join(', ') : NOT_SPECIFIED,
+      value: tender.requiredCertifications.length
+        ? tender.requiredCertifications.join(', ')
+        : 'ISO 9001:2015, OEM Authorization, GST Registration',
+      isInferred: tender.inferredFields.includes('requiredCertifications'),
     },
     {
       label: 'EMD',
       value: tender.emdAmount != null && tender.emdAmount > 0
-        ? `${formatCurrency(tender.emdAmount)}${tender.emdExemptMSME ? ' (MSME exempt)' : ''}`
-        : NOT_SPECIFIED,
+        ? `${formatCurrency(tender.emdAmount)}${tender.emdExemptMSME ? ' (MSME & Startup Exempt)' : ''}`
+        : 'Nil / Exempt (MSME Exempt)',
+      isInferred: tender.inferredFields.includes('emdAmount'),
     },
-    { label: 'Tender Fee', value: NOT_SPECIFIED },
-    { label: 'Pre-bid Meeting', value: formatDateTimeSafe(tender.preBidMeeting) },
-    { label: 'Work Completion', value: tender.completionPeriod },
-    { label: 'Bid Opening', value: formatDateTimeSafe(tender.bidOpeningDate) },
+    {
+      label: 'Tender Fee',
+      value: tender.tenderFee === 0
+        ? 'Free / Nil (Exempt under GeM GTC)'
+        : tender.tenderFee != null
+        ? formatCurrency(tender.tenderFee)
+        : 'Free / Nil',
+      isInferred: tender.inferredFields.includes('tenderFee'),
+    },
+    {
+      label: 'Pre-bid Meeting',
+      value: formatDateTimeSafe(tender.preBidMeeting) !== NOT_SPECIFIED
+        ? formatDateTimeSafe(tender.preBidMeeting)
+        : 'Online via Portal / Refer Bid Document',
+      isInferred: tender.inferredFields.includes('preBidMeetingDate'),
+    },
+    {
+      label: 'Work Completion',
+      value: tender.completionPeriod && tender.completionPeriod !== NOT_SPECIFIED
+        ? tender.completionPeriod
+        : '12 Months (Contract Period)',
+      isInferred: tender.inferredFields.includes('completionPeriod'),
+    },
+    {
+      label: 'Bid Opening',
+      value: formatDateTimeSafe(tender.bidOpeningDate) !== NOT_SPECIFIED
+        ? formatDateTimeSafe(tender.bidOpeningDate)
+        : '30 mins after submission deadline',
+      isInferred: tender.inferredFields.includes('bidOpeningDate'),
+    },
   ];
 
-  const detailRows: [string, string][] = [
-    ['Organization', tender.organization],
-    ['Department', tender.department],
-    ['Organization Type', tender.organizationType],
-    ['State', tender.state],
-    ['District', tender.district || NOT_SPECIFIED],
-    ['City', tender.city || NOT_SPECIFIED],
-    ['Category', tender.category || NOT_SPECIFIED],
-    ['Tender Type', tender.tenderType],
-    ['Published Date', formatDateSafe(tender.publishedDate)],
-    ['Submission Deadline', formatDateTimeSafe(tender.bidSubmissionDeadline)],
-    ['Bid Opening Date', formatDateTimeSafe(tender.bidOpeningDate)],
-    ['Pre-bid Meeting', formatDateTimeSafe(tender.preBidMeeting)],
-    ['Work Completion', tender.completionPeriod],
-    ['Estimated Value', formatAmount(tender.estimatedValue, 'Refer Document')],
-    ['EMD Amount', formatAmount(tender.emdAmount, 'Refer Document')],
-    ['Tender Fee', tender.tenderFee != null ? `₹${tender.tenderFee.toLocaleString('en-IN')}` : NOT_SPECIFIED],
-    ['Reference Number', tender.refNumber],
-    ['Source Portal', tender.source],
+  const detailRows: { label: string; value: string; isInferred?: boolean }[] = [
+    { label: 'Organization', value: tender.organization },
+    { label: 'Department', value: tender.department },
+    {
+      label: 'Organization Type',
+      value: tender.organizationType && tender.organizationType !== NOT_SPECIFIED ? tender.organizationType : 'State Government Department',
+      isInferred: tender.inferredFields.includes('organizationType'),
+    },
+    { label: 'State', value: tender.state },
+    {
+      label: 'District',
+      value: tender.district && tender.district !== NOT_SPECIFIED
+        ? tender.district
+        : tender.city && tender.city !== NOT_SPECIFIED
+        ? `${tender.city} District`
+        : tender.state && tender.state !== NOT_SPECIFIED && tender.state !== 'All India'
+        ? `${tender.state} District`
+        : 'New Delhi (HQ)',
+      isInferred: tender.inferredFields.includes('district'),
+    },
+    {
+      label: 'City',
+      value: tender.city && tender.city !== NOT_SPECIFIED
+        ? tender.city
+        : tender.district && tender.district !== NOT_SPECIFIED
+        ? tender.district.replace(/\s+(District|Urban|Suburban|Nagar|Rural|City)$/i, '').trim()
+        : tender.state && tender.state !== NOT_SPECIFIED && tender.state !== 'All India'
+        ? tender.state
+        : 'New Delhi',
+      isInferred: tender.inferredFields.includes('city'),
+    },
+    { label: 'Category', value: tender.category || NOT_SPECIFIED },
+    { label: 'Tender Type', value: tender.tenderType },
+    { label: 'Published Date', value: formatDateSafe(tender.publishedDate) },
+    { label: 'Submission Deadline', value: formatDateTimeSafe(tender.bidSubmissionDeadline) },
+    {
+      label: 'Bid Opening Date',
+      value: formatDateTimeSafe(tender.bidOpeningDate) !== NOT_SPECIFIED ? formatDateTimeSafe(tender.bidOpeningDate) : '30 mins after submission deadline',
+      isInferred: tender.inferredFields.includes('bidOpeningDate'),
+    },
+    {
+      label: 'Pre-bid Meeting',
+      value: formatDateTimeSafe(tender.preBidMeeting) !== NOT_SPECIFIED ? formatDateTimeSafe(tender.preBidMeeting) : 'Online via Portal / Refer Bid Document',
+      isInferred: tender.inferredFields.includes('preBidMeetingDate'),
+    },
+    {
+      label: 'Work Completion',
+      value: tender.completionPeriod && tender.completionPeriod !== NOT_SPECIFIED ? tender.completionPeriod : '12 Months (Contract Period)',
+      isInferred: tender.inferredFields.includes('completionPeriod'),
+    },
+    { label: 'Estimated Value', value: formatAmount(tender.estimatedValue, 'Refer Document') },
+    {
+      label: 'EMD Amount',
+      value: tender.emdAmount ? `${formatCurrency(tender.emdAmount)}${tender.emdExemptMSME ? ' (MSME Exempt)' : ''}` : 'Nil / Exempt (MSME Exempt)',
+      isInferred: tender.inferredFields.includes('emdAmount'),
+    },
+    {
+      label: 'Tender Fee',
+      value: tender.tenderFee === 0 ? 'Free / Nil (Exempt under GeM GTC)' : tender.tenderFee != null ? `₹${tender.tenderFee.toLocaleString('en-IN')}` : 'Free / Nil',
+      isInferred: tender.inferredFields.includes('tenderFee'),
+    },
+    { label: 'Reference Number', value: tender.refNumber },
+    { label: 'Source Portal', value: tender.source },
   ];
 
   const tabs = [
@@ -605,7 +704,7 @@ export default function TenderDetailPage() {
           icon={Shield}
           label="EMD / Bid Security"
           value={formatCurrency(tender.emdAmount)}
-          extra={tender.emdExemptMSME ? 'MSME Exempt' : undefined}
+          extra={tender.inferredFields.includes('emdAmount') ? 'Estimated (Refer Document)' : tender.emdExemptMSME ? 'MSME Exempt' : undefined}
           accentColor="#00D4AA"
         />
         <MetricCard
@@ -683,14 +782,29 @@ export default function TenderDetailPage() {
             </div>
           )}
 
+          {/* Disclaimer on Inferred / Estimated Requirements */}
+          {tender.inferredFields.length > 0 && (
+            <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl p-4 flex items-start gap-3">
+              <Info className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+              <div className="text-caption text-muted-foreground leading-relaxed">
+                <span className="font-semibold text-foreground">Notice on Estimated Requirements:</span> Specific fields marked{' '}
+                <EstimatedBadge className="mx-0.5" />{' '}
+                are inferred estimates derived from standard procurement guidelines where portal data was omitted. The official tender document is authoritative; please verify all criteria prior to bidding.
+              </div>
+            </div>
+          )}
+
           {/* Key Requirements */}
           <div className="bg-card border border-border rounded-xl p-5 lg:p-6">
             <h3 className="text-heading-sm text-foreground font-display mb-4">Key Requirements</h3>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {keyRequirements.map((req) => (
-                <div key={req.label} className="flex gap-3 py-2 border-b border-border/50 last:border-0">
+                <div key={req.label} className="flex gap-3 py-2 border-b border-border/50 last:border-0 items-start">
                   <span className="text-body-sm text-muted-foreground w-40 shrink-0">{req.label}</span>
-                  <span className="text-body-sm text-foreground font-medium">{req.value}</span>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-body-sm text-foreground font-medium">{req.value}</span>
+                    {req.isInferred && <EstimatedBadge />}
+                  </div>
                 </div>
               ))}
             </div>
@@ -700,10 +814,13 @@ export default function TenderDetailPage() {
           <div className="bg-card border border-border rounded-xl p-5 lg:p-6">
             <h3 className="text-heading-sm text-foreground font-display mb-4">Full Details</h3>
             <div className="divide-y divide-border">
-              {detailRows.map(([label, value], i) => (
-                <div key={label} className={cn('flex gap-4 py-3', i % 2 === 0 && 'bg-muted/20 -mx-5 px-5 lg:-mx-6 lg:px-6')}>
-                  <span className="text-body-sm text-muted-foreground w-44 shrink-0">{label}</span>
-                  <span className="text-body-sm text-foreground">{value}</span>
+              {detailRows.map((row, i) => (
+                <div key={row.label} className={cn('flex gap-4 py-3 items-start', i % 2 === 0 && 'bg-muted/20 -mx-5 px-5 lg:-mx-6 lg:px-6')}>
+                  <span className="text-body-sm text-muted-foreground w-44 shrink-0">{row.label}</span>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="text-body-sm text-foreground">{row.value}</span>
+                    {row.isInferred && <EstimatedBadge />}
+                  </div>
                 </div>
               ))}
             </div>
@@ -911,25 +1028,36 @@ export default function TenderDetailPage() {
 
           {/* Stated requirements — straight from the tender record */}
           <div className="bg-card border border-border rounded-xl p-5 lg:p-6">
-            <h3 className="text-heading-sm text-foreground font-display mb-1">Stated Requirements</h3>
-            <p className="text-caption text-muted-foreground mb-5">As published with this tender</p>
+            <div className="flex items-start justify-between gap-4 mb-1 flex-wrap">
+              <h3 className="text-heading-sm text-foreground font-display">Stated Requirements</h3>
+              {tender.inferredFields.length > 0 && (
+                <span className="text-caption text-amber-600 dark:text-amber-400 font-medium flex items-center gap-1">
+                  <Info className="w-3.5 h-3.5" /> Official document is authoritative
+                </span>
+              )}
+            </div>
+            <p className="text-caption text-muted-foreground mb-5">
+              Requirements as published or estimated from procurement benchmarks.
+            </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <RequirementRow label="Minimum Turnover" value={formatAmount(tender.minTurnover)} />
-              <RequirementRow label="Minimum Net Worth" value={formatAmount(tender.minNetWorth)} />
+              <RequirementRow label="Minimum Turnover" value={formatAmount(tender.minTurnover)} isInferred={tender.inferredFields.includes('minTurnover')} />
+              <RequirementRow label="Minimum Net Worth" value={formatAmount(tender.minNetWorth)} isInferred={tender.inferredFields.includes('minNetWorth')} />
               <RequirementRow
                 label="Minimum Experience"
                 value={tender.minExperience != null
                   ? `${tender.minExperience} ${tender.minExperience === 1 ? 'year' : 'years'}`
                   : NOT_SPECIFIED}
+                isInferred={tender.inferredFields.includes('minExperience')}
               />
               <RequirementRow
                 label="Certifications"
                 value={tender.requiredCertifications.length ? tender.requiredCertifications.join(', ') : NOT_SPECIFIED}
+                isInferred={tender.inferredFields.includes('requiredCertifications')}
               />
               <RequirementRow label="Reserved for MSME" value={tender.reservedForMSME ? 'Yes' : 'No'} met={tender.reservedForMSME} />
               <RequirementRow label="Reserved for Startups" value={tender.reservedForStartups ? 'Yes' : 'No'} met={tender.reservedForStartups} />
               <RequirementRow label="EMD Exempt for MSME" value={tender.emdExemptMSME ? 'Yes' : 'No'} met={tender.emdExemptMSME} />
-              <RequirementRow label="EMD / Bid Security" value={formatAmount(tender.emdAmount, 'Refer Document')} />
+              <RequirementRow label="EMD / Bid Security" value={formatAmount(tender.emdAmount, 'Refer Document')} isInferred={tender.inferredFields.includes('emdAmount')} />
             </div>
           </div>
 

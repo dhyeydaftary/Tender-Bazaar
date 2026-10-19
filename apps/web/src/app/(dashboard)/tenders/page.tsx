@@ -125,6 +125,25 @@ export default function TendersPage() {
   const closedCount = closedStat > 0 ? closedStat : (dashboard?.stats?.closedTenders ?? (statusTab === 'CLOSED' ? total : 0));
   const totalCount = totalStat > 0 ? totalStat : (dashboard?.stats?.totalTenders ?? (activeCount + closedCount));
 
+  // Check if any specific search or category filter is currently active
+  const hasFilterApplied = Boolean(
+    searchInput.trim() ||
+    activeCategory !== 'All' ||
+    selectedStates.size > 0 ||
+    selectedValueRange !== null ||
+    specialFilters.msme ||
+    specialFilters.startup ||
+    specialFilters.emdExempt
+  );
+
+  const displayedTotal = hasFilterApplied
+    ? total
+    : statusTab === 'ACTIVE'
+    ? (activeStat > 0 ? activeStat : total)
+    : statusTab === 'CLOSED'
+    ? (closedStat > 0 ? closedStat : total)
+    : (totalStat > 0 ? totalStat : total);
+
   const handleStatusTabChange = (tab: 'ACTIVE' | 'CLOSED' | 'ALL') => {
     setStatusTab(tab);
     updateFilters({
@@ -465,7 +484,7 @@ export default function TendersPage() {
           <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
             <div className="flex items-center gap-3 flex-wrap">
               <p className="text-body-sm text-muted-foreground">
-                {isLoading ? 'Loading...' : <>Showing <span className="font-mono text-foreground">{tenders.length}</span> of <span className="font-mono text-foreground">{formatIndianNumber(total)}</span> tenders</>}
+                {isLoading ? 'Loading...' : <>Showing <span className="font-mono text-foreground">{tenders.length}</span> of <span className="font-mono text-foreground">{formatIndianNumber(displayedTotal)}</span> tenders</>}
               </p>
               {activeFilters.map((f) => (
                 <button key={f.key} onClick={() => clearFilter(f.key)} className="inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full bg-primary-500/10 text-primary-500 hover:bg-primary-500/15 transition-colors">

@@ -203,7 +203,7 @@ export default function StateTendersPage({
                   </span>
                 </div>
                 <Link
-                  href={`/dashboard/tenders/${tender.id}`}
+                  href={`/tenders/${tender.id}`}
                   className="inline-flex items-center text-sm font-semibold text-primary-500 hover:text-primary-600 transition-colors"
                 >
                   View Details &rarr;
@@ -243,7 +243,7 @@ export default function StateTendersPage({
                 {tenders.slice(0, 4).map((t) => (
                   <li key={t.id}>
                     <Link
-                      href={`/dashboard/tenders/${t.id}`}
+                      href={`/tenders/${t.id}`}
                       className="text-sm text-muted-foreground hover:text-foreground transition-colors line-clamp-2"
                     >
                       {t.title}

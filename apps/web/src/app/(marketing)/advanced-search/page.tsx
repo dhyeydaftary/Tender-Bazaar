@@ -937,7 +937,7 @@ export default function AdvancedSearchPage() {
                             </p>
                           </div>
                           <Link
-                            href="/login"
+                            href={`/tenders/${tender.id}`}
                             className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-primary-500 bg-primary-500/10 rounded-lg hover:bg-primary-500/20 transition-colors"
                           >
                             View Details

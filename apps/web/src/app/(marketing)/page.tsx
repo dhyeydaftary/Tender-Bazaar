@@ -994,10 +994,10 @@ function DemoModal({ onClose }: { onClose: () => void }) {
               Close Demo
             </button>
             <Link
-              href="/login"
+              href="/register"
               className="flex-1 sm:flex-none bg-primary-500 hover:bg-primary-600 text-white px-5 py-2.5 rounded-xl text-sm font-semibold shadow-glow flex items-center justify-center gap-2 transition-all"
             >
-              Log In to Access Platform
+              Get Started Free
               <ArrowRight className="w-4 h-4" />
             </Link>
           </div>
@@ -1147,7 +1147,7 @@ export default function HomePage() {
           {/* CTA buttons */}
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4 mb-5">
             <Link
-              href="/login"
+              href="/register"
               className="group relative bg-primary-500 hover:bg-primary-600 text-white px-8 py-4 rounded-xl text-base font-semibold transition-all duration-300 shadow-glow hover:shadow-[0_0_40px_rgba(255,107,53,0.3)] flex items-center gap-2.5 overflow-hidden"
             >
               <span className="relative z-10 flex items-center gap-2.5">
@@ -1312,7 +1312,7 @@ export default function HomePage() {
               </p>
             </div>
             <Link
-              href="/login"
+              href="/explore-tenders"
               className="hidden sm:flex items-center gap-2 text-sm font-semibold text-primary-500 hover:text-primary-600 transition-colors"
             >
               View All Tenders
@@ -1329,7 +1329,7 @@ export default function HomePage() {
               return (
                 <Link
                   key={tender.id}
-                  href="/login"
+                  href={`/tenders/${tender.id}`}
                   className={cn(
                     'group block bg-card border border-border rounded-xl p-5 shadow-card hover-lift transition-all border-l-4 cursor-pointer text-left',
                     colors.border
@@ -1388,7 +1388,7 @@ export default function HomePage() {
           {/* Mobile "View All" link */}
           <div className="mt-8 text-center sm:hidden">
             <Link
-              href="/login"
+              href="/explore-tenders"
               className="inline-flex items-center gap-2 text-sm font-semibold text-primary-500"
             >
               View All Tenders
@@ -1414,7 +1414,7 @@ export default function HomePage() {
               </div>
             </div>
             <Link
-              href="/login"
+              href="/register"
               className="bg-primary-500 hover:bg-primary-600 text-white px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors whitespace-nowrap flex items-center gap-2"
             >
               Get Free Alerts
@@ -1439,7 +1439,7 @@ export default function HomePage() {
               return (
                 <Link
                   key={cat.name}
-                  href="/login"
+                  href={cat.href}
                   className={cn(
                     'group relative bg-card border border-border rounded-xl p-6 shadow-card hover-lift transition-all overflow-hidden',
                     cat.borderHover
@@ -1482,16 +1482,16 @@ export default function HomePage() {
           <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
             <span className="text-sm text-muted-foreground">Popular:</span>
             {[
-              { label: 'Road Construction', href: '/login' },
-              { label: 'IT Services', href: '/login' },
-              { label: 'Medical Equipment', href: '/login' },
-              { label: 'Solar Energy', href: '/login' },
-              { label: 'MSME Reserved', href: '/login' },
-              { label: 'GeM Tenders', href: '/login' },
+              { label: 'Road Construction', href: '/explore-tenders?q=Road+Construction' },
+              { label: 'IT Services', href: '/explore-tenders?q=IT+Services' },
+              { label: 'Medical Equipment', href: '/explore-tenders?q=Medical+Equipment' },
+              { label: 'Solar Energy', href: '/explore-tenders?q=Solar+Energy' },
+              { label: 'MSME Reserved', href: '/explore-tenders?q=MSME' },
+              { label: 'GeM Tenders', href: '/explore-tenders?q=GeM' },
             ].map((link) => (
               <Link
                 key={link.label}
-                href="/login"
+                href={link.href}
                 className="text-xs px-3 py-1.5 rounded-full border border-border bg-muted/50 text-muted-foreground hover:text-foreground hover:border-primary-500/30 hover:bg-primary-500/5 transition-all"
               >
                 {link.label}
@@ -1567,7 +1567,7 @@ export default function HomePage() {
                     { cat: 'GOODS', catColor: 'bg-blue-100 text-blue-700', borderColor: 'border-l-blue-500', title: 'Supply of Desktop Computers for Schools', org: 'CSC SPV, MeitY', value: '₹12.8 Cr', days: '5d', daysColor: 'text-amber-600' },
                     { cat: 'SERVICES', catColor: 'bg-teal-100 text-teal-700', borderColor: 'border-l-teal-500', title: 'Cloud Infrastructure Services for NIC', org: 'NIC, Delhi', value: '₹89.2 Cr', days: '2d', daysColor: 'text-red-600' },
                   ].map((t) => (
-                    <Link key={t.title} href="/login" className={cn('flex items-center gap-4 bg-card border border-border rounded-xl p-3.5 hover:shadow-card-hover transition-all cursor-pointer border-l-[3px]', t.borderColor)}>
+                    <Link key={t.title} href="/explore-tenders" className={cn('flex items-center gap-4 bg-card border border-border rounded-xl p-3.5 hover:shadow-card-hover transition-all cursor-pointer border-l-[3px]', t.borderColor)}>
                       <span className={cn('px-2 py-0.5 rounded-md text-[10px] font-semibold shrink-0', t.catColor)}>
                         {t.cat}
                       </span>
@@ -1801,7 +1801,7 @@ export default function HomePage() {
                   </div>
 
                   <Link
-                    href="/login"
+                    href={plan.name === 'Enterprise' ? '/contact' : `/register?plan=${plan.name.toLowerCase()}`}
                     className={cn(
                       'block text-center py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 mb-6',
                       plan.popular
@@ -1856,7 +1856,7 @@ export default function HomePage() {
               return (
                 <Link
                   key={state.name}
-                  href="/login"
+                  href={`/explore-tenders?state=${encodeURIComponent(state.name)}`}
                   className={cn(
                     'group bg-card/40 border border-border rounded-lg p-4 hover:border-primary-500/30 hover:bg-card/70 transition-all duration-300',
                     statesView.inView && 'animate-scale-in',
@@ -1897,7 +1897,7 @@ export default function HomePage() {
               className="flex-1 w-full bg-muted border border-border text-foreground text-sm rounded-xl px-4 py-3.5 placeholder:text-muted-foreground focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition-all"
             />
             <Link
-              href="/login"
+              href="/register"
               className="w-full sm:w-auto bg-primary-500 hover:bg-primary-600 text-foreground px-8 py-3.5 rounded-xl text-sm font-semibold transition-all duration-200 shadow-glow hover:shadow-[0_0_30px_rgba(255,107,53,0.25)] whitespace-nowrap"
             >
               Get Started Free

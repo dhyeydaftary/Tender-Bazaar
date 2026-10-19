@@ -254,7 +254,7 @@ export default function StateCategoryPage({
                   </span>
                 </div>
                 <Link
-                  href={`/dashboard/tenders/${tender.id}`}
+                  href={`/tenders/${tender.id}`}
                   className="inline-flex items-center text-sm font-semibold text-primary-500 hover:text-primary-600 transition-colors"
                 >
                   View Details &rarr;

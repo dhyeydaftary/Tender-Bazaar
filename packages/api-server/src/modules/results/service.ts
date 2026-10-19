@@ -13,6 +13,8 @@ interface SearchResultsFilters {
   limit?: number;
 }
 
+let isSyncingResults = false;
+
 export const resultsService = {
   async getTenderResults(tenderId: string) {
     const tender = await prisma.tender.findUnique({
@@ -90,10 +92,8 @@ export const resultsService = {
       where.tender = tenderWhere;
     }
 
-    const totalInDb = await prisma.tenderResult.count();
-    if (totalInDb === 0) {
-      await this.ensureSeedResults();
-    }
+    // Ensure tender results are dynamic and continuously updated up to today
+    await this.syncDynamicResults();
 
     const [results, total] = await Promise.all([
       prisma.tenderResult.findMany({
@@ -302,7 +302,117 @@ export const resultsService = {
     };
   },
 
+  async syncDynamicResults() {
+    // Production safeguard: Never simulate or fabricate award results in production.
+    // In development/test, require explicit opt-in via ENABLE_SYNTHETIC_RESULTS === 'true'.
+    if (process.env.NODE_ENV === 'production' || process.env.ENABLE_SYNTHETIC_RESULTS !== 'true') {
+      return;
+    }
+
+    if (isSyncingResults) return;
+    isSyncingResults = true;
+
+    try {
+      const totalInDb = await prisma.tenderResult.count();
+      if (totalInDb === 0) {
+        await this.ensureSeedResults();
+      }
+
+      const latest = await prisma.tenderResult.findFirst({
+        orderBy: { awardedDate: 'desc' },
+        select: { awardedDate: true },
+      });
+
+      const now = new Date();
+      // Check if latest result is older than 6 hours
+      const isStale = !latest || !latest.awardedDate || (now.getTime() - latest.awardedDate.getTime() > 6 * 60 * 60 * 1000);
+      if (!isStale) return;
+
+      // Find closed tenders or tenders whose deadline has passed without results
+      const eligibleTenders = await prisma.tender.findMany({
+        where: {
+          bidSubmissionDeadline: { lt: now },
+          results: { none: {} },
+        },
+        take: 50,
+        orderBy: { bidSubmissionDeadline: 'desc' },
+      });
+
+      if (eligibleTenders.length === 0) return;
+
+      const companies = [
+        { company: 'Larsen & Toubro Limited', rep: 'Rajesh Sharma' },
+        { company: 'Tata Projects Limited', rep: 'Vikram Malhotra' },
+        { company: 'Dilip Buildcon Limited', rep: 'Devendra Jain' },
+        { company: 'NCC Limited', rep: 'Alluri Ranga Raju' },
+        { company: 'Bharat Electronics Limited', rep: 'Sunil Verma' },
+        { company: 'Infosys Public Services', rep: 'Anand Kulkarni' },
+        { company: 'Afcons Infrastructure Limited', rep: 'K. Subramanian' },
+        { company: 'Kalpataru Projects International', rep: 'Manish Mohnot' },
+        { company: 'KEC International Limited', rep: 'Vimal Kejriwal' },
+        { company: 'Ahluwalia Contracts (India) Ltd', rep: 'Bikramjit Ahluwalia' },
+        { company: 'HCL Technologies Limited', rep: 'Pradeep Nair' },
+        { company: 'Wipro Technologies India', rep: 'Sanjay Gupta' },
+        { company: 'Sterling and Wilson Renewable Energy', rep: 'Amit Jain' },
+        { company: 'Patel Engineering Limited', rep: 'Kavita Shirvaikar' },
+        { company: 'Siemens India Infrastructure', rep: 'Ramesh Sundaram' },
+        { company: 'Medanta Healthcare Solutions', rep: 'Dr. Naresh Trehan' },
+        { company: 'Trivitron Healthcare Pvt Ltd', rep: 'G. S. K. Velu' },
+        { company: 'Polymedicure Limited', rep: 'Rishi Baid' },
+        { company: 'Voltas Limited', rep: 'Pradeep Bakshi' },
+        { company: 'Blue Star Limited', rep: 'B. Thiagarajan' },
+      ];
+
+      const startDate = latest?.awardedDate
+        ? new Date(latest.awardedDate.getTime() + 60 * 60 * 1000)
+        : new Date(now.getTime() - 13 * 24 * 60 * 60 * 1000);
+      const span = Math.max(1000 * 60 * 60 * 24, now.getTime() - startDate.getTime());
+
+      for (let i = 0; i < eligibleTenders.length; i++) {
+        const t = eligibleTenders[i];
+        const w = companies[i % companies.length];
+        const baseValue =
+          t.estimatedValue && t.estimatedValue > 100000
+            ? t.estimatedValue
+            : 2500000 + ((i * 3700000) % 95000000);
+        const discount = 0.91 + ((i * 7) % 8) * 0.01;
+        const awardedValue = Math.round(baseValue * discount);
+
+        // Distribute from startDate to now (up to today's date)
+        const progress = (i + 1) / eligibleTenders.length;
+        const awardedTimestamp = startDate.getTime() + progress * span - (i % 4) * 3600 * 1000;
+        const awardedDate = new Date(Math.min(now.getTime(), Math.max(startDate.getTime(), awardedTimestamp)));
+
+        await prisma.tenderResult
+          .create({
+            data: {
+              tenderId: t.id,
+              winnerName: w.rep,
+              winnerCompany: w.company,
+              awardedValue,
+              awardedDate,
+            },
+          })
+          .catch(() => {});
+
+        await prisma.tender
+          .update({
+            where: { id: t.id },
+            data: { status: 'AWARDED' },
+          })
+          .catch(() => {});
+      }
+    } finally {
+      isSyncingResults = false;
+    }
+  },
+
   async ensureSeedResults() {
+    // Production safeguard: Never seed synthetic results in production.
+    if (process.env.NODE_ENV === 'production' || process.env.ENABLE_SYNTHETIC_RESULTS !== 'true') {
+      return;
+    }
+
     const tenders = await prisma.tender.findMany({
       take: 40,
       orderBy: { createdAt: 'desc' },

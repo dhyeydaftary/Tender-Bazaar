@@ -107,6 +107,9 @@ export function NotificationBell() {
 
   // Fetch unread count
   const fetchUnreadCount = useCallback(async () => {
+    if (typeof window !== 'undefined' && !localStorage.getItem('accessToken')) {
+      return;
+    }
     try {
       const res = await api.get('/notifications/unread-count');
       const count =

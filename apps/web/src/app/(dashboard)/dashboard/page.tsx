@@ -498,12 +498,15 @@ function RecentSearchesPanel({
    ═══════════════════════════════════════════════════════════════════════════ */
 
 export default function DashboardPage() {
-  const { user } = useAuthStore();
+  const { user, fetchUser } = useAuthStore();
   const { data, isLoading, error, fetchDashboard } = useDashboardStore();
+  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
+    setMounted(true);
     fetchDashboard();
-  }, [fetchDashboard]);
+    fetchUser();
+  }, [fetchDashboard, fetchUser]);
 
   const greeting = getGreeting();
   const dateStr = new Date().toLocaleDateString('en-IN', {
@@ -513,7 +516,7 @@ export default function DashboardPage() {
     year: 'numeric',
   });
 
-  const displayName = user?.name || 'User';
+  const displayName = user?.name || (mounted ? 'User' : '');
   const stats = data?.stats;
   // Only show skeletons on the very first load; a background refresh should not
   // blank out data the user is already reading.

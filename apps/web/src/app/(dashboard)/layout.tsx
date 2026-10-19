@@ -264,7 +264,9 @@ function Sidebar() {
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-foreground truncate">{displayName}</p>
-              <p className="text-[10px] text-muted-foreground">{user?.role || 'Free Plan'}</p>
+              <p className="text-[10px] text-muted-foreground">
+                {user?.role === 'SUPER_ADMIN' ? 'Super Admin' : user?.role === 'ADMIN' ? 'Admin' : 'Free Plan'}
+              </p>
             </div>
             <button
               type="button"
@@ -468,21 +470,31 @@ export default function DashboardLayout({
   const router = useRouter();
   const pathname = usePathname();
   const fetchSubscriptionData = useSubscriptionStore((s) => s.fetchAll);
+  const fetchUser = useAuthStore((s) => s.fetchUser);
+  const initAuth = useAuthStore((s) => s.initAuth);
 
-  // Enforce authentication on all dashboard routes (including tender details)
+  useEffect(() => {
+    initAuth();
+  }, [initAuth]);
+
+  // Enforce authentication on protected dashboard routes (allow public tender viewing)
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const token = localStorage.getItem('accessToken');
-      if (!token) {
+      const isPublicTenderRoute = pathname.startsWith('/tenders');
+      if (!token && !isPublicTenderRoute) {
         router.replace(`/login?redirect=${encodeURIComponent(pathname)}`);
       }
     }
   }, [pathname, router]);
 
-  // Hydrate the subscription store once for the whole dashboard.
+  // Hydrate auth and subscription store once for the whole dashboard if authenticated.
   useEffect(() => {
-    fetchSubscriptionData();
-  }, [fetchSubscriptionData]);
+    if (typeof window !== 'undefined' && localStorage.getItem('accessToken')) {
+      fetchUser();
+      fetchSubscriptionData();
+    }
+  }, [fetchUser, fetchSubscriptionData]);
 
   useEffect(() => {
     try {
