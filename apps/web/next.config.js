@@ -20,7 +20,18 @@ const nextConfig = {
   compress: true,
   images: {
     domains: ['tenderbazaar.com'],
-    formats: ['image/avif', 'image/webp'],
+    // AVIF output is deliberately off. GHSA-2xp9-vwfh-vxw4 (critical, CVSS 9.5)
+    // is an unauthenticated RCE reached by optimising AVIF files, via libheif
+    // inside sharp. It affects next >=10.0.0 <15.5.24, so 14.2.35 (pinned here)
+    // IS affected and there is no 14.x patch — the advisory lists fixes only in
+    // 15.5.24 and 16.3.3. Upstream's own mitigation was to disable AVIF
+    // optimisation, which is what removing it from `formats` does: the
+    // optimiser never emits AVIF, so the vulnerable path is not exercised.
+    // WebP still covers every browser this app targets.
+    //
+    // This is a mitigation, not the fix. Moving to a patched line is a Next 15
+    // major upgrade and is tracked separately; see docs/release-gating.md.
+    formats: ['image/webp'],
   },
   headers: async () => [
     {
