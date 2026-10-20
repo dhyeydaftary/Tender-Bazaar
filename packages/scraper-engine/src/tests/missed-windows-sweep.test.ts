@@ -184,7 +184,7 @@ async function main(): Promise<void> {
       'a three-day gap must report unrecoverable windows',
     );
 
-    await scheduler.stop().catch(() => {});
+    await scheduler.stop();
     console.log('✓ A missed window enqueues one catch-up, tagged `catchup`, gap reported');
   }
 
@@ -198,7 +198,7 @@ async function main(): Promise<void> {
     assert.equal(result.caughtUp, 0, 'a disabled portal must not be caught up');
     assert.equal(executed.length, 0, 'and must not execute');
 
-    await scheduler.stop().catch(() => {});
+    await scheduler.stop();
     console.log('✓ A disabled portal is never caught up');
   }
 
@@ -215,7 +215,7 @@ async function main(): Promise<void> {
     assert.equal(executed.length, 0, 'resuming must not unleash a backlog');
 
     await scheduler.setPaused(false);
-    await scheduler.stop().catch(() => {});
+    await scheduler.stop();
     console.log('✓ A persisted administrator pause suppresses catch-up entirely');
   }
 
@@ -247,7 +247,7 @@ async function main(): Promise<void> {
     );
 
     release();
-    await scheduler.stop().catch(() => {});
+    await scheduler.stop();
     console.log('✓ The per-portal lock prevents a catch-up duplicating an in-flight run');
   }
 
@@ -262,7 +262,7 @@ async function main(): Promise<void> {
     assert.equal(result.caughtUp, 0, 'a current portal must not be caught up');
     assert.equal(executed.length, 0);
 
-    await scheduler.stop().catch(() => {});
+    await scheduler.stop();
     console.log('✓ A portal that is already current is left alone');
   }
 
@@ -289,7 +289,7 @@ async function main(): Promise<void> {
     );
 
     release();
-    await scheduler.stop().catch(() => {});
+    await scheduler.stop();
     console.log('✓ Repeated sweeps do not stack duplicate catch-up jobs');
   }
 
@@ -316,7 +316,7 @@ async function main(): Promise<void> {
 
     // The constructor opens a Queue connection even without start(), so this
     // scheduler has to be closed or the process never exits.
-    await scheduler.stop().catch(() => {});
+    await scheduler.stop();
 
     console.log('✓ A ScheduleSource without last-run support disables the sweep without error');
   }
@@ -331,18 +331,15 @@ async function main(): Promise<void> {
 
 main()
   .then(() => {
-    // Every assertion has passed and every connection this suite opened has
-    // been closed, but the process still does not exit: constructing several
-    // schedulers in one process leaves something in the node-cron / ioredis
-    // teardown path holding the event loop. It is a teardown wart in the test
-    // harness, not a product defect — the scheduler's own stop() closes its
-    // worker, queue, queue-events, duplicated connections and lock-renewal
-    // timers, and the single-scheduler suites exit cleanly.
-    //
-    // Exiting explicitly keeps `pnpm test` from stalling. It runs only on
-    // success; a failure still goes through the catch below with exit 1, so a
-    // real failure can never be masked by this.
-    process.exit(0);
+    // Every connection this suite opened has been closed, so the process must
+    // now exit on its own. It used to be force-exited here because schedulers
+    // that were never started could not release their Redis connections. If a
+    // handle leaks again, fail loudly instead of hanging or hiding it. The
+    // timer is unref'd, so it never fires when the process exits cleanly.
+    setTimeout(() => {
+      console.error('FAIL: open handles kept the process alive after all tests passed');
+      process.exit(1);
+    }, 10_000).unref();
   })
   .catch((err) => {
     console.error(err);

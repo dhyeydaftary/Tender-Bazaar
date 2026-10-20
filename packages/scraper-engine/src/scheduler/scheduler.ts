@@ -212,6 +212,12 @@ const LOCK_TTL_SECONDS = 120;
 const LOCK_RENEW_INTERVAL_MS = 40_000;
 
 /**
+ * Upper bound on how long stop() waits for a BullMQ component that is still
+ * connecting before it closes it anyway (see stop()).
+ */
+const SHUTDOWN_READY_TIMEOUT_MS = 5_000;
+
+/**
  * Failures that re-running cannot fix: the portal key is not in the registry,
  * or no scraper class is bound to it. Retrying these just burns attempts and
  * fills the failed set, so they are discarded instead.
@@ -599,7 +605,14 @@ export class ScrapingScheduler {
    * Graceful shutdown.
    */
   async stop(): Promise<void> {
-    if (!this.running) return;
+    if (!this.running) {
+      // The constructor (and every start()) creates a Queue and a duplicated
+      // Redis connection. A scheduler that was built but never started, or
+      // whose start() failed part-way, still owns them — returning early here
+      // leaked both and kept the event loop alive.
+      await this.closeQueueAndConnections();
+      return;
+    }
 
     console.log('[Scheduler] Shutting down...');
 
@@ -625,6 +638,21 @@ export class ScrapingScheduler {
 
     }
 
+    // start() does not wait for BullMQ to finish connecting, so a stop() that
+    // follows soon after a start() (the admin stop/start endpoints, a fast
+    // shutdown signal, or a test) can land while the Worker's or QueueEvents'
+    // connections are still initialising. Closing a BullMQ RedisConnection in
+    // that state disconnects it, removes every 'error' listener, and THEN its
+    // pending initialisation rejects with "Connection is closed." — emitted as
+    // an 'error' event with no listener left, which Node treats as fatal.
+    // Waiting (bounded) for each component to be ready first closes it from a
+    // settled state instead.
+    await Promise.all([
+      this.settleReady(this.worker),
+      this.settleReady(this.queueEvents),
+      this.settleReady(this.queue),
+    ]);
+
     // Close worker (wait for current jobs to complete, 30s timeout)
     if (this.worker) {
       await this.worker.close();
@@ -637,24 +665,56 @@ export class ScrapingScheduler {
       this.queueEvents = null;
     }
 
-    // Close queue
-    await this.queue.close();
-
     // Stop any lock renewals still ticking for in-flight portals.
     for (const portalName of [...this.lockRenewals.keys()]) {
       this.stopLockRenewal(portalName);
     }
 
-    // Close the connections we duplicated for BullMQ (it does not own them).
-    await Promise.all(
-      this.bullConnections.map((connection) =>
-        connection.quit().catch(() => connection.disconnect()),
-      ),
-    );
-    this.bullConnections = [];
+    await this.closeQueueAndConnections();
 
     this.running = false;
     console.log('[Scheduler] Shutdown complete');
+  }
+
+  /**
+   * Wait for a BullMQ component to finish connecting, but never longer than
+   * SHUTDOWN_READY_TIMEOUT_MS and never by throwing: if Redis is unreachable
+   * the component can never become ready, and shutdown must still proceed.
+   */
+  private async settleReady(
+    component: { waitUntilReady(): Promise<unknown> } | null,
+  ): Promise<void> {
+    if (!component) return;
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, SHUTDOWN_READY_TIMEOUT_MS);
+      timer.unref?.();
+    });
+    try {
+      await Promise.race([component.waitUntilReady().catch(() => undefined), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Close the queue and the Redis connections duplicated for BullMQ (BullMQ
+   * does not close connections it was handed). Idempotent: safe whether or
+   * not the scheduler was ever started.
+   */
+  private async closeQueueAndConnections(): Promise<void> {
+    if (!this.queue.closing) {
+      await this.settleReady(this.queue);
+      await this.queue.close();
+    }
+
+    const connections = this.bullConnections;
+    this.bullConnections = [];
+    await Promise.all(
+      connections.map((connection) =>
+        connection.quit().catch(() => connection.disconnect()),
+      ),
+    );
   }
 
   // ─── Schedule Management ──────────────────────────────────────────────────────
