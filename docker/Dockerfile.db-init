@@ -37,4 +37,12 @@ RUN npx prisma generate
 COPY docker/db-init-entrypoint.sh docker/db-init-check.js docker/
 RUN chmod +x docker/db-init-entrypoint.sh
 
+# Drop privileges. This image holds DATABASE_URL and runs `prisma migrate
+# deploy` against it, and it was the only image in the stack still running as
+# root — every service image already ends with a USER directive. Nothing here
+# needs root at runtime: the tree is built and `prisma generate` is run during
+# the build, and the entrypoint only reads /app and talks to the database.
+# `node` is the unprivileged user the node:20-alpine image ships.
+USER node
+
 CMD ["sh", "/app/docker/db-init-entrypoint.sh"]

@@ -46,6 +46,48 @@ case "$state" in
     ;;
   baseline)
     log "Existing schema with no migration history detected (legacy 'db push' database)."
+
+    # Verify the live schema actually matches schema.prisma BEFORE baselining.
+    #
+    # Baselining is an assertion: it tells Prisma "0_init is already applied"
+    # without running it. If the live database drifted from the schema while it
+    # was managed by `prisma db push` -- a column that was never pushed, a type
+    # that differs, an index dropped by hand -- that assertion is false, and the
+    # drift becomes invisible: every later `migrate deploy` builds on a starting
+    # point that never existed, and fails somewhere far from the real cause (or
+    # appears to succeed against a schema the code does not expect).
+    #
+    # `migrate diff` is read-only and needs no shadow database in this form: it
+    # compares the live database against schema.prisma and exits 2 when they
+    # differ. Refuse to baseline in that case rather than record a false
+    # history. Reconciling it is a deliberate human decision.
+    log "Checking the live schema matches schema.prisma before baselining..."
+    set +e
+    drift=$(npx prisma migrate diff       --from-url "$DATABASE_URL"       --to-schema-datamodel ./prisma/schema.prisma       --exit-code 2>&1)
+    drift_status=$?
+    set -e
+
+    case "$drift_status" in
+      0)
+        log "Live schema matches schema.prisma."
+        ;;
+      2)
+        printf '[db-init] %s
+' "$drift" >&2
+        fail "the existing database does NOT match schema.prisma (see the diff above).
+       Baselining now would record a migration history that never happened and
+       hide this drift from every later migration. Reconcile the schema by hand,
+       or capture the real starting state as a migration, then retry.
+       No changes have been made to the database."
+        ;;
+      *)
+        printf '[db-init] %s
+' "$drift" >&2
+        fail "could not compare the existing database against schema.prisma.
+       Refusing to baseline without that check. No changes have been made."
+        ;;
+    esac
+
     log "Baselining: marking 0_init as already applied. No tables are created or dropped."
     npx prisma migrate resolve --applied 0_init
     ;;

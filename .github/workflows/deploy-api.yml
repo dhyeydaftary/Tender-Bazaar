@@ -1,30 +1,63 @@
-name: Deploy API
+name: Build API Image
+
+# This workflow does NOT deploy the API. It builds the image and stops: the
+# registry push and the VPS rollout are both unconfigured (see the placeholder
+# step below). It was previously called "Deploy API" with a job called
+# "Build & Deploy API", so a green run here read as "the API is live in
+# production" when nothing had been published or released at all.
+#
+# Deploying the API is currently a manual operation on the VPS; see
+# docs/release-gating.md. Renaming this workflow does not change what runs — it
+# stops the name from asserting a release that never happened.
 
 on:
   push:
     branches: [main]
     paths:
+      # Root-level dependency and lockfile changes matter here too. A
+      # transitive security fix typically lands as a `pnpm-lock.yaml` change
+      # ALONE (Dependabot's `minor-and-patch` group does exactly this), and a
+      # root `package.json` change can move a shared dependency. Without these
+      # entries such a commit triggered no deploy at all, so the patched
+      # dependency was built into nothing and never reached production while
+      # CI reported the fix as merged.
+      #
+      # The cost is that a lockfile change deploys BOTH web and admin. That is
+      # the intended behaviour: both bundle the same dependency tree.
       - 'packages/api-server/**'
       - 'packages/shared/**'
       - 'prisma/**'
+      - 'pnpm-lock.yaml'
+      - 'package.json'
+      - 'pnpm-workspace.yaml'
 
 concurrency:
   group: deploy-api-${{ github.ref }}
   cancel-in-progress: true
 
+# Builds only, and publishes nothing. Deployment credentials deliberately do not
+# belong in this job: it has no registry or VPS secrets, so a compromise of the
+# build cannot reach production.
+permissions:
+  contents: read
+
 jobs:
-  deploy:
-    name: Build & Deploy API
+  build-image:
+    name: Build API Image (no deploy)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Build Docker image
         run: docker build -t tenderbazaar-api -f packages/api-server/Dockerfile .
 
-      # Push to container registry - configure secrets for your registry
-      - name: Push to registry
-        run: echo "Push to container registry - configure for your deployment target"
+      # Not a push. This step prints a reminder and succeeds; the image stays
+      # on the runner and is discarded with it. Until a registry is configured
+      # this workflow is a build check, which is what its name now says.
+      - name: Registry push is NOT configured
+        run: |
+          echo "::notice::No registry is configured - this image was built and discarded."
+          echo "The API was NOT deployed. See docs/release-gating.md."
         # Uncomment and configure for ECR:
         # - name: Configure AWS credentials
         #   uses: aws-actions/configure-aws-credentials@v4

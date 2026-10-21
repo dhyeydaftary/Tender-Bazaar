@@ -102,7 +102,7 @@ GST_STATE_MAP = {
 }
 
 
-def _dynamic_analysis(document_text: str = "", company_profile: dict = None) -> dict:
+def _dynamic_analysis(document_text: str = "", company_profile: Optional[dict] = None) -> dict:
     """Dynamically extract tender requirements, GSTIN, PAN, EMD, and documents needed from document text."""
     doc_raw = document_text or ""
     doc_lower = doc_raw.lower()

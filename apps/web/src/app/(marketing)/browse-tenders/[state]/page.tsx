@@ -109,12 +109,13 @@ export function generateStaticParams() {
   return ALL_REGIONS.map((state) => ({ state }));
 }
 
-export function generateMetadata({
+export async function generateMetadata({
   params,
 }: {
-  params: { state: string };
-}): Metadata {
-  const stateName = slugToStateName(params.state);
+  params: Promise<{ state: string }>;
+}): Promise<Metadata> {
+  const { state } = await params;
+  const stateName = slugToStateName(state);
   return {
     title: `Latest ${stateName} Government Tenders 2026`,
     description: `Find the latest government tenders in ${stateName}. Browse 1,200+ active tenders across construction, IT, healthcare and more.`,
@@ -129,14 +130,15 @@ export function generateMetadata({
 /* Page                                                               */
 /* ------------------------------------------------------------------ */
 
-export default function StateTendersPage({
+export default async function StateTendersPage({
   params,
 }: {
-  params: { state: string };
+  params: Promise<{ state: string }>;
 }) {
-  const stateName = slugToStateName(params.state);
+  const { state } = await params;
+  const stateName = slugToStateName(state);
   const tenders = getMockTenders(stateName);
-  const relatedStates = RELATED_STATES_MAP[params.state] ?? ALL_REGIONS.filter((s) => s !== params.state).slice(0, 4);
+  const relatedStates = RELATED_STATES_MAP[state] ?? ALL_REGIONS.filter((s) => s !== state).slice(0, 4);
 
   return (
     <div className="min-h-screen bg-background pt-16 sm:pt-20">
@@ -223,7 +225,7 @@ export default function StateTendersPage({
                 {CATEGORIES.map((cat) => (
                   <li key={cat.slug}>
                     <Link
-                      href={`/browse-tenders/${params.state}/${cat.slug}`}
+                      href={`/browse-tenders/${state}/${cat.slug}`}
                       className="text-sm text-muted-foreground hover:text-primary-500 transition-colors flex items-center gap-2"
                     >
                       <span className="w-1.5 h-1.5 rounded-full bg-primary-400" />
