@@ -21,13 +21,13 @@
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
-    "prisma": "^5.14.0",
-    "tsx": "^4.21.0",
-    "turbo": "^2.0.0",
-    "typescript": "^5.4.0"
+    "prisma": "^5.22.0",
+    "tsx": "^4.23.15",
+    "turbo": "^2.11.10",
+    "typescript": "^5.9.3"
   },
   "dependencies": {
-    "@prisma/client": "^5.14.0",
+    "@prisma/client": "^5.22.0",
     "bcryptjs": "^2.4.3"
   },
   "prisma": {
@@ -38,6 +38,9 @@
     "node": ">=20"
   },
   "pnpm": {
+    "overrides": {
+      "postcss": "^8.5.31"
+    },
     "onlyBuiltDependencies": [
       "prisma",
       "@prisma/client",

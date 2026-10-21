@@ -1,25 +1,151 @@
 name: Deploy Admin
 
+# Release gating. Nothing in this repository can stop this workflow running:
+# it fires on every push to `main`, in parallel with CI, so a commit whose CI
+# is still running — or has already failed — reaches production anyway.
+# The gate has to be `main` itself, via branch protection requiring the CI
+# checks before a merge lands. That is a repository setting, not a workflow
+# setting, and it is currently UNAVAILABLE on this plan (the branch-protection
+# and rulesets APIs both return 403 "Upgrade to GitHub Pro or make this
+# repository public"). Until that is resolved, treat a push to `main` as
+# directly production-affecting.
+#
+# `environment: production` below is the second half of the gate: once a
+# `production` environment exists with required reviewers, this job waits for an
+# approval. Declaring it here does NOT by itself create the environment or add
+# reviewers — no environments exist in this repository yet — so it is inert
+# until configured. See docs/release-gating.md and docs/release-runbook.md.
+
 on:
   push:
     branches: [main]
     paths:
+      # Root-level dependency and lockfile changes matter here too. A
+      # transitive security fix typically lands as a `pnpm-lock.yaml` change
+      # ALONE (Dependabot's `minor-and-patch` group does exactly this), and a
+      # root `package.json` change can move a shared dependency. Without these
+      # entries such a commit triggered no deploy at all, so the patched
+      # dependency was built into nothing and never reached production while
+      # CI reported the fix as merged.
+      #
+      # The cost is that a lockfile change deploys BOTH web and admin. That is
+      # the intended behaviour: both bundle the same dependency tree.
       - 'apps/admin/**'
       - 'packages/shared/**'
       - 'prisma/**'
+      - 'pnpm-lock.yaml'
+      - 'package.json'
+      - 'pnpm-workspace.yaml'
 
 concurrency:
   group: deploy-admin-${{ github.ref }}
-  cancel-in-progress: true
+  # Never cancel a production rollout in flight: aborting `vercel --prod`
+  # mid-promotion can leave the production alias pointing at a half-
+  # released deployment. Queue instead.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
+  # Release gate. Two things have to be true before anything is promoted, and
+  # both of them fail CLOSED.
+  #
+  # 1. The required secrets exist. Without this the Vercel action simply
+  #    received empty strings and failed somewhere inside itself, which read as
+  #    a broken deploy rather than an unconfigured one.
+  # 2. The CI workflow SUCCEEDED for this exact commit. A push to `main`
+  #    starts CI and this workflow at the same time, so without a wait the
+  #    rollout raced CI and a commit whose checks were still running - or had
+  #    already failed - reached production anyway.
+  #
+  # GitHub Actions has no cross-file `needs:`, so the dependency is expressed
+  # by polling the CI run for `github.sha`. `ci.yml` has no path filter on
+  # pushes to `main`, so a run always exists for the commit; "no run" is
+  # therefore treated as "not yet" until the timeout, then as a failure. This
+  # does not replace branch protection (unavailable on this plan, see below) -
+  # it closes the race that branch protection would also have closed.
+  gate:
+    name: Verify CI and configuration
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Required secrets must be configured
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          PROJECT_ID: ${{ secrets.VERCEL_ADMIN_PROJECT_ID }}
+        run: |
+          missing=''
+          [ -n "$VERCEL_TOKEN" ] || missing="$missing VERCEL_TOKEN"
+          [ -n "$VERCEL_ORG_ID" ] || missing="$missing VERCEL_ORG_ID"
+          [ -n "$PROJECT_ID" ] || missing="$missing VERCEL_ADMIN_PROJECT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::Admin deployment is not configured. Missing secrets:$missing"
+            echo "Set them as repository or \`production\` environment secrets. Nothing was deployed." >&2
+            exit 1
+          fi
+          echo "All required deployment secrets are present."
+
+      - name: CI must have succeeded for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          # Newest completed run first - the API returns runs newest-first, and a
+          # re-run updates that run's own conclusion rather than adding one.
+          QUERY: '[.workflow_runs[] | select(.status == "completed") | .conclusion] | .[0] // ""'
+        run: |
+          set -eu
+          # Scoped to `event=push`, which is the run this deploy's own trigger
+          # produced. Without that scope the check accepted ANY successful run
+          # for the commit, and a commit can carry both: 4a00264 on this
+          # repository has a FAILED push run and a SUCCESSFUL pull_request run
+          # for the identical tree, so an unscoped check would have deployed a
+          # commit whose CI failed. Verified against the live API.
+          runs="repos/$REPO/actions/workflows/ci.yml/runs?head_sha=$SHA&event=push&per_page=100"
+          deadline=$(( $(date +%s) + 45 * 60 ))
+          while :; do
+            # Only a SUCCESSFUL API call is a verdict. `gh api` prints its error
+            # body to stdout, so folding the failure in with `|| true` turned a
+            # 404 or a rate-limit into "CI did not succeed" and failed the
+            # deploy for good; an API blip has to be retried, not ruled on.
+            if conclusion=$(gh api "$runs" --jq "$QUERY" 2>&1); then
+              if [ "$conclusion" = "success" ]; then
+                echo "CI succeeded for $SHA."
+                exit 0
+              fi
+
+              if [ -n "$conclusion" ]; then
+                echo "::error::The CI run for $SHA concluded '$conclusion'. Nothing was deployed."
+                exit 1
+              fi
+              echo "No completed CI run for $SHA yet ..."
+            else
+              echo "Could not read CI runs for $SHA ($conclusion); retrying ..."
+            fi
+
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::No successful CI run for $SHA after 45 minutes. Refusing to deploy an unverified commit."
+              exit 1
+            fi
+            sleep 30
+          done
+
   deploy:
     name: Deploy to Vercel
     runs-on: ubuntu-latest
+    needs: gate
+    # Inert until a `production` environment with required reviewers exists.
+    environment: production
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: amondnet/vercel-action@v25
+      # Pinned: this third-party action receives VERCEL_TOKEN, and a mutable
+      # tag would let its owner change what runs with that credential.
+      - uses: amondnet/vercel-action@16e87c0a08142b0d0d33b76aeaf20823c381b9b9 # v25
         with:
           vercel-token: ${{ secrets.VERCEL_TOKEN }}
           vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}

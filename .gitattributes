@@ -1,0 +1,39 @@
+# Line endings.
+#
+# This repository has no .gitattributes and developer checkouts on Windows run
+# with core.autocrlf=true, so every text file — including shell scripts — was
+# checked out with CRLF. docker/Dockerfile.db-init COPYs
+# docker/db-init-entrypoint.sh out of the build context, so an image built on
+# Windows carried a CRLF entrypoint and died immediately with
+#
+#     /app/docker/db-init-entrypoint.sh: set: line 20: illegal option -
+#
+# (`sh` reads `-eu\r` as a flag). The committed blob is LF, so CI on
+# ubuntu-latest built and ran fine and nothing surfaced the breakage; it only
+# appeared when the image was built from a Windows checkout. The same exposure
+# applies to scripts/backup.sh and scripts/docker-start.sh.
+#
+# Normalise text in the repository and force LF on checkout for everything that
+# is executed by a POSIX shell or copied into a Linux image.
+* text=auto
+
+*.sh            text eol=lf
+Dockerfile*     text eol=lf
+*.yml           text eol=lf
+*.yaml          text eol=lf
+.env.example    text eol=lf
+
+# Binary: never translated, never diffed as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.pdf binary
+*.keystore binary
+*.jar binary

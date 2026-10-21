@@ -2,6 +2,7 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { useParams } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { useTenderCounts } from '@/lib/hooks/use-tenders';
 import {
@@ -433,12 +434,9 @@ function formatValue(value: number): string {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function CategoryPage({
-  params,
-}: {
-  params: { slug: string };
-}) {
-  const { slug } = params;
+export default function CategoryPage() {
+  const routeParams = useParams<{ slug: string }>();
+  const slug = routeParams?.slug ?? '';
   const counts = useTenderCounts();
   const [selectedSubcategory, setSelectedSubcategory] = useState<string | null>(null);
   const [selectedState, setSelectedState] = useState('all');

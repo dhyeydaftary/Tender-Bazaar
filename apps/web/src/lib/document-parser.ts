@@ -1,4 +1,5 @@
-import pako from 'pako';
+// pako 3.x ships an ESM build with named exports only; there is no default export.
+import { inflate } from 'pako';
 
 export interface ExtractedEntities {
   gstin: string | null;
@@ -99,7 +100,7 @@ export async function extractDocumentText(file: File): Promise<string> {
         );
 
         try {
-          const decompressed = pako.inflate(streamBuffer);
+          const decompressed = inflate(streamBuffer);
           const decStr = new TextDecoder('latin1').decode(decompressed);
 
           // Extract text inside PDF text operator parentheses: (text) Tj

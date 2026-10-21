@@ -231,13 +231,14 @@ export function generateStaticParams() {
   return ORGANIZATIONS.map((org) => ({ slug: org.slug }));
 }
 
-export function generateMetadata({
+export async function generateMetadata({
   params,
 }: {
-  params: { slug: string };
-}): Metadata {
-  const org = getOrgBySlug(params.slug);
-  const name = org?.name ?? params.slug.toUpperCase();
+  params: Promise<{ slug: string }>;
+}): Promise<Metadata> {
+  const { slug } = await params;
+  const org = getOrgBySlug(slug);
+  const name = org?.name ?? slug.toUpperCase();
   const fullName = org?.fullName ?? name;
   return {
     title: `${name} Tenders 2026 — Latest Opportunities`,
@@ -253,12 +254,13 @@ export function generateMetadata({
 /* Page                                                               */
 /* ------------------------------------------------------------------ */
 
-export default function OrganizationPage({
+export default async function OrganizationPage({
   params,
 }: {
-  params: { slug: string };
+  params: Promise<{ slug: string }>;
 }) {
-  const org = getOrgBySlug(params.slug);
+  const { slug } = await params;
+  const org = getOrgBySlug(slug);
 
   if (!org) {
     return (
