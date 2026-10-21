@@ -3,7 +3,7 @@
 # the only thing holding starlette back, so FastAPI moves with it; the AI
 # service only uses FastAPI, HTTPException and CORSMiddleware, all unchanged.
 fastapi==0.156.4
-uvicorn[standard]==0.29.0
+uvicorn[standard]==0.54.0
 anthropic==0.25.0
 # fastapi 0.156 requires pydantic >=2.9; 2.14.1 is the current 2.x.
 pydantic==2.14.1
