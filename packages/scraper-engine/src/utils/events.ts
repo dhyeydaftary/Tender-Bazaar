@@ -43,7 +43,7 @@ export interface ScraperEvents {
 export interface RunStartEvent {
   portalName: string;
   runId: string;
-  triggeredBy: 'schedule' | 'manual' | 'retry';
+  triggeredBy: 'schedule' | 'manual' | 'retry' | 'catchup';
   timestamp: Date;
 }
 

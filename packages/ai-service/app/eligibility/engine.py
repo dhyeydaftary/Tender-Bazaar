@@ -4,7 +4,7 @@ from enum import Enum
 from typing import List, Optional
 
 import anthropic
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field, model_validator
 
 from app.config import settings
 
@@ -65,18 +65,98 @@ class CompanyProfile(BaseModel):
 
 
 class TenderInfo(BaseModel):
+    """Tender side of POST /eligibility/check.
+
+    This model is the contract with the Node API's eligibility service. Because
+    Pydantic ignores undeclared keys, every field the API sent that was missing
+    here was dropped without a trace:
+
+      * `organization`, `department`, `minTurnover`, `minNetWorth`,
+        `minExperience` and `requiredCertifications` were all discarded, so a
+        tender stating a 20 Cr turnover floor produced byte-identical output to
+        one stating no requirement at all.
+      * `description` was declared as a required `str` while the database column
+        is nullable, so the 11% of tenders with no description were rejected
+        with HTTP 422. The API caught that and silently degraded to its
+        rule-based fallback, which looked to the user like a completed analysis.
+      * The API's `aiEligibilityText` never matched this model's
+        `eligibilityText`, so the LLM stage — gated on that field — never ran.
+
+    The structured requirement fields below are now accepted and available to
+    the engine, but note what is NOT claimed: `check_rules` does not yet score
+    them, and `check_llm` reads only `eligibilityText`. They are carried so the
+    data stops being lost, not because the model analyses them today.
+    """
+
     id: str
     title: str
-    description: str
+    # Nullable in the database; optional here so a tender without a description
+    # is analysed rather than 422-ing into a silent fallback.
+    description: Optional[str] = None
+    organization: Optional[str] = None
+    department: Optional[str] = None
     category: Optional[str] = None
     tenderType: Optional[str] = None
     state: Optional[str] = None
     estimatedValue: Optional[float] = None
     emdAmount: Optional[float] = None
+
+    # Published eligibility thresholds. `None` means the tender did not state
+    # one — which is NOT the same as a threshold of zero, and must never be
+    # reported as "requirement met".
+    minTurnover: Optional[float] = None
+    minNetWorth: Optional[float] = None
+    minExperience: Optional[int] = None
+    requiredCertifications: List[str] = Field(default_factory=list)
+
     reservedForMSME: bool = False
     reservedForStartups: bool = False
     emdExemptMSME: bool = False
-    eligibilityText: Optional[str] = None
+
+    # Accepts the API's historical `aiEligibilityText` as well as the canonical
+    # `eligibilityText`, so neither side can silently drop it again.
+    eligibilityText: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("eligibilityText", "aiEligibilityText"),
+    )
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _log_unknown_fields(cls, data):
+        """Log keys this model does not declare instead of dropping them mutely.
+
+        Deliberately logs rather than rejecting: a future field added on the
+        Node side should be visible in the logs, not turn every eligibility
+        check into a 422 that degrades to fallback for all users.
+        """
+        if isinstance(data, dict):
+            known = set(cls.model_fields.keys()) | {"aiEligibilityText"}
+            unknown = sorted(k for k in data if k not in known)
+            if unknown:
+                logger.warning(
+                    "TenderInfo received undeclared field(s) %s - they are ignored; "
+                    "update the model if they are meant to be used",
+                    unknown,
+                )
+        return data
+
+
+class LlmStatus(str, Enum):
+    """Outcome of the LLM stage, reported independently of the HTTP status.
+
+    The endpoint answers 200 whenever the rule stage completed, because a
+    rule-based result is still useful. That made an LLM failure invisible: a
+    401 from the provider was caught, logged, and the response went out looking
+    like a complete analysis. Callers must be able to tell these apart.
+    """
+
+    SUCCESS = "SUCCESS"              # a validated LLM result contributed criteria
+    FAILED = "FAILED"                # provider rejected the call (e.g. 401) or errored
+    TIMED_OUT = "TIMED_OUT"          # provider did not answer in time
+    UNAVAILABLE = "UNAVAILABLE"      # no API key configured, so never attempted
+    SKIPPED_NO_TEXT = "SKIPPED_NO_TEXT"  # tender has no eligibility text to analyse
 
 
 class EligibilityResult(BaseModel):
@@ -86,10 +166,28 @@ class EligibilityResult(BaseModel):
     suggestions: List[str]
     summary: str
 
+    # ---- Provenance -------------------------------------------------------
+    # Which stages actually produced the analysis above. `llmAnalysed` is true
+    # only when a validated LLM response contributed at least one criterion —
+    # never inferred from the HTTP status.
+    ruleChecksCompleted: bool = True
+    llmAnalysed: bool = False
+    llmStatus: LlmStatus = LlmStatus.UNAVAILABLE
+    llmError: Optional[str] = None
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _normalise_cert(value: str) -> str:
+    """Normalise a certification name for exact comparison.
+
+    Case and internal whitespace only — deliberately not fuzzy. "ISO 9001" and
+    "iso  9001" are the same certificate; "ISO 9001" and "ISO 14001" are not.
+    """
+    return " ".join(value.split()).upper()
 
 def _fmt_inr(value: float) -> str:
     """Format a float as an INR-friendly string (e.g. 5.2Cr, 45L)."""
@@ -285,26 +383,84 @@ class EligibilityEngine:
                     )
                 )
 
-        # 9. ISO certification
-        if company.isoRegistered and company.isoCertificates:
-            results.append(
-                CriterionResult(
-                    criterion="ISO Certification",
-                    status=CriterionStatus.MET,
-                    detail=f"Company holds ISO certifications: {', '.join(company.isoCertificates)}",
-                    importance=CriterionImportance.OPTIONAL,
+        # 9. Certifications.
+        #
+        # This used to mark the criterion MET whenever the company held *any*
+        # ISO certificate, without ever looking at what the tender asked for.
+        # A tender requiring ISO 14001 was reported as satisfied by a company
+        # holding only ISO 9001 — an unsupported claim about a named
+        # requirement. The requirement itself was also invisible until
+        # `requiredCertifications` was added to TenderInfo.
+        #
+        # Matching is exact on a normalised string (case and whitespace), which
+        # is all that can be done reliably here. No attempt is made to read
+        # requirements out of free-text eligibility prose: that is not
+        # implemented, and anything it could not match is reported as needing
+        # verification rather than guessed.
+        held = {_normalise_cert(c) for c in (company.isoCertificates or []) if c and c.strip()}
+        required = [c for c in (tender.requiredCertifications or []) if c and c.strip()]
+
+        if required:
+            missing = [c for c in required if _normalise_cert(c) not in held]
+
+            if not held:
+                # The tender names requirements but the profile carries no
+                # certification data, so there is no evidence either way.
+                results.append(
+                    CriterionResult(
+                        criterion="Required Certifications",
+                        status=CriterionStatus.UNCLEAR,
+                        detail=(
+                            f"This tender requires {', '.join(required)}. Your profile lists no "
+                            "certifications, so this could not be verified — add them to your "
+                            "company profile or confirm against the tender document."
+                        ),
+                        importance=CriterionImportance.IMPORTANT,
+                    )
                 )
+            elif missing:
+                results.append(
+                    CriterionResult(
+                        criterion="Required Certifications",
+                        status=CriterionStatus.NOT_MET,
+                        detail=(
+                            f"This tender requires {', '.join(required)}. Not found in your profile: "
+                            f"{', '.join(missing)}. You hold: {', '.join(sorted(company.isoCertificates))}."
+                        ),
+                        importance=CriterionImportance.IMPORTANT,
+                    )
+                )
+            else:
+                results.append(
+                    CriterionResult(
+                        criterion="Required Certifications",
+                        status=CriterionStatus.MET,
+                        detail=(
+                            f"Holds every certification this tender names: {', '.join(required)}."
+                        ),
+                        importance=CriterionImportance.IMPORTANT,
+                    )
+                )
+        else:
+            # The tender states no certification requirement. Reporting MET here
+            # would assert that a requirement was satisfied when none was
+            # published, so this stays an explicit "nothing to verify" note and
+            # is kept distinct from any generic recommendation.
+            detail = (
+                "This tender does not state a certification requirement"
+                + (
+                    f"; your profile lists {', '.join(sorted(company.isoCertificates))}."
+                    if held
+                    else " and your profile lists none."
+                )
+                + " Confirm against the tender document, which may name certifications"
+                " not captured in the published fields."
             )
-        elif tender.category and tender.category.upper() in (
-            "WORKS",
-            "GOODS",
-            "CONSULTANCY",
-        ):
             results.append(
                 CriterionResult(
-                    criterion="ISO Certification",
-                    status=CriterionStatus.NOT_MET,
-                    detail="No ISO certifications; some tenders may prefer or require ISO-certified companies",
+                    criterion="Required Certifications",
+                    status=CriterionStatus.UNCLEAR,
+                    detail=detail,
                     importance=CriterionImportance.OPTIONAL,
                 )
             )
@@ -336,13 +492,20 @@ class EligibilityEngine:
 
     async def check_llm(
         self, company: CompanyProfile, tender: TenderInfo
-    ) -> List[CriterionResult]:
+    ) -> tuple[List[CriterionResult], LlmStatus, Optional[str]]:
+        """Run the LLM stage and report precisely what happened.
+
+        Returns (criteria, status, error). It used to return a bare list, so an
+        empty list meant "no extra criteria", "no API key", and "the provider
+        rejected the request" indistinguishably — which is how a 401 ended up
+        presented as a successful AI analysis.
+        """
         if not tender.eligibilityText:
-            return []
+            return [], LlmStatus.SKIPPED_NO_TEXT, None
 
         if not settings.ANTHROPIC_API_KEY:
             logger.warning("ANTHROPIC_API_KEY not set; skipping LLM eligibility check")
-            return []
+            return [], LlmStatus.UNAVAILABLE, "No model API key is configured."
 
         try:
             client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
@@ -399,11 +562,28 @@ class EligibilityEngine:
                 except (KeyError, ValueError) as exc:
                     logger.warning("Skipping malformed LLM criterion: %s — %s", item, exc)
 
-            return results
+            # SUCCESS only when a validated response actually produced criteria.
+            # An empty array is a legitimate model answer ("no extra criteria"),
+            # so it still counts as a completed analysis.
+            return results, LlmStatus.SUCCESS, None
 
-        except Exception:
+        except anthropic.APITimeoutError as exc:
+            logger.warning("LLM eligibility check timed out: %s", exc)
+            return [], LlmStatus.TIMED_OUT, "The model did not respond in time."
+        except anthropic.AuthenticationError:
+            # Deliberately does not echo the provider message, which can quote
+            # the offending key material.
+            logger.warning("LLM eligibility check rejected: provider authentication failed")
+            return [], LlmStatus.FAILED, "The model provider rejected the request (authentication failed)."
+        except anthropic.RateLimitError:
+            logger.warning("LLM eligibility check rejected: provider rate limit")
+            return [], LlmStatus.FAILED, "The model provider rate-limited the request."
+        except json.JSONDecodeError as exc:
+            logger.warning("LLM returned unparseable JSON: %s", exc)
+            return [], LlmStatus.FAILED, "The model returned a response that could not be parsed."
+        except Exception as exc:  # noqa: BLE001
             logger.exception("LLM eligibility check failed")
-            return []
+            return [], LlmStatus.FAILED, f"The model call failed ({type(exc).__name__})."
 
     # ------------------------------------------------------------------
     # Suggestions
@@ -420,9 +600,11 @@ class EligibilityEngine:
                 "Apply for DPIIT startup recognition at "
                 "https://www.startupindia.gov.in to qualify for startup-reserved tenders."
             ),
-            "ISO Certification": (
-                "Obtain relevant ISO certifications (e.g. ISO 9001, ISO 14001) "
-                "to strengthen your bid and meet tender requirements."
+            # Keyed to the renamed criterion. This is a generic recommendation,
+            # not a statement about this tender's published requirements.
+            "Required Certifications": (
+                "Add your certifications to your company profile, and obtain any the "
+                "tender document names (e.g. ISO 9001, ISO 14001) to strengthen your bid."
             ),
             "GeM Registration": (
                 "Register on the Government e-Marketplace (GeM) at "
@@ -511,7 +693,7 @@ class EligibilityEngine:
         rule_criteria = self.check_rules(company, tender)
 
         # LLM checks (only if eligibility text present)
-        llm_criteria = await self.check_llm(company, tender)
+        llm_criteria, llm_status, llm_error = await self.check_llm(company, tender)
 
         # Combine
         all_criteria = rule_criteria + llm_criteria
@@ -537,4 +719,11 @@ class EligibilityEngine:
             criteria=all_criteria,
             suggestions=suggestions,
             summary=summary,
+            ruleChecksCompleted=True,
+            # True only when the LLM stage genuinely succeeded. Note this is
+            # independent of whether it added criteria: a successful call that
+            # found nothing extra still analysed the tender.
+            llmAnalysed=llm_status == LlmStatus.SUCCESS,
+            llmStatus=llm_status,
+            llmError=llm_error,
         )

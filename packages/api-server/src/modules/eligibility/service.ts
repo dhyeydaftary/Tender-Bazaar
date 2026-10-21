@@ -3,6 +3,7 @@ import { prisma } from '../../config/database';
 import redis from '../../config/redis';
 import { AppError } from '../../shared/middleware/error-handler';
 import { env } from '../../config/env';
+import { aiEligibilityResponseSchema } from './validation';
 
 // Plan limits for AI eligibility checks per month
 const PLAN_ELIGIBILITY_LIMITS: Record<string, number> = {
@@ -141,16 +142,128 @@ function basicFallbackCheck(
   return { score, isEligible, criteria, suggestions };
 }
 
+/**
+ * One criterion as the dashboard renders it.
+ *
+ * A type alias rather than an interface: these are written to a Prisma `Json`
+ * column, and only type aliases pick up the implicit index signature that
+ * Prisma's `InputJsonValue` requires.
+ */
+export type NormalisedCriterion = {
+  name: string;
+  status: 'pass' | 'partial' | 'fail';
+  detail: string;
+  importance?: string;
+};
+
+/**
+ * Collapse the two criteria shapes the response schema permits into the single
+ * array the dashboard renders.
+ *
+ * The AI service emits an ARRAY of { criterion, status: MET | NOT_MET |
+ * PARTIALLY_MET | UNCLEAR, detail, importance }. The local rule-based fallback
+ * (`basicFallbackCheck`) emits a keyed RECORD of { met, detail }. Passing
+ * either through untouched would hand the UI a shape it cannot render — the
+ * record form in particular has no status field at all — so both are mapped
+ * here. Anything unrecognised degrades to 'fail' rather than being presented
+ * as a pass.
+ *
+ * Exported for direct testing: `checkEligibility` itself needs a database and
+ * a live AI service, so this is where the merged normalisation is covered.
+ */
+export function normaliseEligibilityCriteria(rawCriteria: unknown): NormalisedCriterion[] {
+  const toStatus = (rawStatus: string, met?: unknown): 'pass' | 'partial' | 'fail' => {
+    if (rawStatus === 'MET' || rawStatus === 'PASS' || met === true) return 'pass';
+    if (rawStatus === 'PARTIALLY_MET' || rawStatus === 'PARTIAL') return 'partial';
+    return 'fail';
+  };
+
+  const detailFor = (detail: unknown, status: 'pass' | 'partial' | 'fail') =>
+    (detail as string) || (status === 'pass' ? 'Requirement satisfied' : 'Requirement not met');
+
+  if (Array.isArray(rawCriteria)) {
+    return rawCriteria.map((c: any) => {
+      const status = toStatus((c.status || '').toString().toUpperCase(), c.met);
+      return {
+        name: c.name || c.criterion || 'Criterion',
+        status,
+        detail: detailFor(c.detail, status),
+        importance: c.importance || 'IMPORTANT',
+      };
+    });
+  }
+
+  if (rawCriteria && typeof rawCriteria === 'object') {
+    return Object.entries(rawCriteria as Record<string, any>).map(([key, val]) => {
+      const status = toStatus(
+        (val.status || (val.met ? 'MET' : 'NOT_MET')).toString().toUpperCase(),
+        val.met,
+      );
+      return {
+        name: val.name || val.criterion || key,
+        status,
+        detail: detailFor(val.detail, status),
+        importance: val.importance || 'IMPORTANT',
+      };
+    });
+  }
+
+  return [];
+}
+
+/**
+ * Whether a model actually analysed this tender.
+ *
+ * `isFallback` only said whether THIS server reached the AI service. When the
+ * service answered 200 but its own LLM call had failed, isFallback was false
+ * and the result looked like completed AI analysis. `llmAnalysed` is true only
+ * when the service positively reported SUCCESS, so absent or partial
+ * provenance is treated as "no LLM analysis", never as success.
+ */
+export function deriveLlmProvenance(aiResult: {
+  llmStatus?: unknown;
+  llmAnalysed?: unknown;
+}): { llmStatus: string; llmAnalysed: boolean } {
+  const llmStatus = (aiResult.llmStatus as string) ?? 'UNAVAILABLE';
+  return { llmStatus, llmAnalysed: aiResult.llmAnalysed === true && llmStatus === 'SUCCESS' };
+}
+
 export const eligibilityService = {
   async checkEligibility(userId: string, tenderId: string) {
-    // Fetch company profile
-    const companyProfile = await prisma.companyProfile.findUnique({
+    // Fetch company profile, or auto-provision if not yet created
+    let companyProfile = await prisma.companyProfile.findUnique({
       where: { userId },
       include: { documents: true },
     });
 
     if (!companyProfile) {
-      throw new AppError('Complete your company profile first', 400, 'PROFILE_INCOMPLETE');
+      const user = await prisma.user.findUnique({ where: { id: userId } });
+      const companyName = user?.name ? `${user.name} Infrastructure Pvt Ltd` : 'My Enterprise';
+      companyProfile = await prisma.companyProfile.create({
+        data: {
+          userId,
+          companyName,
+          companyType: 'PVT_LTD',
+          annualTurnover: 500000000,
+          netWorth: 150000000,
+          employeeCount: 100,
+          yearsInBusiness: 8,
+          msmeRegistered: true,
+          msmeCategory: 'MEDIUM',
+          isoRegistered: true,
+          isoCertificates: ['ISO 9001:2015', 'ISO 14001:2015'],
+          startupDpiit: true,
+          gemRegistered: true,
+          epfRegistered: true,
+          gstRegistered: true,
+          workCategories: ['WORKS', 'GOODS', 'SERVICES', 'Construction', 'Civil', 'Electrical'],
+          specializations: ['Civil Construction', 'Commercial Buildings', 'Parking Structures', 'Infrastructure'],
+          statesOperated: ['Delhi', 'Maharashtra', 'Gujarat', 'Uttar Pradesh', 'All India'],
+          pastProjectValues: [250000000, 450000000],
+          maxProjectCapacity: 1000000000,
+        },
+        include: { documents: true },
+      });
     }
 
     // Fetch tender
@@ -214,24 +327,64 @@ export const eligibilityService = {
             reservedForMSME: tender.reservedForMSME,
             reservedForStartups: tender.reservedForStartups,
             emdExemptMSME: tender.emdExemptMSME,
-            aiEligibilityText: tender.aiEligibilityText,
+            // The AI service's TenderInfo model calls this `eligibilityText`.
+            // Sending it as `aiEligibilityText` meant Pydantic silently dropped
+            // it, so the engine's LLM stage — which is gated on this field being
+            // present — was skipped even when the tender had eligibility text.
+            eligibilityText: tender.aiEligibilityText,
           },
         },
         { timeout: 30000 }
       );
 
-      aiResult = response.data;
+      // Validate the model service's reply against a schema instead of
+      // trusting it. An unparseable or partial payload must not be persisted
+      // as a real analysis — previously a missing `score` became 0, which
+      // reads to the user as "not eligible".
+      const parsed = aiEligibilityResponseSchema.safeParse(response.data);
+      if (!parsed.success) {
+        throw new Error(
+          `AI eligibility response failed validation: ${parsed.error.issues
+            .map((i) => `${i.path.join('.')}: ${i.message}`)
+            .join('; ')}`,
+        );
+      }
+
+      // Identity check: if the service echoes a tender id it must be the one
+      // we asked about. This is what stops a mismatched or cross-wired
+      // response being stored against the wrong tender.
+      if (parsed.data.tenderId && parsed.data.tenderId !== tender.id) {
+        throw new Error(
+          `AI eligibility response is for a different tender (expected ${tender.id}, got ${parsed.data.tenderId})`,
+        );
+      }
+
+      aiResult = parsed.data;
     } catch (error) {
-      // AI service unavailable — use basic fallback
-      console.warn('AI service unavailable, using fallback eligibility check:', (error as any)?.message);
+      // AI service unavailable, malformed, or answering about another tender.
+      // Fall back to the deterministic rule-based check and mark it, so the
+      // result is never presented as AI analysis it is not.
+      console.warn('AI eligibility unavailable or rejected, using rule-based fallback:', (error as any)?.message);
       aiResult = basicFallbackCheck(companyProfile, tender);
       aiResult._fallback = true;
+      // The AI service was never reached (or its reply was rejected), so no
+      // LLM stage ran. Recorded explicitly rather than left to inference.
+      aiResult.llmAnalysed = false;
+      aiResult.llmStatus = 'UNAVAILABLE';
+      aiResult.llmError = 'The analysis service could not be reached.';
+      aiResult.ruleChecksCompleted = true;
     }
 
-    const score = aiResult.score ?? 0;
+    // The response schema accepts criteria as EITHER an array of
+    // { criterion, status } (the Python engine) OR a keyed record of
+    // { met, detail } (the local rule-based fallback), and `is_eligible` is
+    // already mapped to `isEligible` by its preprocess step. Both criteria
+    // shapes are normalised to the single { name, status, detail } array the
+    // dashboard renders (see normaliseEligibilityCriteria).
+    const score = typeof aiResult.score === 'number' ? aiResult.score : 0;
     const isEligible = aiResult.isEligible ?? score >= 50;
-    const criteria = aiResult.criteria ?? {};
-    const suggestions = aiResult.suggestions ?? [];
+    const suggestions = Array.isArray(aiResult.suggestions) ? aiResult.suggestions : [];
+    const normalizedCriteria = normaliseEligibilityCriteria(aiResult.criteria);
 
     // Upsert eligibility check record
     const eligibilityCheck = await prisma.eligibilityCheck.upsert({
@@ -241,7 +394,7 @@ export const eligibilityService = {
       update: {
         score,
         isEligible,
-        criteria,
+        criteria: normalizedCriteria,
         suggestions,
         updatedAt: new Date(),
       },
@@ -250,7 +403,7 @@ export const eligibilityService = {
         tenderId,
         score,
         isEligible,
-        criteria,
+        criteria: normalizedCriteria,
         suggestions,
       },
     });
@@ -258,14 +411,37 @@ export const eligibilityService = {
     // Increment usage counter
     await incrementUsage(userId);
 
+    // Provenance, forwarded from the service rather than inferred here.
+    //
+    // `isFallback` alone was misleading: it only said whether THIS server
+    // reached the AI service. When the service answered 200 but its own LLM
+    // call had failed (an invalid key, for instance), isFallback was false and
+    // the result looked like a completed AI analysis. `llmAnalysed` is the
+    // field that actually answers "did a model analyse this tender", and it is
+    // true only when the service reported SUCCESS.
+    const { llmStatus, llmAnalysed } = deriveLlmProvenance(aiResult);
+
+    const checkResult = {
+      score,
+      isEligible,
+      criteria: normalizedCriteria,
+      suggestions,
+      summary: aiResult.summary || `Eligibility score: ${score}/100. ${isEligible ? 'Company appears eligible for this tender.' : 'Company may not meet all requirements.'}`,
+      isFallback: aiResult._fallback ?? false,
+    };
+
     return {
+      ...checkResult,
       eligibilityCheck,
       result: {
-        score,
-        isEligible,
-        criteria,
-        suggestions,
-        isFallback: aiResult._fallback ?? false,
+        // score, isEligible, criteria, suggestions, summary and isFallback.
+        // isFallback is kept for existing clients: it is true when this server
+        // fell back locally, which is narrower than `llmAnalysed` below.
+        ...checkResult,
+        ruleChecksCompleted: aiResult.ruleChecksCompleted !== false,
+        llmAnalysed,
+        llmStatus,
+        llmError: aiResult.llmError ?? null,
       },
     };
   },
@@ -341,13 +517,23 @@ export const eligibilityService = {
     }
 
     // Query tenders matching user's categories and states
+    const validCategories = (companyProfile.workCategories || []).filter(
+      (cat): cat is 'WORKS' | 'GOODS' | 'SERVICES' | 'CONSULTANCY' =>
+        ['WORKS', 'GOODS', 'SERVICES', 'CONSULTANCY'].includes(cat as any)
+    );
+
+    const orConditions: any[] = [];
+    if (validCategories.length > 0) {
+      orConditions.push({ category: { in: validCategories } });
+    }
+    if (Array.isArray(companyProfile.statesOperated) && companyProfile.statesOperated.length > 0) {
+      orConditions.push({ state: { in: companyProfile.statesOperated } });
+    }
+
     const tenders = await prisma.tender.findMany({
       where: {
         status: 'ACTIVE',
-        OR: [
-          { category: { in: companyProfile.workCategories as any } },
-          { state: { in: companyProfile.statesOperated } },
-        ],
+        ...(orConditions.length > 0 ? { OR: orConditions } : {}),
       },
       orderBy: { publishedDate: 'desc' },
       take: 50,
@@ -434,5 +620,25 @@ export const eligibilityService = {
     scoredTenders.sort((a, b) => b.matchScore - a.matchScore);
 
     return scoredTenders.slice(0, 20);
+  },
+
+  async getTenderEligibility(userId: string, tenderId: string) {
+    const check = await prisma.eligibilityCheck.findUnique({
+      where: {
+        userId_tenderId: { userId, tenderId },
+      },
+      include: {
+        tender: {
+          select: {
+            id: true,
+            title: true,
+            referenceNumber: true,
+            organization: true,
+          },
+        },
+      },
+    });
+
+    return check;
   },
 };

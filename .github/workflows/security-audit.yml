@@ -9,18 +9,21 @@ concurrency:
   group: security-audit
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   node-audit:
     name: Node.js Dependency Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: pnpm/action-setup@v2
+      - uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: 'pnpm'
@@ -28,26 +31,44 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run pnpm audit
-        run: pnpm audit --audit-level=high || true
+      # Reports the real finding counts into the run summary, so the scheduled
+      # run says what it found instead of just going green. This replaces
+      # `pnpm audit --audit-level=high || true`, which made the workflow succeed
+      # unconditionally: run 39187891265 on `main` was green while the tree
+      # carried 6 critical and 109 high advisories. See the rationale in
+      # scripts/audit-summary.js for why this reports rather than blocks.
+      - name: Audit dependencies and report findings
+        run: |
+          pnpm audit --json > audit.json || true
+          node scripts/audit-summary.js audit.json
 
-      - name: Check for known vulnerabilities
-        run: npx better-npm-audit audit || true
+      # `npx better-npm-audit` was removed: it reads package-lock.json, which
+      # this pnpm workspace does not have, so it audited nothing. It was also
+      # fetched unpinned by `npx` on every run, which put an unreviewed package
+      # inside the security job itself.
 
   python-audit:
     name: Python Dependency Audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
 
       - name: Install pip-audit
-        run: pip install pip-audit
+        run: pip install 'pip-audit==2.10.1'
 
+      # Blocking. This was advisory because requirements.txt resolved to 16
+      # advisories - python-dotenv 1.0.0 (PYSEC-2026-2270) and starlette 0.37.2
+      # (7 advisories), the latter held there by the `fastapi==0.111.0` pin.
+      # That upgrade has now been done (fastapi 0.156.4 / starlette 1.9.0 /
+      # python-dotenv 1.2.4) and pip-audit reports no known vulnerabilities, so
+      # the step can report genuinely: a new advisory against a production
+      # dependency of the AI service now fails this job instead of being
+      # tolerated.
       - name: Audit Python dependencies
         run: |
           cd packages/ai-service
-          pip-audit -r requirements.txt || true
+          pip-audit -r requirements.txt

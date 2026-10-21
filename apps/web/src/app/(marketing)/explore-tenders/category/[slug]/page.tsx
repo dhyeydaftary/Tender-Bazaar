@@ -2,7 +2,9 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
+import { useParams } from 'next/navigation';
 import { cn } from '@/lib/utils';
+import { useTenderCounts } from '@/lib/hooks/use-tenders';
 import {
   HardHat,
   Package,
@@ -432,12 +434,10 @@ function formatValue(value: number): string {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function CategoryPage({
-  params,
-}: {
-  params: { slug: string };
-}) {
-  const { slug } = params;
+export default function CategoryPage() {
+  const routeParams = useParams<{ slug: string }>();
+  const slug = routeParams?.slug ?? '';
+  const counts = useTenderCounts();
   const [selectedSubcategory, setSelectedSubcategory] = useState<string | null>(null);
   const [selectedState, setSelectedState] = useState('all');
   const [valueRange, setValueRange] = useState('all');
@@ -449,7 +449,7 @@ export default function CategoryPage({
   // 404-style message if slug doesn't match
   if (!category) {
     return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center pt-16">
         <div className="text-center max-w-md mx-auto px-4">
           <div className="w-20 h-20 rounded-full bg-muted flex items-center justify-center mx-auto mb-6">
             <Package className="w-10 h-10 text-muted-foreground" />
@@ -492,6 +492,9 @@ export default function CategoryPage({
     'Madhya Pradesh',
   ];
 
+  const activeTendersCount = counts.getCategoryCount(category.name) > 0 ? counts.getCategoryCount(category.name) : category.activeTenders;
+  const newTodayCount = counts.newToday > 0 ? counts.newToday : category.newToday;
+
   const relatedCategories = Object.entries(CATEGORY_DATA)
     .filter(([key]) => key !== slug)
     .map(([key, data]) => ({
@@ -500,11 +503,11 @@ export default function CategoryPage({
       icon: data.icon,
       color: data.color,
       bgColor: data.bgColor,
-      count: data.activeTenders,
+      count: counts.getCategoryCount(data.name) > 0 ? counts.getCategoryCount(data.name) : data.activeTenders,
     }));
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-background pt-16 sm:pt-20">
       {/* Breadcrumb */}
       <div className="border-b border-border bg-card">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3">
@@ -551,12 +554,12 @@ export default function CategoryPage({
               <div className="flex items-center gap-4 text-sm">
                 <span className="flex items-center gap-1.5 text-foreground font-medium">
                   <TrendingUp className="w-4 h-4 text-primary-500" />
-                  {category.activeTenders.toLocaleString('en-IN')} active tenders
+                  {activeTendersCount.toLocaleString('en-IN')} active tenders
                 </span>
                 <span className="text-border">|</span>
                 <span className="flex items-center gap-1.5 text-foreground font-medium">
                   <Sparkles className="w-4 h-4 text-accent-500" />
-                  {category.newToday} new today
+                  {newTodayCount} new today
                 </span>
               </div>
             </div>
@@ -706,7 +709,7 @@ export default function CategoryPage({
                     </div>
                   </div>
                   <Link
-                    href="/login"
+                    href={`/tenders/${tender.id}`}
                     className="px-4 py-2 bg-primary-500 text-white text-sm font-medium rounded-lg hover:bg-primary-500/90 transition-colors whitespace-nowrap"
                   >
                     View Details

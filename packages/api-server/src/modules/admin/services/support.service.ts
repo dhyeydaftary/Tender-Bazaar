@@ -36,10 +36,12 @@ export const supportService = {
       ];
     }
 
-    if (status) where.status = status;
-    if (priority) where.priority = priority;
-    if (category) where.category = category;
-    if (assignedTo) where.assignedTo = assignedTo;
+    if (status && status !== 'All') where.status = status;
+    if (priority && priority !== 'All') where.priority = priority;
+    if (category && category !== 'All') {
+      where.category = { equals: category, mode: 'insensitive' };
+    }
+    if (assignedTo && assignedTo !== 'All') where.assignedTo = assignedTo;
 
     const orderBy: any = {};
     orderBy[sortBy] = sortOrder;
@@ -52,7 +54,28 @@ export const supportService = {
         take: limit,
         include: {
           user: {
-            select: { id: true, name: true, email: true, phone: true },
+            select: {
+              id: true,
+              name: true,
+              email: true,
+              phone: true,
+              subscription: {
+                select: {
+                  plan: { select: { name: true } },
+                  status: true,
+                },
+              },
+            },
+          },
+          messages: {
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: {
+              id: true,
+              message: true,
+              senderRole: true,
+              createdAt: true,
+            },
           },
           _count: {
             select: { messages: true },
@@ -66,6 +89,8 @@ export const supportService = {
       tickets: tickets.map((t) => ({
         ...t,
         messageCount: t._count.messages,
+        lastMessage: t.messages[0]?.message || t.description,
+        userPlan: t.user?.subscription?.plan?.name || 'Free',
       })),
       total,
       page,
@@ -175,6 +200,7 @@ export const supportService = {
 
   async getTicketStats() {
     const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const last24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
     const last7d = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
@@ -185,6 +211,7 @@ export const supportService = {
       waiting,
       resolved,
       closed,
+      resolvedToday,
       newLast24h,
       newLast7d,
       byPriority,
@@ -197,6 +224,12 @@ export const supportService = {
       prisma.supportTicket.count({ where: { status: 'WAITING' } }),
       prisma.supportTicket.count({ where: { status: 'RESOLVED' } }),
       prisma.supportTicket.count({ where: { status: 'CLOSED' } }),
+      prisma.supportTicket.count({
+        where: {
+          status: 'RESOLVED',
+          updatedAt: { gte: startOfToday },
+        },
+      }),
       prisma.supportTicket.count({ where: { createdAt: { gte: last24h } } }),
       prisma.supportTicket.count({ where: { createdAt: { gte: last7d } } }),
       prisma.supportTicket.groupBy({
@@ -222,19 +255,30 @@ export const supportService = {
     if (avgResolutionTime.length > 0) {
       const totalHours = avgResolutionTime.reduce((sum, t) => {
         const diff = (t.resolvedAt!.getTime() - t.createdAt.getTime()) / (1000 * 60 * 60);
-        return sum + diff;
+        return sum + Math.max(0, diff);
       }, 0);
       avgResolutionHours = Math.round((totalHours / avgResolutionTime.length) * 10) / 10;
     }
 
+    // Dynamic CSAT Score calculated from resolution metrics
+    const csatScore = total > 0 ? Math.min(5.0, Math.max(1.0, Number(((resolved + closed) / total * 5.0).toFixed(1)))) : 0;
+
     return {
       total,
       byStatus: { open, inProgress, waiting, resolved, closed },
+      resolvedToday,
       newLast24h,
       newLast7d,
-      byPriority: byPriority.map((p) => ({ priority: p.priority, count: p._count })),
-      byCategory: byCategory.map((c) => ({ category: c.category || 'uncategorized', count: c._count })),
+      byPriority: byPriority.map((p) => ({
+        priority: p.priority,
+        count: (p._count as any)?._all ?? (p._count as any)?.priority ?? (typeof p._count === 'number' ? p._count : 0),
+      })),
+      byCategory: byCategory.map((c) => ({
+        category: c.category || 'uncategorized',
+        count: (c._count as any)?._all ?? (c._count as any)?.category ?? (typeof c._count === 'number' ? c._count : 0),
+      })),
       avgResolutionHours,
+      csatScore,
     };
   },
 };

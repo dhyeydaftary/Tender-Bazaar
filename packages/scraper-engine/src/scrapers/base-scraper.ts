@@ -1,8 +1,45 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
+import https from 'node:https';
+
+/**
+ * Shared HTTPS agent for all scraper requests.
+ *
+ * Certificate verification is ON. It was previously hardcoded to
+ * `rejectUnauthorized: false`, which — together with
+ * `NODE_TLS_REJECT_UNAUTHORIZED=0` on the scraper container — meant every
+ * request to every government portal accepted any certificate, so the scraped
+ * content (and anything else on those connections) was trivially
+ * machine-in-the-middle-able.
+ *
+ * Some state portals genuinely do serve incomplete chains. The escape hatch is
+ * explicit, opt-in, and refuses to engage in production:
+ *
+ *   SCRAPER_ALLOW_INSECURE_TLS=true   (ignored when NODE_ENV=production)
+ *
+ * Use it only against a portal you are actively debugging. The correct fix for
+ * a missing intermediate certificate is NODE_EXTRA_CA_CERTS, not disabling
+ * verification.
+ */
+const allowInsecureTls =
+  process.env.SCRAPER_ALLOW_INSECURE_TLS === 'true' &&
+  process.env.NODE_ENV !== 'production';
+
+if (allowInsecureTls) {
+  console.warn(
+    '[BaseScraper] WARNING: TLS certificate verification is DISABLED ' +
+      '(SCRAPER_ALLOW_INSECURE_TLS=true). Never use this outside local debugging.',
+  );
+}
+
+const defaultHttpsAgent = new https.Agent({
+  rejectUnauthorized: !allowInsecureTls,
+  keepAlive: true,
+});
 import * as cheerio from 'cheerio';
 import { chromium, Browser, Page } from 'playwright';
 import PQueue from 'p-queue';
 import { PrismaClient } from '@prisma/client';
+import { publishTenderIndexBulk } from '../storage/tender-index-publisher';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,6 +108,32 @@ export interface ScrapeResult {
   updatedTenders: number;
   errors: number;
   duration: number;
+  /** Known tenders whose detail page was deliberately not fetched (new-only mode). */
+  skippedExisting?: number;
+  /**
+   * Listing pages actually fetched AND processed in this run.
+   *
+   * Counts real work done, not the budget: pages that failed to fetch and empty
+   * pages that terminate pagination are excluded. The requested budget is
+   * recorded separately as ScrapingRun.maxPages, so this must never be derived
+   * from maxPages.
+   *
+   * Optional so a scraper that does not report it keeps compiling; the runner
+   * falls back to 0.
+   */
+  pagesScraped?: number;
+}
+
+/**
+ * Minimal projection of a tender already stored in PostgreSQL, used by the
+ * new-only pre-check to decide whether a listing needs a detail fetch.
+ */
+export interface KnownTender {
+  id: string;
+  sourceId: string;
+  bidSubmissionDeadline: Date;
+  status: string;
+  updatedAt: Date;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +152,76 @@ const USER_AGENTS: string[] = [
   'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0',
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.0.0',
 ];
+
+
+// ---------------------------------------------------------------------------
+// Change detection for Elasticsearch sync
+// ---------------------------------------------------------------------------
+
+/**
+ * Columns compared to decide whether a scrape actually changed a tender.
+ *
+ * This is exactly the set of fields saveTender() writes, so the comparison is
+ * complete with respect to what a scrape can modify. `id` is included because
+ * callers need it; it never participates in the comparison.
+ */
+const TENDER_COMPARE_SELECT = {
+  id: true,
+  title: true,
+  description: true,
+  referenceNumber: true,
+  organization: true,
+  department: true,
+  tenderType: true,
+  category: true,
+  status: true,
+  state: true,
+  district: true,
+  city: true,
+  estimatedValue: true,
+  emdAmount: true,
+  publishedDate: true,
+  bidSubmissionDeadline: true,
+  bidOpeningDate: true,
+  preBidMeetingDate: true,
+  sourcePortal: true,
+  sourceUrl: true,
+  sourceId: true,
+  aiKeywords: true,
+  reservedForMSME: true,
+  reservedForStartups: true,
+  emdExemptMSME: true,
+} as const;
+
+/** Compare one field, normalising Dates and string[] so equal values match. */
+function fieldsDiffer(stored: unknown, incoming: unknown): boolean {
+  if (stored instanceof Date || incoming instanceof Date) {
+    const a = stored instanceof Date ? stored.getTime() : stored == null ? null : new Date(stored as string).getTime();
+    const b = incoming instanceof Date ? incoming.getTime() : incoming == null ? null : new Date(incoming as string).getTime();
+    return a !== b;
+  }
+  if (Array.isArray(stored) || Array.isArray(incoming)) {
+    const a = Array.isArray(stored) ? stored : [];
+    const b = Array.isArray(incoming) ? incoming : [];
+    return a.length !== b.length || a.some((v, i) => v !== b[i]);
+  }
+  // null and undefined both mean "absent" here.
+  if (stored == null && incoming == null) return false;
+  return stored !== incoming;
+}
+
+/**
+ * True when any field the scraper is about to write differs from what is stored.
+ */
+export function hasTenderChanged(
+  stored: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+): boolean {
+  for (const key of Object.keys(incoming)) {
+    if (fieldsDiffer(stored[key], incoming[key])) return true;
+  }
+  return false;
+}
 
 // ---------------------------------------------------------------------------
 // Abstract Base Scraper
@@ -129,6 +262,22 @@ export abstract class BaseScraper {
   /** Shared browser instance for Playwright */
   private browser: Browser | null = null;
 
+  /** Max listing pages to walk in one run */
+  protected maxPages: number;
+
+  /**
+   * Tender ids saved this run whose content changed and which therefore need
+   * (re)indexing in Elasticsearch. Flushed with a single addBulk per listing
+   * page by flushTenderIndexQueue(), and again from cleanup() as a safety net.
+   */
+  protected pendingIndexIds: string[] = [];
+
+  /**
+   * When true, re-fetch and re-save every listing even if it is already known.
+   * Used by the daily full re-scrape; defaults to false (new-only).
+   */
+  protected fullRescrape: boolean;
+
   constructor(
     portalName: string,
     portalUrl: string,
@@ -138,6 +287,8 @@ export abstract class BaseScraper {
       retryCount?: number;
       retryDelay?: number;
       prisma?: PrismaClient;
+      maxPages?: number;
+      fullRescrape?: boolean;
     },
   ) {
     this.portalName = portalName;
@@ -147,6 +298,8 @@ export abstract class BaseScraper {
     this.retryCount = options?.retryCount ?? 3;
     this.retryDelay = options?.retryDelay ?? 1000;
     this.prisma = options?.prisma ?? new PrismaClient();
+    this.maxPages = options?.maxPages ?? 10;
+    this.fullRescrape = options?.fullRescrape ?? false;
 
     this.queue = new PQueue({
       concurrency: this.maxConcurrency,
@@ -205,6 +358,7 @@ export abstract class BaseScraper {
             },
             responseType: options?.responseType ?? 'text',
             data: options?.data,
+            httpsAgent: defaultHttpsAgent,
             ...(options?.proxy
               ? {
                   proxy: {
@@ -355,11 +509,137 @@ export abstract class BaseScraper {
     });
   }
 
+  // -----------------------------------------------------------------------
+  // New-only support (shared by every portal scraper)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Batch-resolve which of these source IDs this portal has already stored.
+   *
+   * PostgreSQL is the source of truth — no timestamps, no in-memory caches. One
+   * `findMany` covers the whole listing page, so adding the pre-check does not
+   * introduce an N+1 (contrast saveTender, which does one findUnique per tender).
+   *
+   * Returns a Map keyed by sourceId so callers can both test membership and read
+   * the stored deadline/status for change detection.
+   */
+  protected async findKnownTenders(sourceIds: string[]): Promise<Map<string, KnownTender>> {
+    const unique = [...new Set(sourceIds.filter((id): id is string => Boolean(id)))];
+    if (unique.length === 0) return new Map();
+
+    const rows = await this.prisma.tender.findMany({
+      where: {
+        sourcePortal: this.portalName,
+        sourceId: { in: unique },
+      },
+      select: {
+        id: true,
+        sourceId: true,
+        bidSubmissionDeadline: true,
+        status: true,
+        updatedAt: true,
+      },
+    });
+
+    return new Map(rows.map((r) => [r.sourceId, r as KnownTender]));
+  }
+
+  /**
+   * Decide whether a listing entry warrants a detail fetch.
+   *
+   * - unknown sourceId                     → yes (genuinely new)
+   * - fullRescrape mode                    → yes (daily refresh)
+   * - listing shows a changed deadline     → yes (corrigendum / extension)
+   * - listing shows a changed status        → yes
+   * - otherwise                            → no (already known and unchanged)
+   *
+   * Deliberately conservative: anything the listing reveals as changed still gets
+   * re-fetched, so legitimate updates are preserved rather than blindly skipped.
+   * Portals whose listing exposes neither deadline nor status simply fall through
+   * to "known and unchanged" and are skipped, which is the intended saving.
+   */
+  protected shouldFetchDetail(
+    listing: Partial<ScrapedTender>,
+    known: KnownTender | undefined,
+  ): boolean {
+    if (!known) return true;
+    if (this.fullRescrape) return true;
+
+    if (listing.bidSubmissionDeadline instanceof Date && !isNaN(listing.bidSubmissionDeadline.getTime())) {
+      if (listing.bidSubmissionDeadline.getTime() !== known.bidSubmissionDeadline.getTime()) {
+        return true;
+      }
+    }
+
+    if (listing.status && listing.status !== known.status) return true;
+
+    return false;
+  }
+
+  /**
+   * Partition a page of listings into the ones needing a detail fetch and the
+   * known-unchanged ones that can be skipped. One batch query per page.
+   */
+  protected async partitionListings(
+    listings: Partial<ScrapedTender>[],
+  ): Promise<{
+    toProcess: Partial<ScrapedTender>[];
+    skipped: Partial<ScrapedTender>[];
+    known: Map<string, KnownTender>;
+  }> {
+    const withIds = listings.filter((l) => Boolean(l.sourceId));
+    const known = await this.findKnownTenders(withIds.map((l) => l.sourceId as string));
+
+    const toProcess: Partial<ScrapedTender>[] = [];
+    const skipped: Partial<ScrapedTender>[] = [];
+
+    for (const listing of withIds) {
+      if (this.shouldFetchDetail(listing, known.get(listing.sourceId as string))) {
+        toProcess.push(listing);
+      } else {
+        skipped.push(listing);
+      }
+    }
+
+    if (skipped.length > 0) {
+      this.logger.info(
+        `New-only: skipping detail fetch for ${skipped.length}/${withIds.length} already-known tenders`,
+        { portal: this.portalName, toProcess: toProcess.length },
+      );
+    }
+
+    return { toProcess, skipped, known };
+  }
+
+  /**
+   * Publish any buffered Elasticsearch sync jobs in one batch.
+   *
+   * Call after finishing a listing page. Safe to call repeatedly and when the
+   * buffer is empty. Never throws: PostgreSQL already holds the tenders, and a
+   * publish failure must not abort the run (it is logged by the publisher).
+   */
+  protected async flushTenderIndexQueue(reason?: string): Promise<number> {
+    if (this.pendingIndexIds.length === 0) return 0;
+
+    const ids = this.pendingIndexIds;
+    this.pendingIndexIds = [];
+
+    const published = await publishTenderIndexBulk(ids, reason ?? this.portalName);
+    if (published > 0) {
+      this.logger.info(`Queued ${published} tender(s) for Elasticsearch indexing`, {
+        portal: this.portalName,
+      });
+    }
+    return published;
+  }
+
   /**
    * Upsert a scraped tender into PostgreSQL via Prisma.
    * Uses the compound unique key (sourceId, sourcePortal) for deduplication.
    */
-  protected async saveTender(data: ScrapedTender): Promise<{ isNew: boolean; id: string }> {
+  protected async saveTender(
+    data: ScrapedTender,
+  ): Promise<{ isNew: boolean; id: string; changed: boolean }> {
     try {
       const existing = await this.prisma.tender.findUnique({
         where: {
@@ -368,7 +648,11 @@ export abstract class BaseScraper {
             sourcePortal: data.sourcePortal,
           },
         },
-        select: { id: true, updatedAt: true },
+        // Widened from { id, updatedAt } so an existing row can be compared
+        // field-by-field against what we are about to write. `updatedAt` cannot
+        // serve this purpose: Prisma's @updatedAt bumps on every update, even a
+        // write of identical values, so it never indicates a real change.
+        select: TENDER_COMPARE_SELECT,
       });
 
       const tenderData = {
@@ -398,6 +682,11 @@ export abstract class BaseScraper {
         emdExemptMSME: data.emdExemptMSME ?? false,
       };
 
+      // Does this write actually change anything an Elasticsearch document
+      // would reflect? New rows always do. For existing rows, compare the
+      // values we are about to write against what is stored.
+      const contentChanged = !existing || hasTenderChanged(existing, tenderData);
+
       const result = await this.prisma.tender.upsert({
         where: {
           sourceId_sourcePortal: {
@@ -408,6 +697,13 @@ export abstract class BaseScraper {
         create: tenderData,
         update: tenderData,
       });
+
+      // Queue for Elasticsearch sync only when the content really moved, so an
+      // unchanged tender costs no indexing work. Flushed per listing page via
+      // flushTenderIndexQueue() (one addBulk), with a final flush in cleanup().
+      if (contentChanged) {
+        this.pendingIndexIds.push(result.id);
+      }
 
       // Save documents if provided
       if (data.documents && data.documents.length > 0) {
@@ -440,7 +736,7 @@ export abstract class BaseScraper {
         { id: result.id, sourcePortal: data.sourcePortal },
       );
 
-      return { isNew, id: result.id };
+      return { isNew, id: result.id, changed: contentChanged };
     } catch (err) {
       this.handleError(err instanceof Error ? err : new Error(String(err)), {
         action: 'saveTender',
@@ -545,6 +841,9 @@ export abstract class BaseScraper {
    * Disconnect Prisma and clean up resources.
    */
   async cleanup(): Promise<void> {
+    // Safety net: publish anything a scrape loop did not flush per page, so no
+    // changed tender is left unqueued.
+    await this.flushTenderIndexQueue(`${this.portalName}:cleanup`);
     await this.closeBrowser();
     await this.prisma.$disconnect();
   }

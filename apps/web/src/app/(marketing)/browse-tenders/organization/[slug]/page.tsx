@@ -1,5 +1,6 @@
 import { Metadata } from 'next';
 import Link from 'next/link';
+import { OrgStatsRow } from './org-stats-row';
 
 /* ------------------------------------------------------------------ */
 /* Data                                                               */
@@ -230,13 +231,14 @@ export function generateStaticParams() {
   return ORGANIZATIONS.map((org) => ({ slug: org.slug }));
 }
 
-export function generateMetadata({
+export async function generateMetadata({
   params,
 }: {
-  params: { slug: string };
-}): Metadata {
-  const org = getOrgBySlug(params.slug);
-  const name = org?.name ?? params.slug.toUpperCase();
+  params: Promise<{ slug: string }>;
+}): Promise<Metadata> {
+  const { slug } = await params;
+  const org = getOrgBySlug(slug);
+  const name = org?.name ?? slug.toUpperCase();
   const fullName = org?.fullName ?? name;
   return {
     title: `${name} Tenders 2026 — Latest Opportunities`,
@@ -252,12 +254,13 @@ export function generateMetadata({
 /* Page                                                               */
 /* ------------------------------------------------------------------ */
 
-export default function OrganizationPage({
+export default async function OrganizationPage({
   params,
 }: {
-  params: { slug: string };
+  params: Promise<{ slug: string }>;
 }) {
-  const org = getOrgBySlug(params.slug);
+  const { slug } = await params;
+  const org = getOrgBySlug(slug);
 
   if (!org) {
     return (
@@ -278,32 +281,7 @@ export default function OrganizationPage({
   const tenders = getMockOrgTenders(org);
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Nav */}
-      <nav className="sticky top-0 z-40 border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
-        <div className="container mx-auto px-4">
-          <div className="flex items-center justify-between h-14">
-            <Link href="/" className="font-bold text-xl text-primary-500">
-              TenderBazaar
-            </Link>
-            <div className="flex items-center gap-4">
-              <Link
-                href="/login"
-                className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
-              >
-                Log in
-              </Link>
-              <Link
-                href="/register"
-                className="inline-flex items-center justify-center rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600 transition-colors"
-              >
-                Sign up free
-              </Link>
-            </div>
-          </div>
-        </div>
-      </nav>
-
+    <div className="min-h-screen bg-background pt-16 sm:pt-20">
       <div className="container mx-auto px-4 py-8">
         {/* Breadcrumb */}
         <nav aria-label="Breadcrumb" className="mb-6">
@@ -359,27 +337,13 @@ export default function OrganizationPage({
           </div>
         </section>
 
-        {/* Stats */}
-        <section className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-10">
-          <div className="bg-card border border-border rounded-xl p-5">
-            <p className="text-sm text-muted-foreground mb-1">Total Tenders</p>
-            <p className="text-2xl font-bold text-foreground">
-              {formatINR(org.totalTenders)}
-            </p>
-          </div>
-          <div className="bg-card border border-border rounded-xl p-5">
-            <p className="text-sm text-muted-foreground mb-1">Active Tenders</p>
-            <p className="text-2xl font-bold text-accent-500">
-              {formatINR(org.activeTenders)}
-            </p>
-          </div>
-          <div className="bg-card border border-border rounded-xl p-5">
-            <p className="text-sm text-muted-foreground mb-1">Avg. Tender Value</p>
-            <p className="text-2xl font-bold text-primary-500">
-              &#8377;{formatINR(org.avgValue)}
-            </p>
-          </div>
-        </section>
+        {/* Real Dynamic Stats */}
+        <OrgStatsRow
+          orgName={org.name}
+          fallbackTotal={org.totalTenders}
+          fallbackActive={org.activeTenders}
+          fallbackAvgValue={org.avgValue}
+        />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Tender list */}
@@ -416,7 +380,7 @@ export default function OrganizationPage({
                   </span>
                 </div>
                 <Link
-                  href={`/dashboard/tenders/${tender.id}`}
+                  href={`/tenders/${tender.id}`}
                   className="inline-flex items-center text-sm font-semibold text-primary-500 hover:text-primary-600 transition-colors"
                 >
                   View Details &rarr;

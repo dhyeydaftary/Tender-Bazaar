@@ -3,31 +3,110 @@ import bcrypt from 'bcryptjs';
 
 const prisma = new PrismaClient();
 
-async function main() {
-  console.log('🌱 Seeding database...');
+const isProduction = process.env.NODE_ENV === 'production';
 
-  // ── Admin Users ────────────────────────────────────────────────────
-  const adminUsers = [
+/**
+ * Demo content (sample tenders) is development-only unless explicitly asked
+ * for. Subscription plans are NOT demo data - they are product configuration
+ * and are always upserted.
+ */
+const seedDemoData =
+  (process.env.SEED_DEMO_DATA ?? (isProduction ? 'false' : 'true')) === 'true';
+
+type SeedAdmin = {
+  name: string;
+  email: string;
+  password: string;
+  role: 'SUPER_ADMIN' | 'ADMIN';
+};
+
+/**
+ * Administrator accounts to create when they are missing.
+ *
+ * This block previously ran `user.upsert` with `update: { passwordHash }`, and
+ * db-init ran the seed on every `docker compose up`, so each deploy or restart
+ * reset both administrator passwords back to values hardcoded in this file -
+ * silently undoing any password an operator had set, using credentials that
+ * are public in the repository.
+ *
+ * Now:
+ *   - existing accounts are never touched (no password, no role rewrite);
+ *   - accounts are only ever created when absent;
+ *   - outside development nothing is created unless the operator supplies
+ *     SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD explicitly, so no credential
+ *     from this file can ever reach production.
+ */
+function resolveSeedAdmins(): SeedAdmin[] {
+  const email = process.env.SEED_ADMIN_EMAIL?.trim();
+  const password = process.env.SEED_ADMIN_PASSWORD;
+
+  if (email && password) {
+    if (password.length < 12) {
+      throw new Error('SEED_ADMIN_PASSWORD must be at least 12 characters long.');
+    }
+    return [
+      {
+        name: process.env.SEED_ADMIN_NAME?.trim() || 'Administrator',
+        email,
+        password,
+        role: 'SUPER_ADMIN',
+      },
+    ];
+  }
+
+  if (isProduction) return [];
+
+  // Development fixtures only - never applied to an existing account, and
+  // unreachable when NODE_ENV=production.
+  return [
     {
       name: 'Parth Savajadiya',
       email: 'superadmin@tenderbazaar.com',
       password: 'SuperAdmin@123',
-      role: 'SUPER_ADMIN' as const,
+      role: 'SUPER_ADMIN',
     },
     {
       name: 'Karthik Iyer',
       email: 'admin@tenderbazaar.com',
       password: 'Admin@123',
-      role: 'ADMIN' as const,
+      role: 'ADMIN',
     },
   ];
+}
+
+async function main() {
+  console.log('Seeding database...');
+  console.log(
+    `  mode: ${isProduction ? 'production' : 'development'}; demo data: ${
+      seedDemoData ? 'enabled' : 'disabled'
+    }`,
+  );
+
+  // Admin users - created only when missing, never overwritten.
+  const adminUsers = resolveSeedAdmins();
+
+  if (adminUsers.length === 0) {
+    console.log(
+      '  Skipped: no administrator seeded (set SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD to create one).',
+    );
+  }
 
   for (const admin of adminUsers) {
-    const passwordHash = await bcrypt.hash(admin.password, 12);
-    await prisma.user.upsert({
+    const existing = await prisma.user.findUnique({
       where: { email: admin.email },
-      update: { role: admin.role, passwordHash },
-      create: {
+      select: { id: true, role: true },
+    });
+
+    if (existing) {
+      console.log(
+        `  Unchanged: administrator ${admin.email} already exists (role ${existing.role}); password left as-is.`,
+      );
+      continue;
+    }
+
+    const passwordHash = await bcrypt.hash(admin.password, 12);
+    await prisma.user.create({
+      data: {
         name: admin.name,
         email: admin.email,
         passwordHash,
@@ -35,7 +114,7 @@ async function main() {
         isEmailVerified: true,
       },
     });
-    console.log(`  ✅ Admin: ${admin.email} (${admin.role})`);
+    console.log(`  Created: administrator ${admin.email} (${admin.role})`);
   }
 
   // Upsert subscription plans — matches exact spec
@@ -52,7 +131,17 @@ async function main() {
       paginationAllowed: false,
       advancedFilters: false,
       // Alerts
-      maxAlerts: 0,
+      //
+      // CLAUDE.md documents the Free plan as allowing 1 alert; this seed said 0,
+      // so `requireLimit('maxAlerts')` rejected every Free-user alert creation
+      // with "limit for maxAlerts (0/0)" before the handler ran — which is why
+      // My Alerts appeared broken for Free accounts. Aligned with the documented
+      // product rule.
+      //
+      // NOTE: the live database row still has maxAlerts = 0. Seeds only apply to
+      // a fresh/reseeded database, so existing environments keep the old value
+      // until that row is updated separately (deliberately not done here).
+      maxAlerts: 1,
       emailAlerts: false,
       pushAlerts: false,
       whatsappAlerts: false,
@@ -1623,12 +1712,17 @@ async function main() {
     },
   ];
 
-  await prisma.tender.createMany({
-    data: tenders,
-    skipDuplicates: true,
-  });
-
-  console.log(`  ✅ Seeded ${tenders.length} sample tenders`);
+  if (!seedDemoData) {
+    console.log(
+      `  Skipped: ${tenders.length} demo tenders (SEED_DEMO_DATA is not "true").`,
+    );
+  } else {
+    await prisma.tender.createMany({
+      data: tenders,
+      skipDuplicates: true,
+    });
+    console.log(`  Seeded ${tenders.length} sample tenders`);
+  }
 
   console.log('✅ Seeding complete!');
 }

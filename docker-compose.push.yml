@@ -1,0 +1,35 @@
+# ───────────────────────────────────────────────────────────────────────────
+# Push notifications — OPT-IN overlay.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+#                  -f docker-compose.push.yml up -d
+#
+# Kept separate from docker-compose.prod.yml on purpose. A bind mount whose
+# source file does not exist makes `docker compose up` FAIL, so declaring this
+# mount unconditionally would stop notification-service — and with it email,
+# SMS and WhatsApp — on every deployment that does not use push. Push is an
+# optional channel and must not be able to take the others down.
+#
+# Before using this file:
+#   mkdir -p ./secrets
+#   cp <downloaded>.json ./secrets/firebase-service-account.json
+#   chmod 400 ./secrets/firebase-service-account.json
+#
+# ./secrets/ is git-ignored. The key is never copied into an image, and never
+# passed as an environment variable (which would leak it into `docker inspect`).
+# See docs/DEPLOYMENT.md § Push notification setup.
+# ───────────────────────────────────────────────────────────────────────────
+services:
+  notification-service:
+    volumes:
+      - type: bind
+        source: ./secrets/firebase-service-account.json
+        target: /run/secrets/firebase-service-account.json
+        read_only: true
+        bind:
+          # false: a missing key must fail loudly here rather than have Docker
+          # silently create a DIRECTORY at the target, which would surface much
+          # later as a confusing JSON parse error.
+          create_host_path: false
+    environment:
+      FIREBASE_SERVICE_ACCOUNT_PATH: /run/secrets/firebase-service-account.json

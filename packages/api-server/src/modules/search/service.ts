@@ -1,4 +1,5 @@
 import redis from '../../config/redis';
+import { prisma } from '../../config/database';
 import { AppError } from '../../shared/middleware/error-handler';
 import { randomUUID } from 'crypto';
 
@@ -79,6 +80,21 @@ export const searchService = {
     const key = `recent-searches:${userId}`;
     const items = await redis.lrange(key, 0, 9);
     return items.map((item) => JSON.parse(item) as RecentSearch);
+  },
+
+  /**
+   * Durable search history from the SearchHistory table (written by the tender
+   * search endpoint). Unlike `getRecentSearches`, which reads a 10-item Redis
+   * list that is lost on cache eviction, this survives restarts and carries the
+   * result count — which is what the dashboard and the search page show.
+   */
+  async getSearchHistory(userId: string, limit = 10) {
+    return prisma.searchHistory.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      select: { id: true, query: true, resultCount: true, createdAt: true },
+    });
   },
 
   async recordSearch(userId: string, query: string): Promise<void> {

@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import {
   Search,
   Brain,
@@ -15,9 +16,12 @@ import {
   Check,
   X as XIcon,
   ChevronRight,
+  ChevronLeft,
   ArrowRight,
   Star,
   Play,
+  Pause,
+  RotateCcw,
   Shield,
   CreditCard,
   Clock,
@@ -41,6 +45,7 @@ import {
   ExternalLink,
 } from 'lucide-react';
 import { cn, formatIndianNumber } from '@/lib/utils';
+import { useTenderCounts, useTenderSearch } from '@/lib/hooks/use-tenders';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    HOOKS
@@ -173,18 +178,21 @@ const FEATURES = [
     title: 'Tender Results',
     description:
       'Track awarded tenders, analyze winners, and learn from competition.',
+    accent: 'from-amber-500/20 to-transparent',
   },
   {
     icon: Download,
     title: 'Document Downloads',
     description:
       'Download NITs, BOQs, and tender documents with one click.',
+    accent: 'from-emerald-500/20 to-transparent',
   },
   {
     icon: Smartphone,
     title: 'Mobile App',
     description:
       'Full-featured iOS and Android app. Manage tenders on the go.',
+    accent: 'from-purple-500/20 to-transparent',
   },
 ];
 
@@ -598,10 +606,423 @@ function StatCounter({
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
+   WATCH DEMO MODAL
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+interface DemoStep {
+  id: string;
+  title: string;
+  badge: string;
+  summary: string;
+  icon: typeof Search;
+  points: string[];
+}
+
+const DEMO_STEPS: DemoStep[] = [
+  {
+    id: 'search',
+    title: 'Smart Tender Discovery',
+    badge: '50+ Portals in Real-Time',
+    summary: 'Search through 50,000+ government tenders aggregated every 30 minutes from GeM, CPPP, and all state e-procurement portals.',
+    icon: Search,
+    points: [
+      'Multi-portal unified search across Central, State & PSU tenders',
+      'Filter by state, category (Works, Goods, Services), value and deadline',
+      'Track active vs. expiring tenders with intelligent keyword synonym matching',
+    ],
+  },
+  {
+    id: 'eligibility',
+    title: 'AI Eligibility Scoring',
+    badge: 'Know Before You Bid',
+    summary: 'Our proprietary AI scans RFP requirements against your business profile to evaluate your match score before you spend weeks bidding.',
+    icon: Brain,
+    points: [
+      'Instant financial turnover & net worth criteria verification',
+      'Past project experience & technical credential checklist check',
+      'Identifies MSME, Startup & Make in India exemption opportunities',
+    ],
+  },
+  {
+    id: 'alerts',
+    title: 'Instant Multi-Channel Alerts',
+    badge: '24/7 Portal Watchdog',
+    summary: 'Receive immediate alerts the minute tenders matching your precise criteria drop on any government portal.',
+    icon: Bell,
+    points: [
+      'Direct WhatsApp, Email and SMS notifications for high-priority matches',
+      'Automatic corrigendum & addendum tracking on bookmarked tenders',
+      'Daily curated opportunity digest sent directly to your team',
+    ],
+  },
+  {
+    id: 'assistant',
+    title: 'Bid Assistant & Document AI',
+    badge: 'Save 5+ Hours Per Bid',
+    summary: 'AI analyzes 200+ page tender documents in seconds, extracting critical deadlines, EMD, PBG terms, and generating compliance checklists.',
+    icon: FileText,
+    points: [
+      'Automatic extraction of EMD amount, tender fee and bid submission dates',
+      'Step-by-step mandatory document checklist with readiness indicators',
+      'BoQ (Bill of Quantities) item classification and estimation helpers',
+    ],
+  },
+];
+
+function DemoModal({ onClose }: { onClose: () => void }) {
+  const [activeStep, setActiveStep] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(true);
+
+  // Auto-advance if playing
+  useEffect(() => {
+    if (!isPlaying) return;
+    const timer = setInterval(() => {
+      setActiveStep((prev) => (prev + 1) % DEMO_STEPS.length);
+    }, 4500);
+    return () => clearInterval(timer);
+  }, [isPlaying]);
+
+  // Handle escape key
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  const current = DEMO_STEPS[activeStep];
+  const StepIcon = current.icon;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 lg:p-8 bg-black/80 backdrop-blur-md animate-fade-in"
+      onClick={onClose}
+    >
+      <div
+        className="relative w-full max-w-4xl bg-card border border-border rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Top Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border bg-card/90">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-primary-500/10 text-primary-500 flex items-center justify-center">
+              <Play className="w-4 h-4 fill-primary-500" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base font-bold text-foreground">TenderBazaar Product Demo</h3>
+                <span className="text-[10px] font-semibold tracking-wider uppercase px-2 py-0.5 rounded-full bg-primary-500/10 text-primary-500 border border-primary-500/20">
+                  Interactive Preview
+                </span>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Step {activeStep + 1} of {DEMO_STEPS.length}: {current.title}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsPlaying((p) => !p)}
+              className="text-xs px-2.5 py-1.5 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-muted flex items-center gap-1.5 transition-colors"
+              title={isPlaying ? 'Pause Auto-Play' : 'Resume Auto-Play'}
+            >
+              {isPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+              <span className="hidden sm:inline">{isPlaying ? 'Pause' : 'Play'}</span>
+            </button>
+            <button
+              onClick={onClose}
+              className="w-8 h-8 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted flex items-center justify-center transition-colors"
+              aria-label="Close demo"
+            >
+              <XIcon className="w-5 h-5" />
+            </button>
+          </div>
+        </div>
+
+        {/* Step Navigation Tabs */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 border-b border-border bg-muted/30">
+          {DEMO_STEPS.map((s, idx) => {
+            const Icon = s.icon;
+            const isActive = idx === activeStep;
+            return (
+              <button
+                key={s.id}
+                onClick={() => {
+                  setActiveStep(idx);
+                  setIsPlaying(false);
+                }}
+                className={cn(
+                  'flex items-center gap-2 px-3 py-3 text-xs font-medium transition-all text-left border-b-2 sm:border-b-0 sm:border-r border-border last:border-r-0',
+                  isActive
+                    ? 'bg-card text-foreground border-b-primary-500 font-semibold'
+                    : 'text-muted-foreground hover:text-foreground hover:bg-muted/50 border-b-transparent'
+                )}
+              >
+                <div
+                  className={cn(
+                    'w-6 h-6 rounded-md flex items-center justify-center shrink-0',
+                    isActive ? 'bg-primary-500 text-white' : 'bg-muted text-muted-foreground'
+                  )}
+                >
+                  <Icon className="w-3.5 h-3.5" />
+                </div>
+                <span className="truncate">{s.title}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Main Body Preview */}
+        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+          {/* Step Hero Summary */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-muted/40 p-4 rounded-xl border border-border">
+            <div>
+              <span className="inline-block text-[11px] font-semibold text-primary-500 uppercase tracking-wider mb-1">
+                {current.badge}
+              </span>
+              <h4 className="text-lg font-bold text-foreground">{current.title}</h4>
+              <p className="text-sm text-muted-foreground mt-1 max-w-xl">{current.summary}</p>
+            </div>
+            <div className="shrink-0 flex items-center gap-2">
+              <span className="text-xs text-muted-foreground font-mono">{activeStep + 1} / {DEMO_STEPS.length}</span>
+            </div>
+          </div>
+
+          {/* Interactive Screen Simulation */}
+          <div className="bg-background border border-border rounded-xl p-5 shadow-inner">
+            {activeStep === 0 && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-3 bg-card border border-border rounded-xl px-4 py-3">
+                  <Search className="w-4 h-4 text-primary-500 shrink-0" />
+                  <span className="text-sm font-medium text-foreground">Road construction NHAI Gujarat</span>
+                  <span className="ml-auto text-xs font-mono text-accent-500 bg-accent-500/10 px-2.5 py-0.5 rounded-full">
+                    34 Active Matches
+                  </span>
+                </div>
+                <div className="space-y-2.5">
+                  <div className="p-3.5 bg-card border border-border rounded-lg flex items-center justify-between gap-4 border-l-4 border-l-red-500">
+                    <div>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+                        <span className="bg-red-500/10 text-red-500 font-semibold px-2 py-0.5 rounded text-[10px]">WORKS</span>
+                        <span>NHAI-2026-GUJ-892</span>
+                        <span>· Gujarat</span>
+                      </div>
+                      <p className="text-sm font-semibold text-foreground">Four Laning of NH-48 Highway Junction from Ahmedabad</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-sm font-mono font-bold text-foreground">₹345 Cr</p>
+                      <p className="text-xs text-accent-500 font-medium">AI Match: 92%</p>
+                    </div>
+                  </div>
+                  <div className="p-3.5 bg-card border border-border rounded-lg flex items-center justify-between gap-4 border-l-4 border-l-blue-500">
+                    <div>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground mb-1">
+                        <span className="bg-blue-500/10 text-blue-500 font-semibold px-2 py-0.5 rounded text-[10px]">GOODS</span>
+                        <span>RITES-2026-RAIL-01</span>
+                        <span>· New Delhi</span>
+                      </div>
+                      <p className="text-sm font-semibold text-foreground">Supply of Structural Steel & Rail Track Materials</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-sm font-mono font-bold text-foreground">₹89 Cr</p>
+                      <p className="text-xs text-accent-500 font-medium">AI Match: 88%</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeStep === 1 && (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-card border border-border rounded-xl p-4 flex flex-col items-center justify-center text-center">
+                  <div className="w-20 h-20 rounded-full border-4 border-accent-500 flex items-center justify-center bg-accent-500/10 mb-2">
+                    <span className="text-2xl font-bold font-mono text-accent-500">87%</span>
+                  </div>
+                  <p className="text-sm font-bold text-foreground">High Eligibility</p>
+                  <p className="text-xs text-muted-foreground mt-0.5">Recommended to bid</p>
+                </div>
+                <div className="md:col-span-2 bg-card border border-border rounded-xl p-4 space-y-2.5">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Criteria Breakdown</p>
+                  <div className="flex items-center justify-between text-xs py-1 border-b border-border">
+                    <span className="text-foreground">Annual Turnover (Req: ₹25 Cr)</span>
+                    <span className="font-semibold text-accent-500">Your profile: ₹34 Cr (PASS)</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs py-1 border-b border-border">
+                    <span className="text-foreground">Similar Project Experience (Req: 2)</span>
+                    <span className="font-semibold text-accent-500">3 Verified (PASS)</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs py-1 border-b border-border">
+                    <span className="text-foreground">Contractor Registration</span>
+                    <span className="font-semibold text-accent-500">Class 1 PWD Valid (PASS)</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs py-1">
+                    <span className="text-foreground">EMD Exemption Eligibility</span>
+                    <span className="font-semibold text-primary-500">MSME Udyam Exemption (ACTIVE)</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeStep === 2 && (
+              <div className="space-y-3">
+                <div className="bg-card border border-border rounded-xl p-4 flex items-start gap-3">
+                  <div className="w-9 h-9 rounded-lg bg-green-500/10 text-green-500 flex items-center justify-center shrink-0">
+                    <MessageCircle className="w-5 h-5" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-bold text-foreground">WhatsApp Instant Alert &middot; Just Now</p>
+                      <span className="text-[10px] text-muted-foreground">Automated</span>
+                    </div>
+                    <p className="text-sm font-medium text-foreground mt-1">
+                      New High-Match Tender: AIIMS Delhi Medical Equipment Supply (₹2.4 Cr)
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Match Score: 94% &middot; Closes in 12 days &middot; Zero EMD required for your profile.
+                    </p>
+                  </div>
+                </div>
+                <div className="bg-card border border-border rounded-xl p-4 flex items-start gap-3">
+                  <div className="w-9 h-9 rounded-lg bg-primary-500/10 text-primary-500 flex items-center justify-center shrink-0">
+                    <Mail className="w-5 h-5" />
+                  </div>
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-bold text-foreground">Daily Email Digest &middot; 8:00 AM</p>
+                      <span className="text-[10px] text-muted-foreground">Daily Briefing</span>
+                    </div>
+                    <p className="text-sm font-medium text-foreground mt-1">
+                      14 fresh tenders matching your sector keywords published across Gujarat & Maharashtra.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeStep === 3 && (
+              <div className="space-y-3">
+                <div className="p-4 bg-card border border-border rounded-xl">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-semibold text-foreground flex items-center gap-1.5">
+                      <FileText className="w-4 h-4 text-primary-500" />
+                      NIT-Document-Analysis: NHAI-WORKS-2026.pdf (142 Pages)
+                    </span>
+                    <span className="text-xs text-accent-500 font-mono font-semibold">100% Extracted</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center mt-3">
+                    <div className="bg-muted p-2 rounded-lg">
+                      <p className="text-[10px] text-muted-foreground uppercase">Tender Fee</p>
+                      <p className="text-xs font-bold font-mono text-foreground">₹10,000</p>
+                    </div>
+                    <div className="bg-muted p-2 rounded-lg">
+                      <p className="text-[10px] text-muted-foreground uppercase">EMD Amount</p>
+                      <p className="text-xs font-bold font-mono text-foreground">₹4.8 Lakh</p>
+                    </div>
+                    <div className="bg-muted p-2 rounded-lg">
+                      <p className="text-[10px] text-muted-foreground uppercase">PBG Required</p>
+                      <p className="text-xs font-bold font-mono text-foreground">5%</p>
+                    </div>
+                    <div className="bg-muted p-2 rounded-lg">
+                      <p className="text-[10px] text-muted-foreground uppercase">Submission Due</p>
+                      <p className="text-xs font-bold font-mono text-foreground">28 Oct 2026</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Key Advantages Checklist */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {current.points.map((pt, i) => (
+              <div key={i} className="flex items-start gap-2 text-xs text-muted-foreground bg-muted/30 p-2.5 rounded-lg border border-border">
+                <Check className="w-4 h-4 text-accent-500 shrink-0 mt-0.5" />
+                <span>{pt}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Modal Footer */}
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-4 px-6 py-4 border-t border-border bg-card/90">
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                setActiveStep((prev) => (prev - 1 + DEMO_STEPS.length) % DEMO_STEPS.length);
+                setIsPlaying(false);
+              }}
+              className="p-2 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              aria-label="Previous step"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <div className="flex items-center gap-1.5 px-2">
+              {DEMO_STEPS.map((_, i) => (
+                <button
+                  key={i}
+                  onClick={() => {
+                    setActiveStep(i);
+                    setIsPlaying(false);
+                  }}
+                  className={cn(
+                    'h-1.5 rounded-full transition-all',
+                    i === activeStep ? 'w-6 bg-primary-500' : 'w-2 bg-border hover:bg-muted-foreground'
+                  )}
+                  aria-label={`Go to slide ${i + 1}`}
+                />
+              ))}
+            </div>
+            <button
+              onClick={() => {
+                setActiveStep((prev) => (prev + 1) % DEMO_STEPS.length);
+                setIsPlaying(false);
+              }}
+              className="p-2 rounded-lg border border-border text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              aria-label="Next step"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+
+          <div className="flex items-center gap-3 w-full sm:w-auto">
+            <button
+              onClick={onClose}
+              className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl border border-border text-sm font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-colors text-center"
+            >
+              Close Demo
+            </button>
+            <Link
+              href="/register"
+              className="flex-1 sm:flex-none bg-primary-500 hover:bg-primary-600 text-white px-5 py-2.5 rounded-xl text-sm font-semibold shadow-glow flex items-center justify-center gap-2 transition-all"
+            >
+              Get Started Free
+              <ArrowRight className="w-4 h-4" />
+            </Link>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
    MAIN PAGE
    ═══════════════════════════════════════════════════════════════════════════ */
 
 export default function HomePage() {
+  const router = useRouter();
+  const counts = useTenderCounts();
+  const { result: latestSearchResult } = useTenderSearch({
+    limit: 6,
+    sortBy: 'publishedDate',
+    sortOrder: 'desc',
+  });
+  const liveTenders = latestSearchResult?.tenders && latestSearchResult.tenders.length > 0 ? latestSearchResult.tenders : null;
+
+  const [demoOpen, setDemoOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const [yearlyBilling, setYearlyBilling] = useState(true);
   const statsView = useInView(0.2);
   const featuresView = useInView(0.1);
@@ -611,8 +1032,18 @@ export default function HomePage() {
 
   const typedText = useTypingEffect(SEARCH_PHRASES, 50, 2000);
 
+  const handleSearch = (customQuery?: string) => {
+    const term = (customQuery !== undefined ? customQuery : (searchQuery || typedText)).trim();
+    if (term) {
+      router.push(`/explore-tenders?q=${encodeURIComponent(term)}`);
+    } else {
+      router.push('/explore-tenders');
+    }
+  };
+
   return (
     <>
+      {demoOpen && <DemoModal onClose={() => setDemoOpen(false)} />}
       {/* ═══════════ HERO SECTION ═══════════ */}
       <section className="relative min-h-screen flex flex-col items-center justify-center overflow-hidden bg-gradient-to-b from-background via-background to-muted/30">
         {/* Animated background elements */}
@@ -633,7 +1064,9 @@ export default function HomePage() {
               </div>
               <div>
                 <p className="text-xs text-muted-foreground">New Today</p>
-                <p className="text-sm font-bold font-mono text-foreground">+3,247</p>
+                <p className="text-sm font-bold font-mono text-foreground">
+                  +{formatIndianNumber(counts.newToday > 0 ? counts.newToday : 3247)}
+                </p>
               </div>
             </div>
           </div>
@@ -704,8 +1137,10 @@ export default function HomePage() {
           {/* Subline */}
           <p className="text-body-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-10 leading-relaxed">
             AI-powered tender discovery across{' '}
-            <span className="text-foreground font-semibold">50,000+</span> government
-            opportunities. Know your eligibility{' '}
+            <span className="text-foreground font-semibold">
+              {counts.total > 0 ? formatIndianNumber(counts.total) : '50,000+'}
+            </span>{' '}
+            government opportunities. Know your eligibility{' '}
             <span className="text-foreground font-semibold">before</span> you bid.
           </p>
 
@@ -720,7 +1155,11 @@ export default function HomePage() {
                 <ArrowRight className="w-4 h-4 transition-transform duration-200 group-hover:translate-x-1" />
               </span>
             </Link>
-            <button className="group text-foreground hover:text-foreground px-6 py-4 rounded-xl text-base font-medium transition-all duration-200 border border-border hover:border-primary-500/30 hover:bg-primary-500/5 flex items-center gap-2.5">
+            <button
+              type="button"
+              onClick={() => setDemoOpen(true)}
+              className="group text-foreground hover:text-foreground px-6 py-4 rounded-xl text-base font-medium transition-all duration-200 border border-border hover:border-primary-500/30 hover:bg-primary-500/5 flex items-center gap-2.5 cursor-pointer"
+            >
               <div className="w-8 h-8 rounded-full bg-primary-500/10 flex items-center justify-center group-hover:bg-primary-500/20 transition-colors">
                 <Play className="w-3.5 h-3.5 text-primary-500 ml-0.5" />
               </div>
@@ -748,36 +1187,50 @@ export default function HomePage() {
 
           {/* ── Live Search Bar ─────────────────────────────────────── */}
           <div className="max-w-2xl mx-auto">
-            <div className="relative group">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSearch();
+              }}
+              className="relative group"
+            >
               <div className="absolute -inset-1 bg-gradient-to-r from-primary-500/20 via-accent-500/15 to-primary-500/20 rounded-2xl blur-md opacity-50 group-hover:opacity-80 transition-opacity duration-500" />
-              <div className="relative bg-card border border-border rounded-2xl flex items-center px-5 py-4 shadow-elevated">
+              <div className="relative bg-card border border-border rounded-2xl flex items-center px-4 sm:px-5 py-3 sm:py-3.5 shadow-elevated focus-within:border-primary-500/50 focus-within:ring-2 focus-within:ring-primary-500/20 transition-all">
                 <Search className="w-5 h-5 text-primary-500 shrink-0" />
-                <div className="flex-1 ml-3 text-left">
-                  <span className="text-muted-foreground text-body-md">
-                    {typedText}
-                    <span className="inline-block w-0.5 h-5 bg-primary-500 ml-0.5 animate-pulse align-text-bottom" />
-                  </span>
-                </div>
-                <Link
-                  href="/explore-tenders"
-                  className="bg-primary-500 hover:bg-primary-600 text-white px-6 py-2.5 rounded-xl text-sm font-semibold transition-all duration-200 shadow-sm hover:shadow-glow shrink-0 ml-3 flex items-center gap-1.5"
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder={
+                    typedText
+                      ? `e.g. ${typedText}`
+                      : counts.active > 0
+                        ? `Search ${formatIndianNumber(counts.active)}+ active tenders...`
+                        : 'Search 50,000+ government tenders...'
+                  }
+                  className="flex-1 ml-3 bg-transparent text-foreground placeholder:text-muted-foreground outline-none text-sm sm:text-base"
+                />
+                <button
+                  type="submit"
+                  className="bg-primary-500 hover:bg-primary-600 text-white px-5 sm:px-6 py-2 sm:py-2.5 rounded-xl text-sm font-semibold transition-all duration-200 shadow-sm hover:shadow-glow shrink-0 ml-2 sm:ml-3 flex items-center gap-1.5 cursor-pointer"
                 >
                   <Search className="w-3.5 h-3.5" />
                   Search
-                </Link>
+                </button>
               </div>
-            </div>
+            </form>
             {/* Popular searches */}
             <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
               <span className="text-xs text-muted-foreground">Trending:</span>
               {['Road Construction', 'IT Services', 'Medical Equipment', 'Solar Energy'].map((tag) => (
-                <Link
+                <button
                   key={tag}
-                  href={`/explore-tenders?q=${encodeURIComponent(tag)}`}
-                  className="text-xs px-2.5 py-1 rounded-full bg-muted/70 text-muted-foreground hover:text-primary-500 hover:bg-primary-500/5 transition-all border border-transparent hover:border-primary-500/20"
+                  type="button"
+                  onClick={() => handleSearch(tag)}
+                  className="text-xs px-2.5 py-1 rounded-full bg-muted/70 text-muted-foreground hover:text-primary-500 hover:bg-primary-500/5 transition-all border border-transparent hover:border-primary-500/20 cursor-pointer"
                 >
                   {tag}
-                </Link>
+                </button>
               ))}
             </div>
           </div>
@@ -791,7 +1244,11 @@ export default function HomePage() {
                 <div className="w-9 h-9 rounded-lg flex items-center justify-center mx-auto mb-2 text-primary-500 bg-primary-500/10">
                   <FileText className="w-4 h-4" />
                 </div>
-                <StatCounter target={52438} label="Active Tenders" start={statsView.inView} />
+                <StatCounter
+                  target={counts.active > 0 ? counts.active : 52438}
+                  label="Active Tenders"
+                  start={statsView.inView}
+                />
               </div>
               <div className="bg-card/80 border border-border rounded-xl p-4 text-center shadow-card hover-lift transition-all">
                 <div className="w-9 h-9 rounded-lg flex items-center justify-center mx-auto mb-2 text-blue-500 bg-blue-500/10">
@@ -803,7 +1260,12 @@ export default function HomePage() {
                 <div className="w-9 h-9 rounded-lg flex items-center justify-center mx-auto mb-2 text-accent-500 bg-accent-500/10">
                   <TrendingUp className="w-4 h-4" />
                 </div>
-                <StatCounter target={3500} label="New Daily" suffix="+" start={statsView.inView} />
+                <StatCounter
+                  target={counts.newToday > 0 ? counts.newToday : 3500}
+                  label="New Daily"
+                  suffix={counts.newToday > 0 ? '' : '+'}
+                  start={statsView.inView}
+                />
               </div>
               <div className="bg-card/80 border border-border rounded-xl p-4 text-center shadow-card hover-lift transition-all">
                 <div className="w-9 h-9 rounded-lg flex items-center justify-center mx-auto mb-2 text-purple-500 bg-purple-500/10">
@@ -865,10 +1327,11 @@ export default function HomePage() {
               const colors = CATEGORY_COLORS[tender.category];
 
               return (
-                <div
+                <Link
                   key={tender.id}
+                  href={`/tenders/${tender.id}`}
                   className={cn(
-                    'group bg-card border border-border rounded-xl p-5 shadow-card hover-lift transition-all border-l-4 cursor-pointer',
+                    'group block bg-card border border-border rounded-xl p-5 shadow-card hover-lift transition-all border-l-4 cursor-pointer text-left',
                     colors.border
                   )}
                 >
@@ -911,14 +1374,13 @@ export default function HomePage() {
                     </div>
 
                     {/* View Details arrow */}
-                    <Link
-                      href="/login"
+                    <span
                       className="shrink-0 w-9 h-9 rounded-lg bg-muted flex items-center justify-center text-muted-foreground group-hover:bg-primary-500 group-hover:text-white transition-all"
                     >
                       <ArrowRight className="h-4 w-4" />
-                    </Link>
+                    </span>
                   </div>
-                </div>
+                </Link>
               );
             })}
           </div>
@@ -942,7 +1404,9 @@ export default function HomePage() {
               </div>
               <div>
                 <p className="text-sm font-medium text-foreground">
-                  3,500+ new tenders added daily
+                  {counts.newToday > 0
+                    ? `${formatIndianNumber(counts.newToday)} fresh tenders added today`
+                    : '3,500+ new tenders added daily'}
                 </p>
                 <p className="text-xs text-muted-foreground">
                   Sign up for free to get personalized alerts matching your business
@@ -999,7 +1463,9 @@ export default function HomePage() {
 
                     <div className="flex items-center justify-between">
                       <span className="text-xs font-mono font-semibold text-foreground bg-muted px-2.5 py-1 rounded-full">
-                        {cat.count} active
+                        {counts.getCategoryCount(cat.name) > 0
+                          ? `${formatIndianNumber(counts.getCategoryCount(cat.name))} active`
+                          : `${cat.count} active`}
                       </span>
                       <span className="text-xs font-medium text-primary-500 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                         Explore
@@ -1016,10 +1482,10 @@ export default function HomePage() {
           <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
             <span className="text-sm text-muted-foreground">Popular:</span>
             {[
-              { label: 'Road Construction', href: '/explore-tenders?q=road+construction' },
-              { label: 'IT Services', href: '/explore-tenders?q=IT+services' },
-              { label: 'Medical Equipment', href: '/explore-tenders?q=medical+equipment' },
-              { label: 'Solar Energy', href: '/explore-tenders?q=solar+energy' },
+              { label: 'Road Construction', href: '/explore-tenders?q=Road+Construction' },
+              { label: 'IT Services', href: '/explore-tenders?q=IT+Services' },
+              { label: 'Medical Equipment', href: '/explore-tenders?q=Medical+Equipment' },
+              { label: 'Solar Energy', href: '/explore-tenders?q=Solar+Energy' },
               { label: 'MSME Reserved', href: '/explore-tenders?q=MSME' },
               { label: 'GeM Tenders', href: '/explore-tenders?q=GeM' },
             ].map((link) => (
@@ -1066,8 +1532,20 @@ export default function HomePage() {
                 {/* Stats Row */}
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
                   {[
-                    { label: 'New Today', value: '1,247', change: '+12%', changeColor: 'text-accent-600', icon: '📈' },
-                    { label: 'Active Tenders', value: '52,438', change: '+324', changeColor: 'text-accent-600', icon: '📋' },
+                    {
+                      label: 'New Today',
+                      value: counts.newToday > 0 ? formatIndianNumber(counts.newToday) : '1,247',
+                      change: '+12%',
+                      changeColor: 'text-accent-600',
+                      icon: '📈',
+                    },
+                    {
+                      label: 'Active Tenders',
+                      value: counts.active > 0 ? formatIndianNumber(counts.active) : '52,438',
+                      change: '+324',
+                      changeColor: 'text-accent-600',
+                      icon: '📋',
+                    },
                     { label: 'Saved', value: '23', change: '5 expiring', changeColor: 'text-amber-600', icon: '⭐' },
                     { label: 'AI Score', value: '74%', change: 'avg match', changeColor: 'text-muted-foreground', icon: '🤖' },
                   ].map((stat) => (
@@ -1089,7 +1567,7 @@ export default function HomePage() {
                     { cat: 'GOODS', catColor: 'bg-blue-100 text-blue-700', borderColor: 'border-l-blue-500', title: 'Supply of Desktop Computers for Schools', org: 'CSC SPV, MeitY', value: '₹12.8 Cr', days: '5d', daysColor: 'text-amber-600' },
                     { cat: 'SERVICES', catColor: 'bg-teal-100 text-teal-700', borderColor: 'border-l-teal-500', title: 'Cloud Infrastructure Services for NIC', org: 'NIC, Delhi', value: '₹89.2 Cr', days: '2d', daysColor: 'text-red-600' },
                   ].map((t) => (
-                    <div key={t.title} className={cn('flex items-center gap-4 bg-card border border-border rounded-xl p-3.5 hover:shadow-card-hover transition-all cursor-pointer border-l-[3px]', t.borderColor)}>
+                    <Link key={t.title} href="/explore-tenders" className={cn('flex items-center gap-4 bg-card border border-border rounded-xl p-3.5 hover:shadow-card-hover transition-all cursor-pointer border-l-[3px]', t.borderColor)}>
                       <span className={cn('px-2 py-0.5 rounded-md text-[10px] font-semibold shrink-0', t.catColor)}>
                         {t.cat}
                       </span>
@@ -1099,7 +1577,7 @@ export default function HomePage() {
                       </div>
                       <span className="text-sm font-mono text-foreground font-semibold shrink-0 hidden sm:block">{t.value}</span>
                       <span className={cn('text-xs font-semibold shrink-0 px-2 py-0.5 rounded-full bg-muted', t.daysColor)}>{t.days}</span>
-                    </div>
+                    </Link>
                   ))}
                 </div>
               </div>
@@ -1323,7 +1801,7 @@ export default function HomePage() {
                   </div>
 
                   <Link
-                    href={plan.name === 'Enterprise' ? '/contact' : '/register'}
+                    href={plan.name === 'Enterprise' ? '/contact' : `/register?plan=${plan.name.toLowerCase()}`}
                     className={cn(
                       'block text-center py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 mb-6',
                       plan.popular
@@ -1372,24 +1850,28 @@ export default function HomePage() {
           />
 
           <div ref={statesView.ref} className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-            {STATES_DATA.map((state, i) => (
-              <Link
-                key={state.name}
-                href={`/explore-tenders?state=${encodeURIComponent(state.name)}`}
-                className={cn(
-                  'group bg-card/40 border border-border rounded-lg p-4 hover:border-primary-500/30 hover:bg-card/70 transition-all duration-300',
-                  statesView.inView && 'animate-scale-in',
-                )}
-                style={{ animationDelay: `${i * 40}ms`, animationFillMode: 'backwards' }}
-              >
-                <p className="text-sm font-medium text-foreground group-hover:text-primary-500 transition-colors">
-                  {state.name}
-                </p>
-                <p className="text-caption text-muted-foreground font-mono mt-0.5">
-                  {formatIndianNumber(state.tenders)} tenders
-                </p>
-              </Link>
-            ))}
+            {STATES_DATA.map((state, i) => {
+              const stateCount = counts.getStateCount(state.name);
+              const displayCount = stateCount > 0 ? stateCount : state.tenders;
+              return (
+                <Link
+                  key={state.name}
+                  href={`/explore-tenders?state=${encodeURIComponent(state.name)}`}
+                  className={cn(
+                    'group bg-card/40 border border-border rounded-lg p-4 hover:border-primary-500/30 hover:bg-card/70 transition-all duration-300',
+                    statesView.inView && 'animate-scale-in',
+                  )}
+                  style={{ animationDelay: `${i * 40}ms`, animationFillMode: 'backwards' }}
+                >
+                  <p className="text-sm font-medium text-foreground group-hover:text-primary-500 transition-colors">
+                    {state.name}
+                  </p>
+                  <p className="text-caption text-muted-foreground font-mono mt-0.5">
+                    {formatIndianNumber(displayCount)} tenders
+                  </p>
+                </Link>
+              );
+            })}
           </div>
         </div>
       </section>

@@ -175,14 +175,21 @@ function groupNotifications(raw: ApiNotification[]): NotificationGroup[] {
 }
 
 /** Normalise alert from API response — handles both flat and nested shapes. */
+function formatCatLabel(cat?: string): string {
+  if (!cat) return '';
+  const c = cat.toLowerCase();
+  return c.charAt(0).toUpperCase() + c.slice(1);
+}
+
 function normaliseAlert(raw: any): Alert {
+  const rawCat = raw.categories?.[0] ?? raw.category ?? '';
   return {
     id: raw.id,
     name: raw.name,
     keywords: raw.keywords ?? [],
     categories: raw.categories ?? (raw.category ? [raw.category] : []),
     states: raw.states ?? (raw.state ? [raw.state] : []),
-    category: raw.categories?.[0] ?? raw.category ?? '',
+    category: formatCatLabel(rawCat),
     state: raw.states?.[0] ?? raw.state ?? '',
     frequency: raw.frequency ?? 'DAILY',
     emailEnabled: raw.emailEnabled ?? false,
@@ -445,7 +452,9 @@ function CreateAlertForm({
       <div className="px-6 py-5 space-y-5">
         {/* Alert name */}
         <div>
-          <label className="block text-caption font-medium text-foreground mb-1.5">Alert Name</label>
+          <label className="block text-caption font-medium text-foreground mb-1.5">
+            Alert Name <span className="text-red-500">*</span>
+          </label>
           <input
             type="text"
             value={name}
@@ -457,7 +466,9 @@ function CreateAlertForm({
 
         {/* Keywords */}
         <div>
-          <label className="block text-caption font-medium text-foreground mb-1.5">Keywords</label>
+          <label className="block text-caption font-medium text-foreground mb-1.5">
+            Keywords <span className="text-muted-foreground font-normal">(optional)</span>
+          </label>
           {keywords.length > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
               {keywords.map((kw) => (
@@ -477,19 +488,29 @@ function CreateAlertForm({
               ))}
             </div>
           )}
-          <input
-            type="text"
-            value={keywordInput}
-            onChange={(e) => setKeywordInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                addKeyword();
-              }
-            }}
-            placeholder="Type a keyword and press Enter"
-            className="w-full px-3 py-2.5 border border-input rounded-lg bg-background text-foreground placeholder:text-muted-foreground text-body-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
-          />
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={keywordInput}
+              onChange={(e) => setKeywordInput(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  addKeyword();
+                }
+              }}
+              placeholder="Type a keyword and press Enter or click Add"
+              className="flex-1 px-3 py-2.5 border border-input rounded-lg bg-background text-foreground placeholder:text-muted-foreground text-body-sm focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+            />
+            <button
+              type="button"
+              onClick={addKeyword}
+              disabled={!keywordInput.trim()}
+              className="px-4 py-2.5 bg-muted hover:bg-muted/80 text-foreground text-caption font-medium rounded-lg border border-border disabled:opacity-50 disabled:cursor-not-allowed transition-colors cursor-pointer"
+            >
+              Add
+            </button>
+          </div>
         </div>
 
         {/* Category + State row */}
@@ -619,15 +640,34 @@ function CreateAlertForm({
           Cancel
         </button>
         <button
-          disabled={!name.trim() || isSaving}
+          disabled={isSaving}
           onClick={async () => {
+            const finalName =
+              name.trim() ||
+              (category
+                ? `${category} Tenders${state ? ` (${state})` : ''}`
+                : keywords[0]
+                ? `${keywords[0]} Alerts`
+                : 'My Tender Alert');
+
+            if (minValue && maxValue && Number(minValue) > Number(maxValue)) {
+              toast.error('Minimum value cannot be greater than Maximum value');
+              return;
+            }
+
+            // Include any typed keyword in the input box that hasn't been submitted yet
+            const finalKeywords = [...keywords];
+            if (keywordInput.trim() && !finalKeywords.includes(keywordInput.trim())) {
+              finalKeywords.push(keywordInput.trim());
+            }
+
             setIsSaving(true);
             try {
               const payload = {
-                name: name.trim(),
-                keywords,
-                categories: category ? [category] : [],
-                states: state ? [state] : [],
+                name: finalName,
+                keywords: finalKeywords,
+                categories: category ? [category.toUpperCase()] : [],
+                states: state && state !== 'All India' ? [state] : [],
                 minValue: minValue ? Number(minValue) : undefined,
                 maxValue: maxValue ? Number(maxValue) : undefined,
                 frequency,
@@ -643,7 +683,7 @@ function CreateAlertForm({
               setIsSaving(false);
             }
           }}
-          className="px-5 py-2 text-body-sm font-medium bg-primary-500 hover:bg-primary-600 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          className="px-5 py-2 text-body-sm font-medium bg-primary-500 hover:bg-primary-600 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 cursor-pointer shadow-sm active:scale-95"
         >
           {isSaving ? (
             <Loader2 className="h-4 w-4 animate-spin" />
@@ -728,16 +768,30 @@ export default function AlertsPage() {
   /* ─── Create / Update Alert ─── */
 
   const handleSaveAlert = async (payload: any, id?: string) => {
-    if (id) {
-      const res = await api.patch(`/alerts/${id}`, payload);
-      const updated = normaliseAlert(res.data.data);
-      setAlerts((prev) => prev.map((a) => (a.id === id ? updated : a)));
-      toast.success('Alert updated');
-    } else {
-      const res = await api.post('/alerts', payload);
-      const created = normaliseAlert(res.data.data);
-      setAlerts((prev) => [created, ...prev]);
-      toast.success('Alert created');
+    // The caller's catch assumed this function toasted its own errors, but it
+    // never did — so a 403 (plan limit) or a 400 (validation) rejected into an
+    // empty catch and the user saw nothing happen at all. Report the real
+    // server message, then rethrow so the form keeps itself open.
+    try {
+      if (id) {
+        const res = await api.patch(`/alerts/${id}`, payload);
+        const updated = normaliseAlert(res.data.data);
+        setAlerts((prev) => prev.map((a) => (a.id === id ? updated : a)));
+        toast.success('Alert updated');
+      } else {
+        const res = await api.post('/alerts', payload);
+        const created = normaliseAlert(res.data.data);
+        setAlerts((prev) => [created, ...prev]);
+        toast.success('Alert created');
+      }
+    } catch (err: any) {
+      const detail = err?.response?.data?.error?.details?.[0]?.message;
+      toast.error(
+        detail ||
+          err?.response?.data?.error?.message ||
+          (id ? 'Failed to update alert' : 'Failed to create alert'),
+      );
+      throw err;
     }
   };
 
@@ -751,7 +805,10 @@ export default function AlertsPage() {
       prev.map((a) => (a.id === id ? { ...a, isActive: !a.isActive } : a)),
     );
     try {
-      await api.patch(`/alerts/${id}`, { isActive: !target.isActive });
+      // Must be the dedicated toggle route: updateAlertSchema has no isActive
+      // field, so PATCH /alerts/:id silently stripped it and the toggle never
+      // persisted — it only ever looked like it worked, until a refresh.
+      await api.patch(`/alerts/${id}/toggle`, { isActive: !target.isActive });
     } catch (err: any) {
       // Revert on failure
       setAlerts((prev) =>
@@ -808,8 +865,17 @@ export default function AlertsPage() {
 
   return (
     <div>
+      {/* Subscription could not be checked — say so instead of guessing that
+          the user needs to upgrade; they may already be on a paid plan. */}
+      {alertLimit.isUnavailable && (
+        <div className="mb-6 rounded-lg border border-border bg-muted/40 px-4 py-3 text-body-sm text-muted-foreground">
+          We couldn&apos;t verify your subscription, so alert limits are unavailable right now.
+          Please refresh and try again.
+        </div>
+      )}
+
       {/* Limit banner */}
-      {!alertLimit.hasCapacity && !alertLimit.isUnlimited && (
+      {!alertLimit.isUnavailable && !alertLimit.hasCapacity && !alertLimit.isUnlimited && (
         <div className="mb-6">
           <UpgradeBanner
             feature="Tender Alerts"
@@ -826,7 +892,9 @@ export default function AlertsPage() {
           <h1 className="text-heading-lg text-foreground font-display">Smart Alerts</h1>
           <p className="text-body-sm text-muted-foreground mt-0.5">
             <span className="font-mono font-semibold text-foreground">{activeCount}</span> active alerts
-            {!alertLimit.isUnlimited && (
+            {/* Hidden when the plan is unknown — "/ 0 max" would be asserting
+                a limit we could not actually read. */}
+            {!alertLimit.isUnlimited && !alertLimit.isUnavailable && (
               <span> / {alertLimit.limit} max</span>
             )}
             {' '}&middot;{' '}
@@ -914,22 +982,24 @@ export default function AlertsPage() {
               </button>
             </div>
           ) : alerts.length === 0 ? (
-            <div className="text-center py-20">
-              <div className="w-16 h-16 rounded-2xl bg-muted/50 flex items-center justify-center mx-auto mb-4">
-                <Bell className="h-8 w-8 text-muted-foreground/40" />
+            !showCreateForm ? (
+              <div className="text-center py-20">
+                <div className="w-16 h-16 rounded-2xl bg-muted/50 flex items-center justify-center mx-auto mb-4">
+                  <Bell className="h-8 w-8 text-muted-foreground/40" />
+                </div>
+                <h3 className="text-heading-sm font-display text-foreground mb-2">No alerts yet</h3>
+                <p className="text-body-sm text-muted-foreground max-w-sm mx-auto mb-6">
+                  Create your first alert to get notified about matching tenders.
+                </p>
+                <button
+                  onClick={() => setShowCreateForm(true)}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary-500 hover:bg-primary-600 text-white font-medium rounded-lg transition-colors cursor-pointer"
+                >
+                  <Plus className="h-4 w-4" />
+                  Create Alert
+                </button>
               </div>
-              <h3 className="text-heading-sm font-display text-foreground mb-2">No alerts yet</h3>
-              <p className="text-body-sm text-muted-foreground max-w-sm mx-auto mb-6">
-                Create your first alert to get notified about matching tenders.
-              </p>
-              <button
-                onClick={() => setShowCreateForm(true)}
-                className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary-500 hover:bg-primary-600 text-white font-medium rounded-lg transition-colors"
-              >
-                <Plus className="h-4 w-4" />
-                Create Alert
-              </button>
-            </div>
+            ) : null
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
               {alerts.map((alert) => (

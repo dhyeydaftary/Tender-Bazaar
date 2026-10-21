@@ -18,10 +18,12 @@ export const dashboardService = {
       newUsersThisWeek,
       newUsersLastWeek,
       activeSubscriptions,
+      newSubscriptionsThisMonth,
       revenueThisMonth,
       revenueLastMonth,
       revenueThisYear,
       totalTenders,
+      activeTenders,
       tendersToday,
       tendersYesterday,
       tendersThisWeek,
@@ -33,6 +35,7 @@ export const dashboardService = {
         where: { createdAt: { gte: new Date(startOfWeek.getTime() - 7 * 24 * 60 * 60 * 1000), lt: startOfWeek } },
       }),
       prisma.subscription.count({ where: { status: 'ACTIVE' } }),
+      prisma.subscription.count({ where: { status: 'ACTIVE', createdAt: { gte: startOfMonth } } }),
       prisma.payment.aggregate({
         where: { status: 'SUCCESS', createdAt: { gte: startOfMonth } },
         _sum: { amount: true },
@@ -46,20 +49,21 @@ export const dashboardService = {
         _sum: { amount: true },
       }),
       prisma.tender.count(),
+      prisma.tender.count({ where: { status: 'ACTIVE' } }),
       prisma.tender.count({ where: { createdAt: { gte: startOfToday } } }),
       prisma.tender.count({ where: { createdAt: { gte: startOfYesterday, lt: startOfToday } } }),
       prisma.tender.count({ where: { createdAt: { gte: startOfWeek } } }),
       prisma.payment.count({ where: { status: 'SUCCESS' } }),
     ]);
 
-    // Subscription distribution by plan
+    // Subscription distribution by plan (including Free plan)
     const subscriptionsByPlanRaw = await prisma.subscription.groupBy({
       by: ['planId'],
       where: { status: 'ACTIVE' },
       _count: true,
     });
 
-    let subscriptionsByPlan: { plan: string; slug: string; count: number }[] = [];
+    let paidSubscriptionsByPlan: { plan: string; slug: string; count: number }[] = [];
     if (subscriptionsByPlanRaw.length > 0) {
       const planIds = subscriptionsByPlanRaw.map((s) => s.planId);
       const plans = await prisma.subscriptionPlan.findMany({
@@ -67,12 +71,18 @@ export const dashboardService = {
         select: { id: true, name: true, slug: true },
       });
       const planMap = new Map(plans.map((p) => [p.id, p]));
-      subscriptionsByPlan = subscriptionsByPlanRaw.map((s) => ({
+      paidSubscriptionsByPlan = subscriptionsByPlanRaw.map((s) => ({
         plan: planMap.get(s.planId)?.name || 'Unknown',
         slug: planMap.get(s.planId)?.slug || 'unknown',
         count: s._count,
       }));
     }
+
+    const freeUsersCount = Math.max(0, totalUsers - activeSubscriptions);
+    const subscriptionsByPlan = [
+      ...(freeUsersCount > 0 ? [{ plan: 'Free', slug: 'free', count: freeUsersCount }] : []),
+      ...paidSubscriptionsByPlan,
+    ];
 
     // MRR calculation
     const [activeMonthly, activeYearly] = await Promise.all([
@@ -100,34 +110,40 @@ export const dashboardService = {
       /* Redis unavailable */
     }
 
+    const thisMonthRev = revenueThisMonth._sum.amount || 0;
+    const lastMonthRev = revenueLastMonth._sum.amount || 0;
+
     return {
       users: {
         total: totalUsers,
         newThisWeek: newUsersThisWeek,
-        weekOverWeekChange: newUsersLastWeek > 0
-          ? Math.round(((newUsersThisWeek - newUsersLastWeek) / newUsersLastWeek) * 100)
-          : 100,
+        weekOverWeekChange:
+          newUsersLastWeek > 0
+            ? Math.round(((newUsersThisWeek - newUsersLastWeek) / newUsersLastWeek) * 100)
+            : newUsersThisWeek > 0
+            ? 100
+            : 0,
       },
       subscriptions: {
         active: activeSubscriptions,
+        newThisMonth: newSubscriptionsThisMonth,
         byPlan: subscriptionsByPlan,
       },
       revenue: {
-        thisMonth: revenueThisMonth._sum.amount || 0,
-        lastMonth: revenueLastMonth._sum.amount || 0,
+        thisMonth: thisMonthRev,
+        lastMonth: lastMonthRev,
         thisYear: revenueThisYear._sum.amount || 0,
         mrr: Math.round(mrr * 100) / 100,
         monthOverMonthChange:
-          (revenueLastMonth._sum.amount || 0) > 0
-            ? Math.round(
-                (((revenueThisMonth._sum.amount || 0) - (revenueLastMonth._sum.amount || 0)) /
-                  (revenueLastMonth._sum.amount || 1)) *
-                  100,
-              )
+          lastMonthRev > 0
+            ? Math.round(((thisMonthRev - lastMonthRev) / lastMonthRev) * 100)
+            : thisMonthRev > 0
+            ? 100
             : 0,
       },
       tenders: {
         total: totalTenders,
+        active: activeTenders,
         addedToday: tendersToday,
         addedYesterday: tendersYesterday,
         addedThisWeek: tendersThisWeek,
@@ -215,12 +231,16 @@ export const dashboardService = {
 
   async getRecentSignups(limit: number = 10) {
     const users = await prisma.user.findMany({
+      where: {
+        role: { notIn: ['ADMIN', 'SUPER_ADMIN'] },
+      },
       orderBy: { createdAt: 'desc' },
       take: limit,
       select: {
         id: true,
         name: true,
         email: true,
+        phone: true,
         createdAt: true,
         subscription: {
           select: {
@@ -233,13 +253,20 @@ export const dashboardService = {
       },
     });
 
-    return users.map((u) => ({
-      id: u.id,
-      name: u.name,
-      email: u.email,
-      plan: u.subscription?.plan?.name || 'Free',
-      company: u.companyProfile?.companyName || null,
-      joined: u.createdAt,
-    }));
+    return users.map((u) => {
+      const isPhoneUser = Boolean(u.email && u.email.endsWith('@phone.tenderbazaar.com'));
+      const displayName = isPhoneUser ? (u.phone ? `+91 ${u.phone}` : u.name) : u.name;
+      const displayEmail = isPhoneUser ? (u.phone ? `+91 ${u.phone}` : 'Phone User') : u.email;
+
+      return {
+        id: u.id,
+        name: displayName,
+        email: displayEmail,
+        phone: u.phone,
+        plan: u.subscription?.plan?.name || 'Free',
+        company: u.companyProfile?.companyName || null,
+        joined: u.createdAt,
+      };
+    });
   },
 };

@@ -1,36 +1,47 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import {
   Download,
   FileText,
-  Calendar,
   TrendingUp,
   Users,
   IndianRupee,
-  BarChart3,
-  Clock,
   RefreshCw,
   CheckCircle,
-  AlertCircle,
-  ChevronDown,
-  ChevronUp,
   Loader2,
   Database,
-  Cpu,
   Brain,
   Mail,
   ToggleLeft,
   ToggleRight,
 } from 'lucide-react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import {
+  getRevenueReport,
+  getUserReport,
+  getTenderReport,
+  getSubscriptionReport,
+  getScraperHealth,
+  getDashboardStats,
+} from '@/lib/admin-api';
+import { useAuthStore } from '@/lib/auth';
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-type ReportFormat = 'PDF' | 'CSV' | 'XLSX';
-type DateRange = 'last_7_days' | 'last_30_days' | 'last_quarter' | 'custom';
+type ReportFormat = 'CSV' | 'JSON' | 'PDF';
+type DateRange = 'last_7_days' | 'last_30_days' | 'last_quarter' | 'all_time';
 type GenerateState = 'idle' | 'generating' | 'ready';
 type ReportStatus = 'Ready' | 'Processing' | 'Failed';
+
+interface DownloadPayload {
+  filename: string;
+  content: string; // CSV string, JSON string, or data URI for PDF
+  mimeType: string;
+  format: ReportFormat;
+}
 
 interface ReportTemplate {
   id: string;
@@ -41,16 +52,19 @@ interface ReportTemplate {
   format: ReportFormat;
   dateRange: DateRange;
   state: GenerateState;
+  downloadData?: DownloadPayload;
 }
 
 interface RecentReport {
-  id: number;
+  id: string;
   name: string;
   generatedBy: string;
   date: string;
   format: ReportFormat;
   size: string;
+  sizeBytes?: number;
   status: ReportStatus;
+  downloadData?: DownloadPayload;
 }
 
 interface ScheduledReport {
@@ -63,591 +77,854 @@ interface ScheduledReport {
   active: boolean;
 }
 
-// ---------------------------------------------------------------------------
-// Mock Data
-// ---------------------------------------------------------------------------
 const DATE_RANGE_LABELS: Record<DateRange, string> = {
   last_7_days: 'Last 7 Days',
   last_30_days: 'Last 30 Days',
   last_quarter: 'Last Quarter',
-  custom: 'Custom',
+  all_time: 'All Time',
 };
+
+function getDateRangeParams(range: DateRange): { startDate: string; endDate: string } {
+  const end = new Date();
+  if (range === 'all_time') {
+    return { startDate: new Date(0).toISOString(), endDate: end.toISOString() };
+  }
+  const start = new Date();
+  if (range === 'last_7_days') {
+    start.setDate(end.getDate() - 7);
+  } else if (range === 'last_30_days') {
+    start.setDate(end.getDate() - 30);
+  } else if (range === 'last_quarter') {
+    start.setDate(end.getDate() - 90);
+  }
+  return { startDate: start.toISOString(), endDate: end.toISOString() };
+}
 
 const INITIAL_TEMPLATES: ReportTemplate[] = [
   {
-    id: 'revenue',
-    icon: <IndianRupee className="w-6 h-6" />,
-    title: 'Revenue Report',
-    description:
-      'Monthly/yearly revenue breakdown by plan, payment methods, refunds, and net revenue trends.',
-    lastGenerated: '2 days ago',
-    format: 'PDF',
-    dateRange: 'last_30_days',
-    state: 'idle',
-  },
-  {
-    id: 'user-analytics',
-    icon: <Users className="w-6 h-6" />,
-    title: 'User Analytics Report',
-    description:
-      'User growth, retention, churn rate, geographic distribution, and cohort analysis.',
-    lastGenerated: '5 days ago',
-    format: 'PDF',
-    dateRange: 'last_30_days',
-    state: 'idle',
-  },
-  {
     id: 'tender',
     icon: <FileText className="w-6 h-6" />,
-    title: 'Tender Report',
+    title: 'Tender Inventory Report',
     description:
-      'Tender volume by portal, category, and state; bid success rates and average values.',
-    lastGenerated: '1 day ago',
+      'Live database tender inventory by portal (GeM, CPPP), category (Goods, Works), state, and estimated values.',
+    lastGenerated: 'Live DB Ready',
     format: 'CSV',
-    dateRange: 'last_quarter',
+    dateRange: 'all_time',
     state: 'idle',
   },
   {
-    id: 'subscription',
+    id: 'revenue',
+    icon: <IndianRupee className="w-6 h-6" />,
+    title: 'Revenue & Billing Report',
+    description:
+      'Payment transactions, subscription plan breakdown, MRR, ARR, and payment status from PostgreSQL.',
+    lastGenerated: 'Live DB Ready',
+    format: 'CSV',
+    dateRange: 'all_time',
+    state: 'idle',
+  },
+  {
+    id: 'users',
+    icon: <Users className="w-6 h-6" />,
+    title: 'User Analytics & Signups',
+    description:
+      'Active user roster, role distribution, email verification status, and registration timeline.',
+    lastGenerated: 'Live DB Ready',
+    format: 'CSV',
+    dateRange: 'all_time',
+    state: 'idle',
+  },
+  {
+    id: 'subscriptions',
     icon: <TrendingUp className="w-6 h-6" />,
-    title: 'Subscription Report',
+    title: 'Subscription Plans & Churn',
     description:
-      'Plan distribution, upgrades, downgrades, ARPU, LTV, and MRR tracking.',
-    lastGenerated: '3 days ago',
-    format: 'XLSX',
-    dateRange: 'last_30_days',
+      'Plan distributions (Free, Starter, Professional), billing cycles, and active subscriber status.',
+    lastGenerated: 'Live DB Ready',
+    format: 'CSV',
+    dateRange: 'all_time',
     state: 'idle',
   },
   {
-    id: 'scraper',
+    id: 'scrapers',
     icon: <Database className="w-6 h-6" />,
-    title: 'Scraper Performance',
+    title: 'Scraper Health & Ingestion',
     description:
-      'Portal-wise success rates, uptime percentages, error frequency, and response times.',
-    lastGenerated: '12 hours ago',
-    format: 'PDF',
+      'Status across all 13 government tender portals, run frequencies, errors, and success counts.',
+    lastGenerated: 'Live DB Ready',
+    format: 'CSV',
     dateRange: 'last_7_days',
     state: 'idle',
   },
   {
-    id: 'ai-usage',
+    id: 'search',
     icon: <Brain className="w-6 h-6" />,
-    title: 'AI Usage Report',
+    title: 'Platform Search & Trends',
     description:
-      'Eligibility checks performed, bid assistant usage, accuracy metrics, and token consumption.',
-    lastGenerated: '4 days ago',
+      'High-demand and top-viewed tenders with traffic rankings and engagement metrics.',
+    lastGenerated: 'Live DB Ready',
     format: 'CSV',
     dateRange: 'last_30_days',
     state: 'idle',
   },
 ];
 
-const RECENT_REPORTS: RecentReport[] = [
-  { id: 1, name: 'Revenue Report - March 2026', generatedBy: 'Parth Savajadiya', date: '2026-04-09', format: 'PDF', size: '2.4 MB', status: 'Ready' },
-  { id: 2, name: 'User Analytics - Q1 2026', generatedBy: 'Priya Sharma', date: '2026-04-08', format: 'XLSX', size: '5.1 MB', status: 'Ready' },
-  { id: 3, name: 'Tender Volume - Weekly', generatedBy: 'Parth Savajadiya', date: '2026-04-07', format: 'CSV', size: '890 KB', status: 'Ready' },
-  { id: 4, name: 'Scraper Health - April W1', generatedBy: 'System (Auto)', date: '2026-04-07', format: 'PDF', size: '1.2 MB', status: 'Ready' },
-  { id: 5, name: 'Subscription Report - March', generatedBy: 'Amit Patel', date: '2026-04-05', format: 'XLSX', size: '3.7 MB', status: 'Ready' },
-  { id: 6, name: 'AI Usage Report - March', generatedBy: 'Priya Sharma', date: '2026-04-04', format: 'PDF', size: '1.8 MB', status: 'Processing' },
-  { id: 7, name: 'Revenue Report - February 2026', generatedBy: 'Parth Savajadiya', date: '2026-04-01', format: 'PDF', size: '2.1 MB', status: 'Ready' },
-  { id: 8, name: 'Tender Report - Q1 2026', generatedBy: 'Amit Patel', date: '2026-03-31', format: 'CSV', size: '4.5 MB', status: 'Ready' },
-  { id: 9, name: 'User Growth - March Cohort', generatedBy: 'Priya Sharma', date: '2026-03-30', format: 'XLSX', size: '2.9 MB', status: 'Failed' },
-  { id: 10, name: 'Weekly Revenue Summary', generatedBy: 'System (Auto)', date: '2026-03-28', format: 'PDF', size: '980 KB', status: 'Ready' },
-];
-
+/**
+ * DEMO DATA — not real scheduled reports.
+ *
+ * Nothing in this repository dispatches report emails: there is no scheduler,
+ * route or worker behind these rows, and the toggle below only changes local
+ * component state. They are retained as a UI placeholder, and the panel is
+ * labelled accordingly, because an operator could otherwise reasonably believe
+ * a "Daily Scraper Sync Audit" email was arriving every morning.
+ *
+ * To make these real, add persistence plus a dispatch job (the BullMQ repeat
+ * pattern in packages/api-server/src/queue/alert-scheduler.ts is the closest
+ * existing example) and replace this constant with a fetch.
+ */
 const INITIAL_SCHEDULED: ScheduledReport[] = [
   {
     id: 'sched-1',
-    name: 'Weekly Revenue Summary',
+    name: 'Weekly Revenue & Subscriptions',
     frequency: 'Every Monday 9:00 AM',
-    nextRun: 'Mon, Apr 14 2026 09:00 AM',
-    recipients: 'superadmin@tenderbazaar.com',
+    nextRun: 'Next Monday 09:00 AM',
+    recipients: 'admin@tenderbazaar.com',
     deliveryMethod: 'Email',
     active: true,
   },
   {
     id: 'sched-2',
-    name: 'Daily Scraper Health',
+    name: 'Daily Scraper Sync Audit',
     frequency: 'Every day 6:00 AM',
-    nextRun: 'Sat, Apr 12 2026 06:00 AM',
-    recipients: 'Admin team (5 members)',
+    nextRun: 'Tomorrow 06:00 AM',
+    recipients: 'admin@tenderbazaar.com',
     deliveryMethod: 'Email',
     active: true,
   },
   {
     id: 'sched-3',
-    name: 'Monthly User Growth',
+    name: 'Monthly Tender & User Growth',
     frequency: '1st of every month',
-    nextRun: 'Thu, May 1 2026 08:00 AM',
-    recipients: 'superadmin@tenderbazaar.com, analytics@tenderbazaar.com',
-    deliveryMethod: 'Email + Slack',
-    active: true,
-  },
-  {
-    id: 'sched-4',
-    name: 'Quarterly Business Review',
-    frequency: 'Every quarter end',
-    nextRun: 'Tue, Jun 30 2026 09:00 AM',
-    recipients: 'founders@tenderbazaar.com',
+    nextRun: '1st of next month',
+    recipients: 'admin@tenderbazaar.com',
     deliveryMethod: 'Email',
-    active: false,
+    active: true,
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-function formatBadgeColor(format: ReportFormat): string {
-  switch (format) {
-    case 'PDF':
-      return 'bg-red-500/20 text-red-400 border-red-500/30';
-    case 'CSV':
-      return 'bg-green-500/20 text-green-400 border-green-500/30';
-    case 'XLSX':
-      return 'bg-blue-500/20 text-blue-400 border-blue-500/30';
+function downloadFile(filename: string, content: string | Blob, mimeType: string) {
+  let url: string;
+  let isBlobUrl = false;
+
+  if (typeof content === 'string' && content.startsWith('data:')) {
+    url = content;
+  } else {
+    const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType });
+    url = URL.createObjectURL(blob);
+    isBlobUrl = true;
+  }
+
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+
+  if (isBlobUrl) {
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
   }
 }
 
-function statusBadge(status: ReportStatus) {
-  switch (status) {
-    case 'Ready':
-      return (
-        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-400 bg-emerald-500/15 border border-emerald-500/30 px-2.5 py-1 rounded-full">
-          <CheckCircle className="w-3 h-3" />
-          Ready
-        </span>
-      );
-    case 'Processing':
-      return (
-        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-yellow-400 bg-yellow-500/15 border border-yellow-500/30 px-2.5 py-1 rounded-full">
-          <Loader2 className="w-3 h-3 animate-spin" />
-          Processing
-        </span>
-      );
-    case 'Failed':
-      return (
-        <span className="inline-flex items-center gap-1.5 text-xs font-medium text-red-400 bg-red-500/15 border border-red-500/30 px-2.5 py-1 rounded-full">
-          <AlertCircle className="w-3 h-3" />
-          Failed
-        </span>
-      );
+function formatStorageSize(bytes: number): string {
+  if (!bytes || bytes <= 0) return '0.0 KB';
+  const gb = 1024 * 1024 * 1024;
+  const mb = 1024 * 1024;
+  const kb = 1024;
+
+  if (bytes >= gb) {
+    return `${(bytes / gb).toFixed(2)} GB`;
   }
+  if (bytes >= mb) {
+    return `${(bytes / mb).toFixed(1)} MB`;
+  }
+  return `${(bytes / kb).toFixed(1)} KB`;
 }
 
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
+function convertToCSV(data: any[]): string {
+  if (!data || data.length === 0) return 'No data available\n';
+  const headers = Object.keys(data[0]);
+  const rows = data.map((row) =>
+    headers
+      .map((h) => {
+        const val = row[h] === null || row[h] === undefined ? '' : String(row[h]);
+        return `"${val.replace(/"/g, '""')}"`;
+      })
+      .join(','),
+  );
+  return '\uFEFF' + [headers.join(','), ...rows].join('\n');
+}
+
+function generatePDFData(title: string, rangeLabel: string, rawData: any[]): { blob: Blob; dataUri: string } {
+  const doc = new jsPDF({
+    orientation: 'landscape',
+    unit: 'pt',
+    format: 'a4',
+  });
+
+  // Top header banner
+  doc.setFillColor(15, 23, 42); // slate-900
+  doc.rect(0, 0, doc.internal.pageSize.getWidth(), 45, 'F');
+
+  doc.setFontSize(14);
+  doc.setTextColor(255, 255, 255);
+  doc.text(title, 25, 28);
+
+  doc.setFontSize(8.5);
+  doc.setTextColor(148, 163, 184); // slate-400
+  doc.text(
+    `TenderBazaar System Export | Range: ${rangeLabel} | Date: ${new Date().toLocaleString()} | Total Records: ${rawData.length}`,
+    25,
+    62,
+  );
+
+  if (rawData && rawData.length > 0) {
+    const headers = Object.keys(rawData[0]);
+    const rows = rawData.slice(0, 1000).map((row) =>
+      headers.map((h) => (row[h] === null || row[h] === undefined ? '' : String(row[h]))),
+    );
+
+    autoTable(doc, {
+      startY: 72,
+      head: [headers],
+      body: rows,
+      theme: 'grid',
+      styles: {
+        fontSize: 7.5,
+        cellPadding: 4,
+        overflow: 'linebreak',
+        textColor: [30, 41, 59],
+      },
+      headStyles: {
+        fillColor: [2, 132, 199], // sky-600
+        textColor: [255, 255, 255],
+        fontStyle: 'bold',
+        fontSize: 8,
+      },
+      alternateRowStyles: {
+        fillColor: [248, 250, 252],
+      },
+      margin: { top: 72, left: 25, right: 25, bottom: 25 },
+    });
+  }
+
+  const blob = doc.output('blob');
+  const dataUri = doc.output('datauristring');
+  return { blob, dataUri };
+}
+
 export default function ReportsPage() {
+  const { user } = useAuthStore();
   const [templates, setTemplates] = useState<ReportTemplate[]>(INITIAL_TEMPLATES);
   const [scheduled, setScheduled] = useState<ScheduledReport[]>(INITIAL_SCHEDULED);
-  const [scheduledExpanded, setScheduledExpanded] = useState(false);
+  const [recentReports, setRecentReports] = useState<RecentReport[]>([]);
+  const [totalTendersCount, setTotalTendersCount] = useState<number>(0);
+  const [totalUsersCount, setTotalUsersCount] = useState<number>(0);
+  const [storageBytes, setStorageBytes] = useState<number>(0);
+  const [notification, setNotification] = useState<string | null>(null);
 
-  // Handle template format change
+  // Load live counts and saved recent reports from localStorage
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('tb_admin_recent_reports');
+      if (saved) {
+        const parsed: RecentReport[] = JSON.parse(saved);
+        setRecentReports(parsed);
+        const totalSize = parsed.reduce((sum, r) => sum + (r.sizeBytes || r.downloadData?.content?.length || 0), 0);
+        setStorageBytes(totalSize);
+      }
+    } catch {}
+
+    // Fetch live dashboard & report metrics on mount
+    getDashboardStats()
+      .then((stats) => {
+        if (stats?.tenders?.total) setTotalTendersCount(stats.tenders.total);
+        if (stats?.users?.total) setTotalUsersCount(stats.users.total);
+      })
+      .catch(() => {});
+
+    getTenderReport()
+      .then((res) => {
+        if (res?.totalTenders) setTotalTendersCount(res.totalTenders);
+      })
+      .catch(() => {});
+
+    getUserReport()
+      .then((res) => {
+        if (res?.totalUsers) setTotalUsersCount(res.totalUsers);
+      })
+      .catch(() => {});
+  }, []);
+
+  const saveRecentReports = (list: RecentReport[]) => {
+    setRecentReports(list);
+    try {
+      localStorage.setItem('tb_admin_recent_reports', JSON.stringify(list));
+    } catch {}
+  };
+
+  // When format is switched, reset state to idle so user generates fresh data in that format
   const updateTemplateFormat = (id: string, format: ReportFormat) => {
     setTemplates((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, format } : t))
+      prev.map((t) =>
+        t.id === id ? { ...t, format, state: 'idle', downloadData: undefined } : t,
+      ),
     );
   };
 
-  // Handle template date range change
+  // When date range is switched, reset state to idle so user queries fresh data for that range
   const updateTemplateDateRange = (id: string, dateRange: DateRange) => {
     setTemplates((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, dateRange } : t))
+      prev.map((t) =>
+        t.id === id ? { ...t, dateRange, state: 'idle', downloadData: undefined } : t,
+      ),
     );
   };
 
-  // Handle generate button
-  const handleGenerate = (id: string) => {
-    setTemplates((prev) =>
-      prev.map((t) => (t.id === id ? { ...t, state: 'generating' as GenerateState } : t))
-    );
-    // Simulate generation time
-    setTimeout(() => {
-      setTemplates((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, state: 'ready' as GenerateState } : t))
-      );
-    }, 2500);
-  };
-
-  // Toggle scheduled report active state
   const toggleScheduled = (id: string) => {
     setScheduled((prev) =>
-      prev.map((s) => (s.id === id ? { ...s, active: !s.active } : s))
+      prev.map((s) => (s.id === id ? { ...s, active: !s.active } : s)),
     );
   };
 
-  // Storage percentage for progress bar
-  const storageUsed = 2.4;
-  const storageTotal = 10;
-  const storagePercent = (storageUsed / storageTotal) * 100;
+  // Generate real report by fetching live PostgreSQL data and immediately downloading the file
+  const handleGenerate = async (id: string) => {
+    const template = templates.find((t) => t.id === id);
+    if (!template) return;
+
+    setTemplates((prev) =>
+      prev.map((t) => (t.id === id ? { ...t, state: 'generating' } : t)),
+    );
+
+    try {
+      let rawData: any[] = [];
+      let filenamePrefix = template.id;
+      const { startDate, endDate } = getDateRangeParams(template.dateRange);
+
+      if (id === 'tender') {
+        const res = await getTenderReport({ startDate, endDate });
+        if (res.tenders && res.tenders.length > 0) {
+          rawData = res.tenders.map((t) => ({
+            ReferenceNumber: t.referenceNumber || t.id,
+            Title: t.title,
+            Organization: t.organization,
+            Category: t.category,
+            State: t.state || 'N/A',
+            Status: t.status,
+            SourcePortal: t.sourcePortal,
+            EstimatedValueINR: t.estimatedValue != null ? t.estimatedValue : 0,
+            SubmissionDeadline: t.bidSubmissionDeadline ? new Date(t.bidSubmissionDeadline).toLocaleDateString() : 'N/A',
+            PublishedDate: t.createdAt ? new Date(t.createdAt).toLocaleDateString() : 'N/A',
+          }));
+        } else {
+          rawData = res.byCategory.map((c) => ({
+            Metric: 'Category Breakdown',
+            Category: c.category,
+            Count: c.count,
+            TotalTenders: res.totalTenders,
+            TotalEstimatedValueINR: res.totalEstimatedValue,
+            TotalViews: res.totalViews,
+          }));
+        }
+        filenamePrefix = 'tenders-report';
+      } else if (id === 'revenue') {
+        const res = await getRevenueReport({ startDate, endDate });
+        if (res.payments && res.payments.length > 0) {
+          rawData = res.payments.map((p) => ({
+            PaymentID: p.id,
+            CustomerName: p.userName,
+            CustomerEmail: p.userEmail,
+            Plan: p.plan,
+            BillingCycle: p.cycle,
+            AmountINR: p.amount,
+            Currency: p.currency,
+            Status: p.status,
+            Gateway: p.gateway,
+            Date: new Date(p.date).toLocaleString(),
+          }));
+        } else {
+          rawData = res.planBreakdown.map((p) => ({
+            Plan: p.plan,
+            RevenueINR: p.amount,
+            TransactionCount: p.count,
+            MRR: res.mrr,
+            ARR: res.arr,
+          }));
+        }
+        filenamePrefix = 'revenue-report';
+      } else if (id === 'users') {
+        const res = await getUserReport({ startDate, endDate });
+        if (res.users && res.users.length > 0) {
+          rawData = res.users.map((u) => ({
+            UserID: u.id,
+            Name: u.name,
+            Email: u.email,
+            Role: u.role,
+            EmailVerified: u.isEmailVerified ? 'Yes' : 'No',
+            JoinedDate: u.createdAt ? new Date(u.createdAt).toLocaleDateString() : 'N/A',
+          }));
+        } else {
+          rawData = (res.roleDistribution || res.byRole || []).map((r) => ({
+            Role: r.role,
+            Count: r.count,
+            VerifiedUsers: res.verifiedUsers,
+            VerificationRate: `${res.verificationRate}%`,
+            TotalUsers: res.totalUsers,
+          }));
+        }
+        filenamePrefix = 'users-report';
+      } else if (id === 'subscriptions') {
+        const res = await getSubscriptionReport({ startDate, endDate });
+        if (res.subscriptions && res.subscriptions.length > 0) {
+          rawData = res.subscriptions.map((s) => ({
+            SubscriptionID: s.id,
+            CustomerName: s.userName,
+            CustomerEmail: s.userEmail,
+            Plan: s.plan,
+            BillingCycle: s.cycle,
+            Status: s.status,
+            StartDate: new Date(s.startDate).toLocaleDateString(),
+            EndDate: new Date(s.endDate).toLocaleDateString(),
+          }));
+        } else {
+          rawData = res.byPlan.map((p) => ({
+            Plan: p.plan,
+            Subscribers: p.count,
+            TotalSubscriptions: res.totalSubscriptions,
+            ChurnRate: `${res.churnRate}%`,
+          }));
+        }
+        filenamePrefix = 'subscriptions-report';
+      } else if (id === 'scrapers') {
+        const scrapers = await getScraperHealth();
+        const minDate = new Date(startDate);
+        const filtered = template.dateRange === 'all_time'
+          ? scrapers
+          : scrapers.filter((s) => s.lastRunAt && new Date(s.lastRunAt) >= minDate);
+        const toExport = filtered.length > 0 ? filtered : scrapers;
+        rawData = toExport.map((s) => ({
+          Portal: s.portalName,
+          Status: s.status,
+          Enabled: s.enabled ? 'Yes' : 'No',
+          TotalRuns: s.totalRuns,
+          SuccessRuns: s.totalSuccessRuns,
+          FailedRuns: s.totalFailedRuns,
+          TendersFound: s.totalTendersFound,
+          ErrorRate: `${s.errorRate}%`,
+          LastRun: s.lastRunAt || 'Never',
+        }));
+        filenamePrefix = 'scrapers-health-report';
+      } else if (id === 'search') {
+        const res = await getTenderReport({ startDate, endDate });
+        const sorted = (res.tenders || []).slice(0, 100).sort((a, b) => (b.viewCount || 0) - (a.viewCount || 0));
+        rawData = sorted.map((t) => ({
+          TenderID: t.referenceNumber || t.id,
+          Title: t.title,
+          Organization: t.organization,
+          Category: t.category,
+          State: t.state || 'N/A',
+          ViewCount: t.viewCount || 0,
+          EstimatedValueINR: t.estimatedValue != null ? t.estimatedValue : 0,
+          PublishedDate: t.createdAt ? new Date(t.createdAt).toLocaleDateString() : 'N/A',
+        }));
+        filenamePrefix = 'search-and-trends-report';
+      }
+
+      const dateStr = new Date().toISOString().split('T')[0];
+      const rangeTag = template.dateRange.replace(/_/g, '-');
+      const filename = `${filenamePrefix}-${rangeTag}-${dateStr}.${template.format.toLowerCase()}`;
+
+      let fileContent: string = '';
+      let mimeType: string = '';
+      let downloadPayload: string | Blob = '';
+      let sizeBytes = 0;
+
+      if (template.format === 'CSV') {
+        fileContent = convertToCSV(rawData);
+        mimeType = 'text/csv;charset=utf-8;';
+        downloadPayload = fileContent;
+        sizeBytes = new Blob([fileContent]).size;
+      } else if (template.format === 'JSON') {
+        fileContent = JSON.stringify(rawData, null, 2);
+        mimeType = 'application/json;charset=utf-8;';
+        downloadPayload = fileContent;
+        sizeBytes = new Blob([fileContent]).size;
+      } else if (template.format === 'PDF') {
+        const { blob, dataUri } = generatePDFData(
+          template.title,
+          DATE_RANGE_LABELS[template.dateRange],
+          rawData,
+        );
+        mimeType = 'application/pdf';
+        fileContent = dataUri;
+        downloadPayload = blob;
+        sizeBytes = blob.size;
+      }
+
+      const sizeLabel = formatStorageSize(sizeBytes);
+
+      setStorageBytes((prev) => prev + sizeBytes);
+
+      const downloadData: DownloadPayload = {
+        filename,
+        content: fileContent,
+        mimeType,
+        format: template.format,
+      };
+
+      // 1. Immediately trigger the file download in the browser
+      downloadFile(filename, downloadPayload, mimeType);
+
+      // 2. Update template state to ready with the download data
+      setTemplates((prev) =>
+        prev.map((t) =>
+          t.id === id
+            ? {
+                ...t,
+                state: 'ready',
+                lastGenerated: 'Just now',
+                downloadData,
+              }
+            : t,
+        ),
+      );
+
+      // 3. Add to recent exports table
+      const newReport: RecentReport = {
+        id: `rep-${Date.now()}`,
+        name: `${template.title} (${DATE_RANGE_LABELS[template.dateRange]})`,
+        generatedBy: user?.name ? `${user.name} (${user.role})` : user?.email || 'Administrator',
+        date: dateStr,
+        format: template.format,
+        size: sizeLabel,
+        sizeBytes,
+        status: 'Ready',
+        downloadData,
+      };
+
+      saveRecentReports([newReport, ...recentReports.slice(0, 19)]);
+      setNotification(`Downloaded ${newReport.name} [${template.format}] with ${rawData.length} records!`);
+      setTimeout(() => setNotification(null), 4000);
+    } catch (err: any) {
+      console.error('Error generating report:', err);
+      setTemplates((prev) =>
+        prev.map((t) => (t.id === id ? { ...t, state: 'idle' } : t)),
+      );
+      setNotification(`Failed to generate report: ${err?.message || 'Server error'}`);
+      setTimeout(() => setNotification(null), 4000);
+    }
+  };
+
+  const handleDownload = (template: ReportTemplate) => {
+    if (template.downloadData) {
+      downloadFile(
+        template.downloadData.filename,
+        template.downloadData.content,
+        template.downloadData.mimeType,
+      );
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-background p-6 lg:p-8">
-      {/* ================================================================== */}
-      {/* Header                                                             */}
-      {/* ================================================================== */}
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-foreground">Reports &amp; Exports</h1>
-        <p className="text-muted-foreground text-sm mt-1">
-          Generate, download, and schedule business reports.
-        </p>
+    <div className="space-y-8">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 pb-2 border-b border-border">
+        <div>
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-2xl font-bold text-foreground">Reports &amp; Data Exports</h1>
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              Real PostgreSQL Export
+            </span>
+          </div>
+          <p className="text-muted-foreground text-sm mt-1">
+            Export live data directly from PostgreSQL database in CSV, JSON, and PDF formats.
+          </p>
+        </div>
+      </div>
+
+      {/* Notification toast */}
+      {notification && (
+        <div className="p-4 rounded-xl bg-primary-500/10 border border-primary-500/20 text-foreground text-sm flex items-center gap-3">
+          <CheckCircle className="w-5 h-5 text-primary-500 shrink-0" />
+          <span>{notification}</span>
+        </div>
+      )}
+
+      {/* Quick Stats Row */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-card border border-border rounded-xl p-4">
+          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Reports Created</p>
+          <p className="text-2xl font-bold text-foreground mt-1">{recentReports.length}</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Session &amp; historical</p>
+        </div>
+        <div className="bg-card border border-border rounded-xl p-4">
+          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Tenders in Database</p>
+          <p className="text-2xl font-bold text-primary-500 mt-1">{totalTendersCount}</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Available for export</p>
+        </div>
+        <div className="bg-card border border-border rounded-xl p-4">
+          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Registered Users</p>
+          <p className="text-2xl font-bold text-accent-500 mt-1">{totalUsersCount}</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">In User table</p>
+        </div>
+        <div className="bg-card border border-border rounded-xl p-4">
+          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Storage Exported</p>
+          <p className="text-2xl font-bold text-foreground mt-1">{formatStorageSize(storageBytes)}</p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Cumulative payload</p>
+        </div>
       </div>
 
       {/* ================================================================== */}
-      {/* Quick Stats Row                                                    */}
+      {/* Available Report Templates                                         */}
       {/* ================================================================== */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        {/* Reports Generated */}
-        <div className="bg-card border border-border rounded-xl p-5">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm text-muted-foreground">Reports This Month</span>
-            <div className="p-2 rounded-lg bg-primary-500/10">
-              <BarChart3 className="w-4 h-4 text-primary-500" />
-            </div>
-          </div>
-          <p className="text-2xl font-bold text-foreground">45</p>
-          <p className="text-xs text-muted-foreground mt-1">+12% from last month</p>
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <FileText className="w-5 h-5 text-primary-500" />
+          <h2 className="text-xl font-bold text-foreground">Available Report Generators</h2>
         </div>
 
-        {/* Scheduled Reports */}
-        <div className="bg-card border border-border rounded-xl p-5">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm text-muted-foreground">Scheduled Reports</span>
-            <div className="p-2 rounded-lg bg-blue-500/10">
-              <Calendar className="w-4 h-4 text-blue-400" />
-            </div>
-          </div>
-          <p className="text-2xl font-bold text-foreground">8</p>
-          <p className="text-xs text-muted-foreground mt-1">3 active, 5 paused</p>
-        </div>
-
-        {/* Last Generated */}
-        <div className="bg-card border border-border rounded-xl p-5">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm text-muted-foreground">Last Generated</span>
-            <div className="p-2 rounded-lg bg-emerald-500/10">
-              <Clock className="w-4 h-4 text-emerald-400" />
-            </div>
-          </div>
-          <p className="text-2xl font-bold text-foreground">2 hours ago</p>
-          <p className="text-xs text-muted-foreground mt-1">Revenue Report - March</p>
-        </div>
-
-        {/* Storage Used */}
-        <div className="bg-card border border-border rounded-xl p-5">
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-sm text-muted-foreground">Storage Used</span>
-            <div className="p-2 rounded-lg bg-purple-500/10">
-              <Database className="w-4 h-4 text-purple-400" />
-            </div>
-          </div>
-          <p className="text-2xl font-bold text-foreground">2.4 GB / 10 GB</p>
-          <div className="mt-2 w-full bg-muted rounded-full h-2">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          {templates.map((tpl) => (
             <div
-              className="h-2 rounded-full bg-gradient-to-r from-primary-500 to-orange-400"
-              style={{ width: `${storagePercent}%` }}
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* ================================================================== */}
-      {/* Report Templates Section                                           */}
-      {/* ================================================================== */}
-      <SectionTitle title="Report Templates" icon={<FileText className="w-5 h-5" />} />
-
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5 mb-10">
-        {templates.map((tmpl) => (
-          <div
-            key={tmpl.id}
-            className="bg-card border border-border rounded-xl p-6 flex flex-col"
-          >
-            {/* Icon + Title */}
-            <div className="flex items-start gap-3 mb-3">
-              <div className="p-2.5 rounded-lg bg-primary-500/10 text-primary-500 shrink-0">
-                {tmpl.icon}
-              </div>
+              key={tpl.id}
+              className="bg-card border border-border rounded-xl p-6 flex flex-col justify-between hover:border-primary-500/40 transition-all shadow-sm"
+            >
               <div>
-                <h3 className="text-base font-semibold text-foreground">{tmpl.title}</h3>
-                <p className="text-xs text-muted-foreground mt-0.5">
-                  Last generated: {tmpl.lastGenerated}
+                <div className="flex items-start justify-between gap-3 mb-3">
+                  <div className="p-2.5 rounded-xl bg-primary-500/10 text-primary-500 border border-primary-500/20">
+                    {tpl.icon}
+                  </div>
+                  <span className="text-[11px] font-semibold px-2 py-0.5 rounded-md bg-muted text-muted-foreground border border-border">
+                    {tpl.lastGenerated}
+                  </span>
+                </div>
+                <h3 className="text-base font-semibold text-foreground">{tpl.title}</h3>
+                <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed">
+                  {tpl.description}
                 </p>
               </div>
-            </div>
 
-            {/* Description */}
-            <p className="text-sm text-muted-foreground mb-4 flex-1">{tmpl.description}</p>
-
-            {/* Controls */}
-            <div className="space-y-3">
-              {/* Format selector */}
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground w-14 shrink-0">Format:</span>
-                <div className="flex gap-1.5">
-                  {(['PDF', 'CSV', 'XLSX'] as ReportFormat[]).map((fmt) => (
-                    <button
-                      key={fmt}
-                      onClick={() => updateTemplateFormat(tmpl.id, fmt)}
-                      className={`text-xs font-medium px-2.5 py-1 rounded-md border transition-colors ${
-                        tmpl.format === fmt
-                          ? formatBadgeColor(fmt)
-                          : 'border-border text-muted-foreground hover:border-border hover:text-muted-foreground'
-                      }`}
-                    >
-                      {fmt}
-                    </button>
-                  ))}
+              <div className="mt-6 pt-4 border-t border-border space-y-3">
+                {/* Format selection */}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-muted-foreground">Format:</span>
+                  <div className="flex gap-1.5">
+                    {(['CSV', 'JSON', 'PDF'] as ReportFormat[]).map((fmt) => (
+                      <button
+                        key={fmt}
+                        type="button"
+                        onClick={() => updateTemplateFormat(tpl.id, fmt)}
+                        className={`px-2.5 py-1 rounded text-[11px] font-semibold transition-all ${
+                          tpl.format === fmt
+                            ? 'bg-primary-500 text-white shadow-sm ring-1 ring-primary-400'
+                            : 'bg-muted text-muted-foreground hover:text-foreground'
+                        }`}
+                      >
+                        {fmt}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
 
-              {/* Date range selector */}
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-muted-foreground w-14 shrink-0">Range:</span>
-                <select
-                  value={tmpl.dateRange}
-                  onChange={(e) =>
-                    updateTemplateDateRange(tmpl.id, e.target.value as DateRange)
-                  }
-                  className="flex-1 text-xs bg-muted border border-border text-foreground/80 rounded-md px-2.5 py-1.5 focus:outline-none focus:border-primary-500 focus:ring-1 focus:ring-primary-500/30"
-                >
-                  {Object.entries(DATE_RANGE_LABELS).map(([val, label]) => (
-                    <option key={val} value={val}>
-                      {label}
-                    </option>
+                {/* Date range selection */}
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-medium text-muted-foreground">Range:</span>
+                  <select
+                    value={tpl.dateRange}
+                    onChange={(e) => updateTemplateDateRange(tpl.id, e.target.value as DateRange)}
+                    className="text-xs bg-muted border border-border rounded px-2 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary-500 cursor-pointer"
+                  >
+                    {Object.entries(DATE_RANGE_LABELS).map(([k, label]) => (
+                      <option key={k} value={k}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Generate & Download CTA */}
+                {tpl.state === 'ready' ? (
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => handleDownload(tpl)}
+                      className="flex-1 flex items-center justify-center gap-1.5 py-2.5 px-3 rounded-lg bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-semibold shadow-md transition-all active:scale-[0.98]"
+                    >
+                      <Download className="w-3.5 h-3.5" />
+                      Download {tpl.format}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleGenerate(tpl.id)}
+                      title="Generate and download again"
+                      className="p-2.5 rounded-lg border border-border hover:bg-muted text-muted-foreground hover:text-foreground transition-all"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => handleGenerate(tpl.id)}
+                    disabled={tpl.state === 'generating'}
+                    className="w-full flex items-center justify-center gap-2 py-2.5 px-4 rounded-lg bg-primary-500 hover:bg-primary-600 text-white text-xs font-semibold shadow-md transition-all active:scale-[0.98] disabled:opacity-60"
+                  >
+                    {tpl.state === 'generating' ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Generating {tpl.format}...
+                      </>
+                    ) : (
+                      <>
+                        <Download className="w-4 h-4" />
+                        Generate &amp; Download {tpl.format}
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ================================================================== */}
+      {/* Generated Reports History                                         */}
+      {/* ================================================================== */}
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Download className="w-5 h-5 text-primary-500" />
+            <h2 className="text-xl font-bold text-foreground">Recent Exports</h2>
+          </div>
+          {recentReports.length > 0 && (
+            <button
+              onClick={() => saveRecentReports([])}
+              className="text-xs text-muted-foreground hover:text-foreground underline"
+            >
+              Clear history
+            </button>
+          )}
+        </div>
+
+        <div className="bg-card border border-border rounded-xl overflow-hidden">
+          {recentReports.length === 0 ? (
+            <div className="p-8 text-center text-muted-foreground text-sm">
+              <Download className="w-8 h-8 mx-auto mb-2 opacity-40" />
+              No exports generated yet. Click &quot;Generate &amp; Download&quot; on any template above.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left">
+                <thead>
+                  <tr className="border-b border-border bg-muted/40">
+                    <th className="py-3 px-4 text-xs font-semibold text-muted-foreground uppercase">Report Name</th>
+                    <th className="py-3 px-4 text-xs font-semibold text-muted-foreground uppercase">Generated By</th>
+                    <th className="py-3 px-4 text-xs font-semibold text-muted-foreground uppercase">Date</th>
+                    <th className="py-3 px-4 text-xs font-semibold text-muted-foreground uppercase">Format</th>
+                    <th className="py-3 px-4 text-xs font-semibold text-muted-foreground uppercase">Size</th>
+                    <th className="py-3 px-4 text-xs font-semibold text-muted-foreground uppercase text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {recentReports.map((r) => (
+                    <tr key={r.id} className="hover:bg-muted/30 transition-colors">
+                      <td className="py-3 px-4 text-sm font-medium text-foreground">{r.name}</td>
+                      <td className="py-3 px-4 text-xs text-muted-foreground">{r.generatedBy}</td>
+                      <td className="py-3 px-4 text-xs text-muted-foreground">{r.date}</td>
+                      <td className="py-3 px-4 text-xs font-semibold text-primary-500">{r.format}</td>
+                      <td className="py-3 px-4 text-xs font-mono text-muted-foreground">{r.size}</td>
+                      <td className="py-3 px-4 text-right">
+                        {r.downloadData && (
+                          <button
+                            type="button"
+                            onClick={() => downloadFile(r.downloadData!.filename, r.downloadData!.content, r.downloadData!.mimeType)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-semibold bg-primary-500/10 text-primary-500 hover:bg-primary-500 hover:text-white transition-all border border-primary-500/20"
+                          >
+                            <Download className="w-3.5 h-3.5" />
+                            Download
+                          </button>
+                        )}
+                      </td>
+                    </tr>
                   ))}
-                </select>
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* ================================================================== */}
+      {/* Scheduled Automation                                              */}
+      {/* ================================================================== */}
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Mail className="w-5 h-5 text-primary-500" />
+          <h2 className="text-xl font-bold text-foreground">Scheduled Report Dispatches</h2>
+          <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold uppercase tracking-wide bg-amber-500/15 text-amber-600 border border-amber-500/30">
+            Demo data
+          </span>
+        </div>
+        <p className="text-xs text-muted-foreground -mt-2">
+          Placeholder only — no report emails are dispatched by the platform yet, and
+          toggling a row does not persist.
+        </p>
+
+        <div className="bg-card border border-border rounded-xl divide-y divide-border">
+          {scheduled.map((item) => (
+            <div key={item.id} className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2.5">
+                  <p className="text-sm font-semibold text-foreground">{item.name}</p>
+                  <span
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                      item.active
+                        ? 'bg-emerald-500/15 text-emerald-500 border border-emerald-500/30'
+                        : 'bg-muted text-muted-foreground'
+                    }`}
+                  >
+                    {item.active ? 'Active' : 'Paused'}
+                  </span>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {item.frequency} &bull; Next run: <span className="text-foreground/80 font-medium">{item.nextRun}</span>
+                </p>
+                <p className="text-xs text-muted-foreground">Recipients: {item.recipients}</p>
               </div>
 
-              {/* Generate button */}
               <button
-                onClick={() => handleGenerate(tmpl.id)}
-                disabled={tmpl.state === 'generating'}
-                className={`w-full flex items-center justify-center gap-2 text-sm font-medium py-2.5 rounded-lg transition-all ${
-                  tmpl.state === 'ready'
-                    ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 hover:bg-emerald-500/25'
-                    : tmpl.state === 'generating'
-                    ? 'bg-muted text-muted-foreground border border-border cursor-wait'
-                    : 'bg-primary-500 text-foreground hover:bg-primary-600 active:bg-primary-700'
-                }`}
+                type="button"
+                onClick={() => toggleScheduled(item.id)}
+                className="self-start sm:self-center flex items-center gap-2 text-xs font-semibold px-3 py-1.5 rounded-lg border border-border hover:bg-muted transition-colors text-foreground"
               >
-                {tmpl.state === 'generating' && (
+                {item.active ? (
                   <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    Generating...
+                    <ToggleRight className="w-5 h-5 text-emerald-500" />
+                    <span>Enabled</span>
                   </>
-                )}
-                {tmpl.state === 'ready' && (
+                ) : (
                   <>
-                    <CheckCircle className="w-4 h-4" />
-                    Ready - Download
-                  </>
-                )}
-                {tmpl.state === 'idle' && (
-                  <>
-                    <RefreshCw className="w-4 h-4" />
-                    Generate
+                    <ToggleLeft className="w-5 h-5 text-muted-foreground" />
+                    <span>Disabled</span>
                   </>
                 )}
               </button>
             </div>
-          </div>
-        ))}
-      </div>
-
-      {/* ================================================================== */}
-      {/* Recent Reports Table                                               */}
-      {/* ================================================================== */}
-      <SectionTitle title="Recent Reports" icon={<Clock className="w-5 h-5" />} />
-
-      <div className="bg-card border border-border rounded-xl overflow-hidden mb-10">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left">
-            <thead>
-              <tr className="border-b border-border">
-                <th className="px-5 py-3.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Report Name
-                </th>
-                <th className="px-5 py-3.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Generated By
-                </th>
-                <th className="px-5 py-3.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Date
-                </th>
-                <th className="px-5 py-3.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Format
-                </th>
-                <th className="px-5 py-3.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Size
-                </th>
-                <th className="px-5 py-3.5 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Status
-                </th>
-                <th className="px-5 py-3.5 text-xs font-medium text-muted-foreground uppercase tracking-wider text-right">
-                  Action
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {RECENT_REPORTS.map((report) => (
-                <tr
-                  key={report.id}
-                  className="border-b border-border hover:bg-muted/40 transition-colors"
-                >
-                  <td className="px-5 py-3.5">
-                    <div className="flex items-center gap-2">
-                      <FileText className="w-4 h-4 text-muted-foreground shrink-0" />
-                      <span className="text-sm text-gray-200 font-medium">
-                        {report.name}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-5 py-3.5 text-sm text-muted-foreground">
-                    {report.generatedBy}
-                  </td>
-                  <td className="px-5 py-3.5 text-sm text-muted-foreground">
-                    {report.date}
-                  </td>
-                  <td className="px-5 py-3.5">
-                    <span
-                      className={`inline-block text-xs font-medium px-2 py-0.5 rounded border ${formatBadgeColor(
-                        report.format
-                      )}`}
-                    >
-                      {report.format}
-                    </span>
-                  </td>
-                  <td className="px-5 py-3.5 text-sm text-muted-foreground">
-                    {report.size}
-                  </td>
-                  <td className="px-5 py-3.5">{statusBadge(report.status)}</td>
-                  <td className="px-5 py-3.5 text-right">
-                    <button
-                      disabled={report.status !== 'Ready'}
-                      className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors ${
-                        report.status === 'Ready'
-                          ? 'bg-primary-500/10 text-primary-500 hover:bg-primary-500/20 border border-primary-500/30'
-                          : 'bg-muted text-muted-foreground border border-border cursor-not-allowed'
-                      }`}
-                    >
-                      <Download className="w-3.5 h-3.5" />
-                      Download
-                    </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          ))}
         </div>
       </div>
-
-      {/* ================================================================== */}
-      {/* Scheduled Reports Section (Collapsible)                            */}
-      {/* ================================================================== */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        {/* Collapsible header */}
-        <button
-          onClick={() => setScheduledExpanded(!scheduledExpanded)}
-          className="w-full flex items-center justify-between px-6 py-4 hover:bg-muted/40 transition-colors"
-        >
-          <div className="flex items-center gap-3">
-            <div className="text-primary-500">
-              <Calendar className="w-5 h-5" />
-            </div>
-            <div className="text-left">
-              <h2 className="text-lg font-bold text-foreground">Scheduled Reports</h2>
-              <p className="text-xs text-muted-foreground">
-                {scheduled.filter((s) => s.active).length} active,{' '}
-                {scheduled.filter((s) => !s.active).length} paused
-              </p>
-            </div>
-          </div>
-          {scheduledExpanded ? (
-            <ChevronUp className="w-5 h-5 text-muted-foreground" />
-          ) : (
-            <ChevronDown className="w-5 h-5 text-muted-foreground" />
-          )}
-        </button>
-
-        {/* Collapsible content */}
-        {scheduledExpanded && (
-          <div className="px-6 pb-6 space-y-4">
-            {scheduled.map((sched) => (
-              <div
-                key={sched.id}
-                className={`border rounded-xl p-5 transition-colors ${
-                  sched.active
-                    ? 'border-border bg-muted/30'
-                    : 'border-border bg-card/50 opacity-60'
-                }`}
-              >
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                  {/* Info */}
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-2">
-                      <h3 className="text-sm font-semibold text-foreground truncate">
-                        {sched.name}
-                      </h3>
-                      <span
-                        className={`text-[10px] font-medium uppercase tracking-wider px-2 py-0.5 rounded-full border ${
-                          sched.active
-                            ? 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30'
-                            : 'text-muted-foreground bg-muted border-border'
-                        }`}
-                      >
-                        {sched.active ? 'Active' : 'Paused'}
-                      </span>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-x-6 gap-y-1.5 text-xs">
-                      <div>
-                        <span className="text-muted-foreground">Frequency:</span>{' '}
-                        <span className="text-foreground/80">{sched.frequency}</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Next Run:</span>{' '}
-                        <span className="text-foreground/80">{sched.nextRun}</span>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">Delivery:</span>{' '}
-                        <span className="text-foreground/80">{sched.deliveryMethod}</span>
-                      </div>
-                      <div className="sm:col-span-2 lg:col-span-1">
-                        <span className="text-muted-foreground">Recipients:</span>{' '}
-                        <span className="text-foreground/80 break-all">{sched.recipients}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Toggle */}
-                  <button
-                    onClick={() => toggleScheduled(sched.id)}
-                    className="shrink-0 self-start sm:self-center"
-                    title={sched.active ? 'Pause schedule' : 'Activate schedule'}
-                  >
-                    {sched.active ? (
-                      <ToggleRight className="w-8 h-8 text-emerald-400" />
-                    ) : (
-                      <ToggleLeft className="w-8 h-8 text-muted-foreground" />
-                    )}
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Section Title
-// ---------------------------------------------------------------------------
-function SectionTitle({ title, icon }: { title: string; icon: React.ReactNode }) {
-  return (
-    <div className="flex items-center gap-2 mb-4 mt-2">
-      <div className="text-primary-500">{icon}</div>
-      <h2 className="text-xl font-bold text-foreground">{title}</h2>
     </div>
   );
 }

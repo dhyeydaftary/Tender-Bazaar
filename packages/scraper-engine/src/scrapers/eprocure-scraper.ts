@@ -32,6 +32,8 @@ export class EProcureScraper extends BaseScraper {
     prisma?: PrismaClient;
     maxConcurrency?: number;
     requestDelay?: number;
+    maxPages?: number;
+    fullRescrape?: boolean;
   }) {
     super('eProcure', 'https://eprocure.gov.in/eprocure/app', {
       maxConcurrency: options?.maxConcurrency ?? 2,
@@ -39,6 +41,8 @@ export class EProcureScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
 
     this.activeUrl = 'https://eprocure.gov.in/eprocure/app?page=FrontEndLatestActiveTenders&service=page';
@@ -55,6 +59,8 @@ export class EProcureScraper extends BaseScraper {
     let newTenders = 0;
     let updatedTenders = 0;
     let errors = 0;
+    let skippedExisting = 0;
+    let pagesScraped = 0;
 
     this.logger.info('Starting eProcure tender scraping run');
 
@@ -71,12 +77,20 @@ export class EProcureScraper extends BaseScraper {
       const viewState = this.extractViewState(firstPageHtml);
 
       const listings = this.parseTenderList(firstPageHtml);
+      // Fetched and parsed into listings, so page 1 counts as scraped.
+      // fetchPage() throws on failure, so a failed fetch never reaches here.
+      if (listings.length > 0) pagesScraped++;
       totalFound += listings.length;
 
       this.logger.info(`Found ${listings.length} tenders on page 1`);
 
+      // New-only: one batch existence check per page; known-and-unchanged
+      // tenders never reach the detail fetch below.
+      const firstPage = await this.partitionListings(listings);
+      skippedExisting += firstPage.skipped.length;
+
       // Process each listing from first page
-      for (const listing of listings) {
+      for (const listing of firstPage.toProcess) {
         try {
           if (!listing.sourceId) continue;
 
@@ -121,6 +135,9 @@ export class EProcureScraper extends BaseScraper {
           });
 
           const pageListings = this.parseTenderList(pageHtml);
+          if (pageListings.length > 0) pagesScraped++;
+          const pagePartition = await this.partitionListings(pageListings);
+          skippedExisting += pagePartition.skipped.length;
           if (pageListings.length === 0) {
             this.logger.info(`No tenders on page ${page}, stopping pagination`);
             break;
@@ -129,7 +146,7 @@ export class EProcureScraper extends BaseScraper {
           totalFound += pageListings.length;
           this.logger.info(`Found ${pageListings.length} tenders on page ${page}`);
 
-          for (const listing of pageListings) {
+          for (const listing of pagePartition.toProcess) {
             try {
               if (!listing.sourceId) continue;
 
@@ -169,6 +186,10 @@ export class EProcureScraper extends BaseScraper {
         action: 'eProcureScrapeMain',
       });
     } finally {
+      // Guarantee every changed tender is queued, even on an early break or
+      // error. main.ts calls closeBrowser() rather than cleanup(), so this is
+      // the end-of-run flush for a scheduled/manual run.
+      await this.flushTenderIndexQueue();
       await this.closeBrowser();
     }
 
@@ -177,6 +198,8 @@ export class EProcureScraper extends BaseScraper {
       totalFound,
       newTenders,
       updatedTenders,
+      skippedExisting,
+      pagesScraped,
       errors,
       durationMs: duration,
     });
@@ -188,6 +211,8 @@ export class EProcureScraper extends BaseScraper {
       updatedTenders,
       errors,
       duration,
+      skippedExisting,
+      pagesScraped,
     };
   }
 

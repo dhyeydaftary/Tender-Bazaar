@@ -2,7 +2,7 @@
 
 import { useState, useEffect, createContext, useContext } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import {
   LayoutDashboard,
   Search,
@@ -31,12 +31,28 @@ import {
 import { cn } from '@/lib/utils';
 import { NotificationBell } from '@/components/notifications/notification-bell';
 import { useTheme } from 'next-themes';
+import { useAuthStore } from '@/stores/auth-store';
+import { useSubscriptionStore } from '@/stores/subscription-store';
+import { useDashboardStore } from '@/stores/dashboard-store';
+import { NavPlanBadge, type NavGate } from '@/components/subscription';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SIDEBAR CONTEXT
    ═══════════════════════════════════════════════════════════════════════════ */
 
 const SidebarContext = createContext({ collapsed: false, toggle: () => {} });
+
+/**
+ * Compact count for the sidebar badge (1247 -> "1.2K"), which previously
+ * displayed a hard-coded "12.4K" regardless of how many tenders existed.
+ * Returns null while the count is still loading so no badge is rendered.
+ */
+function formatBadgeCount(count: number | undefined | null): string | null {
+  if (count === undefined || count === null) return null;
+  if (count < 1000) return String(count);
+  if (count < 100_000) return `${(count / 1000).toFixed(count < 10_000 ? 1 : 0)}K`;
+  return `${(count / 100_000).toFixed(1)}L`;
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    NAVIGATION
@@ -48,6 +64,14 @@ interface NavItem {
   icon: React.ElementType;
   badge?: string;
   badgeColor?: string;
+  /** Resolved at render time from live data instead of a hard-coded string. */
+  badgeKey?: 'activeTenders';
+  /**
+   * Entitlement this item depends on. When the user's plan does not grant it,
+   * an upgrade badge naming the minimum plan is shown beside the label.
+   * Only set on items that are genuinely gated — Discover's items are not.
+   */
+  gate?: NavGate;
 }
 
 interface NavGroup {
@@ -60,17 +84,20 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'Discover',
     items: [
       { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-      { href: '/tenders', label: 'All Tenders', icon: FileText, badge: '12.4K' },
+      { href: '/tenders', label: 'All Tenders', icon: FileText, badgeKey: 'activeTenders' },
       { href: '/search', label: 'Search', icon: Search },
     ],
   },
   {
     title: 'My Workspace',
     items: [
-      { href: '/saved', label: 'Saved Tenders', icon: Bookmark },
-      { href: '/alerts', label: 'My Alerts', icon: Bell },
+      // Gates reflect the real plan data: Free grants maxSavedTenders 0 and
+      // maxAlerts 0, so both need Starter. Eligibility Checks is NOT gated —
+      // Free includes 1 lifetime AI check — so it carries no badge.
+      { href: '/saved', label: 'Saved Tenders', icon: Bookmark, gate: { kind: 'limit', name: 'maxSavedTenders' } },
+      { href: '/alerts', label: 'My Alerts', icon: Bell, gate: { kind: 'limit', name: 'maxAlerts' } },
       { href: '/eligibility', label: 'Eligibility Checks', icon: Shield },
-      { href: '/calendar', label: 'Tender Calendar', icon: CalendarDays },
+      { href: '/calendar', label: 'Tender Calendar', icon: CalendarDays, gate: { kind: 'feature', name: 'tenderCalendar' } },
     ],
   },
   {
@@ -78,7 +105,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: '/ai-eligibility', label: 'AI Eligibility', icon: Sparkles, badge: 'NEW', badgeColor: 'bg-accent-500/10 text-accent-500' },
       { href: '/bid-assistant', label: 'Bid Assistant', icon: FileCheck, badge: 'PRO', badgeColor: 'bg-primary-500/10 text-primary-500' },
-      { href: '/compare', label: 'Tender Comparison', icon: Columns3 },
+      { href: '/compare', label: 'Tender Comparison', icon: Columns3, gate: { kind: 'feature', name: 'tenderComparison' } },
     ],
   },
   {
@@ -103,11 +130,32 @@ const NAV_GROUPS: NavGroup[] = [
 
 function Sidebar() {
   const pathname = usePathname();
+  const router = useRouter();
   const { collapsed, toggle } = useContext(SidebarContext);
+  const { user, logout, fetchUser } = useAuthStore();
+  const { data: dashboard, fetchDashboard } = useDashboardStore();
   const [mounted, setMounted] = useState(false);
 
-  useEffect(() => setMounted(true), []);
+  useEffect(() => {
+    setMounted(true);
+    fetchUser();
+    // Supplies the live tender count for the "All Tenders" badge. The store is
+    // TTL-guarded and de-duplicates concurrent callers, so this shares one
+    // request with the dashboard page rather than adding another.
+    fetchDashboard();
+  }, [fetchUser, fetchDashboard]);
+
   if (!mounted) return null;
+
+  const displayName = user?.name || 'User';
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } finally {
+      router.push('/login');
+    }
+  };
 
   return (
     <aside
@@ -146,6 +194,9 @@ function Sidebar() {
                     ? pathname === '/dashboard'
                     : pathname.startsWith(item.href);
                 const Icon = item.icon;
+                const badge = item.badgeKey
+                  ? formatBadgeCount(dashboard?.stats.activeTenders)
+                  : item.badge;
 
                 return (
                   <Link
@@ -167,21 +218,33 @@ function Sidebar() {
                     {!collapsed && (
                       <>
                         <span className="flex-1 truncate">{item.label}</span>
-                        {item.badge && (
+                        {badge && (
                           <span
                             className={cn(
                               'text-[10px] px-1.5 py-0.5 rounded-full font-semibold',
                               item.badgeColor ?? 'bg-muted text-muted-foreground',
                             )}
                           >
-                            {item.badge}
+                            {badge}
                           </span>
                         )}
+                        {item.gate && <NavPlanBadge gate={item.gate} />}
                       </>
                     )}
                   </Link>
                 );
               })}
+              {group.title === 'Account' && (
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  title={collapsed ? 'Log Out' : undefined}
+                  className="group/item flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150 relative w-full text-left text-muted-foreground hover:bg-destructive/10 hover:text-destructive cursor-pointer"
+                >
+                  <LogOut className="w-[18px] h-[18px] shrink-0 text-muted-foreground group-hover/item:text-destructive transition-colors" />
+                  {!collapsed && <span className="flex-1 truncate">Log Out</span>}
+                </button>
+              )}
             </div>
           </div>
         ))}
@@ -190,16 +253,39 @@ function Sidebar() {
       {/* User + Collapse */}
       <div className="border-t border-border p-2 space-y-1">
         {/* User */}
-        {!collapsed && (
+        {!collapsed ? (
           <div className="flex items-center gap-3 px-3 py-2">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500/30 to-accent-500/30 flex items-center justify-center shrink-0">
-              <User className="w-4 h-4 text-primary-500" />
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500/30 to-accent-500/30 flex items-center justify-center shrink-0 overflow-hidden border border-border">
+              {user?.avatarUrl ? (
+                <img src={user.avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+              ) : (
+                <User className="w-4 h-4 text-primary-500" />
+              )}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-foreground truncate">User</p>
-              <p className="text-[10px] text-muted-foreground">Free Plan</p>
+              <p className="text-sm font-medium text-foreground truncate">{displayName}</p>
+              <p className="text-[10px] text-muted-foreground">
+                {user?.role === 'SUPER_ADMIN' ? 'Super Admin' : user?.role === 'ADMIN' ? 'Admin' : 'Free Plan'}
+              </p>
             </div>
+            <button
+              type="button"
+              onClick={handleLogout}
+              title="Log Out"
+              className="p-1.5 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
           </div>
+        ) : (
+          <button
+            type="button"
+            onClick={handleLogout}
+            title="Log Out"
+            className="flex items-center justify-center p-2 rounded-lg text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors w-full cursor-pointer"
+          >
+            <LogOut className="w-[18px] h-[18px]" />
+          </button>
         )}
         {/* Collapse toggle */}
         <button
@@ -226,13 +312,32 @@ function Sidebar() {
 
 function TopBar() {
   const { theme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pathname = usePathname();
+  const router = useRouter();
+  const { logout } = useAuthStore();
+  const { data: dashboard } = useDashboardStore();
+
+  // next-themes resolves the theme only on the client, so rendering an icon on
+  // the server produced a hydration mismatch. A fixed-size placeholder holds
+  // the layout until mount.
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   // Close mobile menu on route change
   useEffect(() => {
     setMobileMenuOpen(false);
   }, [pathname]);
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } finally {
+      router.push('/login');
+    }
+  };
 
   return (
     <>
@@ -265,10 +370,14 @@ function TopBar() {
           {/* Theme toggle */}
           <button
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
-            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors min-w-[36px] min-h-[36px] flex items-center justify-center"
             aria-label="Toggle theme"
           >
-            {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+            {mounted ? (
+              theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />
+            ) : (
+              <span className="w-4 h-4 block" />
+            )}
           </button>
 
           {/* Notifications */}
@@ -299,6 +408,9 @@ function TopBar() {
                   {group.items.map((item) => {
                     const isActive = pathname.startsWith(item.href);
                     const Icon = item.icon;
+                    const badge = item.badgeKey
+                      ? formatBadgeCount(dashboard?.stats.activeTenders)
+                      : item.badge;
                     return (
                       <Link
                         key={item.href}
@@ -313,14 +425,28 @@ function TopBar() {
                       >
                         <Icon className="w-[18px] h-[18px]" />
                         <span className="flex-1">{item.label}</span>
-                        {item.badge && (
+                        {badge && (
                           <span className={cn('text-[10px] px-1.5 py-0.5 rounded-full font-semibold', item.badgeColor ?? 'bg-muted text-muted-foreground')}>
-                            {item.badge}
+                            {badge}
                           </span>
                         )}
+                        {item.gate && <NavPlanBadge gate={item.gate} />}
                       </Link>
                     );
                   })}
+                  {group.title === 'Account' && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMobileMenuOpen(false);
+                        handleLogout();
+                      }}
+                      className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-destructive/10 hover:text-destructive w-full text-left cursor-pointer"
+                    >
+                      <LogOut className="w-[18px] h-[18px] shrink-0" />
+                      <span className="flex-1">Log Out</span>
+                    </button>
+                  )}
                 </div>
               ))}
             </nav>
@@ -341,6 +467,52 @@ export default function DashboardLayout({
   children: React.ReactNode;
 }) {
   const [collapsed, setCollapsed] = useState(false);
+  const router = useRouter();
+  const pathname = usePathname();
+  const fetchSubscriptionData = useSubscriptionStore((s) => s.fetchAll);
+  const fetchUser = useAuthStore((s) => s.fetchUser);
+  const initAuth = useAuthStore((s) => s.initAuth);
+
+  useEffect(() => {
+    initAuth();
+  }, [initAuth]);
+
+  // Enforce authentication on protected dashboard routes (allow public tender viewing)
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const token = localStorage.getItem('accessToken');
+      const isPublicTenderRoute = pathname.startsWith('/tenders');
+      if (!token && !isPublicTenderRoute) {
+        router.replace(`/login?redirect=${encodeURIComponent(pathname)}`);
+      }
+    }
+  }, [pathname, router]);
+
+  // Hydrate auth and subscription store once for the whole dashboard if authenticated.
+  useEffect(() => {
+    if (typeof window !== 'undefined' && localStorage.getItem('accessToken')) {
+      fetchUser();
+      fetchSubscriptionData();
+    }
+  }, [fetchUser, fetchSubscriptionData]);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('tb_data_density');
+      if (saved) {
+        document.documentElement.setAttribute('data-density', saved);
+      }
+    } catch {}
+
+    const handleDensityChange = (e: any) => {
+      const d = e.detail || localStorage.getItem('tb_data_density');
+      if (d) {
+        document.documentElement.setAttribute('data-density', d);
+      }
+    };
+    window.addEventListener('tb_density_changed', handleDensityChange);
+    return () => window.removeEventListener('tb_density_changed', handleDensityChange);
+  }, []);
 
   return (
     <SidebarContext.Provider value={{ collapsed, toggle: () => setCollapsed((c) => !c) }}>

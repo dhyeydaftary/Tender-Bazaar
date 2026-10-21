@@ -17,7 +17,11 @@ COPY packages/shared/package.json packages/shared/
 COPY prisma/ prisma/
 
 # Install dependencies
-RUN pnpm install --frozen-lockfile
+# A BuildKit cache mount for pnpm's content-addressable store. Packages
+# downloaded by one build are reused by the next, so rebuilds (and CI runs with
+# a warm cache) skip the network entirely instead of re-fetching the whole tree.
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store \
+    pnpm install --frozen-lockfile --store-dir=/pnpm-store
 
 # Copy source code
 COPY packages/notification-service/ packages/notification-service/
@@ -34,7 +38,11 @@ USER appuser
 
 ENV NODE_ENV=production
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
-  CMD node -e "process.exit(0)" || exit 1
+# A real check: this service's job is to consume the notification queue, so the
+# healthcheck proves it can actually reach Redis. The previous command was
+# `node -e "process.exit(0)"`, which passes unconditionally and so reported a
+# healthy container no matter what state the service was in.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+  CMD ["node", "/app/packages/notification-service/healthcheck.js"]
 
 CMD ["node", "packages/notification-service/dist/index.js"]

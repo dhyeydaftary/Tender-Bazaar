@@ -31,6 +31,7 @@ export const updateProfileSchema = z.object({
     )
     .optional()
     .nullable(),
+  avatarUrl: z.string().optional().nullable(),
 });
 
 export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
@@ -83,8 +84,7 @@ export const updateCompanyProfileSchema = z.object({
 
   // Financial info
   annualTurnover: z
-    .number()
-    .min(0, 'Annual turnover cannot be negative')
+    .union([z.number().min(0), z.string()])
     .optional()
     .nullable(),
   netWorth: z
@@ -99,11 +99,11 @@ export const updateCompanyProfileSchema = z.object({
     .optional()
     .nullable(),
   yearsInBusiness: z
-    .number()
-    .int('Years in business must be a whole number')
-    .min(0, 'Years in business cannot be negative')
+    .union([z.number().int().min(0), z.string()])
     .optional()
     .nullable(),
+  experience: z.string().optional().nullable(),
+  industry: z.string().optional().nullable(),
 
   // MSME details
   msmeRegistered: z.boolean().optional(),
@@ -113,6 +113,7 @@ export const updateCompanyProfileSchema = z.object({
   // Certifications & registrations
   isoRegistered: z.boolean().optional(),
   isoCertificates: z.array(z.string().max(100)).optional(),
+  certifications: z.array(z.string().max(100)).optional(),
 
   startupDpiit: z.boolean().optional(),
   gemRegistered: z.boolean().optional(),

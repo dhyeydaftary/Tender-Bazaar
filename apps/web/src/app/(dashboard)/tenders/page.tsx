@@ -21,7 +21,8 @@ import {
   RefreshCw,
 } from 'lucide-react';
 import { cn, formatCurrency, getDeadlineInfo, getCategoryInfo, formatIndianNumber } from '@/lib/utils';
-import { useTenderSearch, useSavedTenders } from '@/lib/hooks/use-tenders';
+import { useTenderSearch, useSavedTenders, useTenderCounts } from '@/lib/hooks/use-tenders';
+import { useDashboardStore } from '@/stores/dashboard-store';
 
 const SORT_OPTIONS = [
   { value: 'newest', label: 'Newest First', sortBy: 'publishedDate', sortOrder: 'desc' },
@@ -75,7 +76,16 @@ function FilterSection({ title, open, onToggle, children }: { title: string; ope
 
 const ITEMS_PER_PAGE = 20;
 
+const VALUE_RANGES: Record<string, { min?: number; max?: number }> = {
+  'Under 10L': { max: 1000000 },
+  '10L-1Cr': { min: 1000000, max: 10000000 },
+  '1Cr-10Cr': { min: 10000000, max: 100000000 },
+  '10Cr-100Cr': { min: 100000000, max: 1000000000 },
+  '100Cr+': { min: 1000000000 },
+};
+
 export default function TendersPage() {
+  const [statusTab, setStatusTab] = useState<'ACTIVE' | 'CLOSED' | 'ALL'>('ACTIVE');
   const [searchInput, setSearchInput] = useState('');
   const [activeCategory, setActiveCategory] = useState('All');
   const [sortKey, setSortKey] = useState('newest');
@@ -83,15 +93,25 @@ export default function TendersPage() {
   const [showMobileFilters, setShowMobileFilters] = useState(false);
   const [selectedStates, setSelectedStates] = useState<Set<string>>(new Set());
   const [stateSearch, setStateSearch] = useState('');
-  const [openSections, setOpenSections] = useState({ category: true, state: true, value: false, special: false });
+  const [selectedValueRange, setSelectedValueRange] = useState<string | null>(null);
+  const [specialFilters, setSpecialFilters] = useState<{
+    msme: boolean;
+    startup: boolean;
+    emdExempt: boolean;
+  }>({ msme: false, startup: false, emdExempt: false });
+  const [openSections, setOpenSections] = useState({ category: true, state: true, value: true, special: true });
 
   const sortOption = SORT_OPTIONS.find((o) => o.value === sortKey) || SORT_OPTIONS[0];
+
+  const { data: dashboard, fetchDashboard } = useDashboardStore();
+  const { active: activeStat, closed: closedStat, total: totalStat, refresh: refreshCounts, isLoading: countsLoading } = useTenderCounts();
 
   const { result, isLoading, error, updateFilters, search, filters } = useTenderSearch({
     page: 1,
     limit: ITEMS_PER_PAGE,
     sortBy: sortOption.sortBy,
     sortOrder: sortOption.sortOrder,
+    status: ['ACTIVE'],
   });
   const { saved: savedIds, toggleSave } = useSavedTenders();
 
@@ -99,6 +119,38 @@ export default function TendersPage() {
   const total = result?.total ?? 0;
   const currentPage = filters.page || 1;
   const totalPages = Math.max(1, Math.ceil(total / ITEMS_PER_PAGE));
+
+  // Dynamic counts backed by real PostgreSQL and Elasticsearch stats
+  const activeCount = activeStat > 0 ? activeStat : (dashboard?.stats?.activeTenders ?? (statusTab === 'ACTIVE' ? total : 0));
+  const closedCount = closedStat > 0 ? closedStat : (dashboard?.stats?.closedTenders ?? (statusTab === 'CLOSED' ? total : 0));
+  const totalCount = totalStat > 0 ? totalStat : (dashboard?.stats?.totalTenders ?? (activeCount + closedCount));
+
+  // Check if any specific search or category filter is currently active
+  const hasFilterApplied = Boolean(
+    searchInput.trim() ||
+    activeCategory !== 'All' ||
+    selectedStates.size > 0 ||
+    selectedValueRange !== null ||
+    specialFilters.msme ||
+    specialFilters.startup ||
+    specialFilters.emdExempt
+  );
+
+  const displayedTotal = hasFilterApplied
+    ? total
+    : statusTab === 'ACTIVE'
+    ? (activeStat > 0 ? activeStat : total)
+    : statusTab === 'CLOSED'
+    ? (closedStat > 0 ? closedStat : total)
+    : (totalStat > 0 ? totalStat : total);
+
+  const handleStatusTabChange = (tab: 'ACTIVE' | 'CLOSED' | 'ALL') => {
+    setStatusTab(tab);
+    updateFilters({
+      status: tab === 'ALL' ? undefined : tab === 'CLOSED' ? ['CLOSED', 'AWARDED', 'CANCELLED'] : ['ACTIVE'],
+      page: 1,
+    });
+  };
 
   // Debounced search
   const debounceRef = useRef<ReturnType<typeof setTimeout>>();
@@ -125,33 +177,74 @@ export default function TendersPage() {
   };
 
   const toggleState = (state: string) => {
-    setSelectedStates((prev) => {
-      const next = new Set(prev);
-      if (next.has(state)) next.delete(state); else next.add(state);
-      updateFilters({ states: next.size > 0 ? Array.from(next) : undefined });
-      return next;
+    const next = new Set(selectedStates);
+    if (next.has(state)) next.delete(state); else next.add(state);
+    setSelectedStates(next);
+    updateFilters({ states: next.size > 0 ? Array.from(next) : undefined });
+  };
+
+  const handleValueRangeSelect = (range: string) => {
+    if (selectedValueRange === range) {
+      setSelectedValueRange(null);
+      updateFilters({ minValue: undefined, maxValue: undefined });
+    } else {
+      setSelectedValueRange(range);
+      const conf = VALUE_RANGES[range];
+      updateFilters({ minValue: conf.min, maxValue: conf.max });
+    }
+  };
+
+  const toggleSpecialFilter = (key: 'msme' | 'startup' | 'emdExempt') => {
+    const next = { ...specialFilters, [key]: !specialFilters[key] };
+    setSpecialFilters(next);
+    updateFilters({
+      reservedForMSME: next.msme ? true : undefined,
+      reservedForStartups: next.startup ? true : undefined,
+      emdExemptMSME: next.emdExempt ? true : undefined,
     });
   };
 
   const goToPage = (page: number) => {
     if (page < 1 || page > totalPages) return;
     updateFilters({ page });
+    if (typeof window !== 'undefined') {
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
   };
 
   const activeFilters = [
     ...(activeCategory !== 'All' ? [{ key: 'cat', label: activeCategory }] : []),
     ...Array.from(selectedStates).map((s) => ({ key: `state-${s}`, label: s })),
+    ...(selectedValueRange ? [{ key: 'range', label: selectedValueRange }] : []),
+    ...(specialFilters.msme ? [{ key: 'sp-msme', label: 'MSME Reserved' }] : []),
+    ...(specialFilters.startup ? [{ key: 'sp-startup', label: 'Startup Reserved' }] : []),
+    ...(specialFilters.emdExempt ? [{ key: 'sp-emd', label: 'EMD Exempt' }] : []),
   ];
 
   const clearFilter = (key: string) => {
     if (key === 'cat') handleCategoryChange(activeCategory);
     else if (key.startsWith('state-')) toggleState(key.replace('state-', ''));
+    else if (key === 'range') handleValueRangeSelect(selectedValueRange!);
+    else if (key === 'sp-msme') toggleSpecialFilter('msme');
+    else if (key === 'sp-startup') toggleSpecialFilter('startup');
+    else if (key === 'sp-emd') toggleSpecialFilter('emdExempt');
   };
 
   const clearAllFilters = () => {
     setActiveCategory('All');
     setSelectedStates(new Set());
-    updateFilters({ categories: undefined, states: undefined });
+    setSelectedValueRange(null);
+    setSpecialFilters({ msme: false, startup: false, emdExempt: false });
+    updateFilters({
+      status: statusTab === 'ALL' ? undefined : [statusTab],
+      categories: undefined,
+      states: undefined,
+      minValue: undefined,
+      maxValue: undefined,
+      reservedForMSME: undefined,
+      reservedForStartups: undefined,
+      emdExemptMSME: undefined,
+    });
   };
 
   const filteredStatesList = STATES.filter((s) => s.toLowerCase().includes(stateSearch.toLowerCase()));
@@ -164,7 +257,7 @@ export default function TendersPage() {
           <Filter className="w-4 h-4 text-primary-500" /> Filters
         </h3>
         {activeFilters.length > 0 && (
-          <button onClick={clearAllFilters} className="text-caption text-primary-500 hover:text-primary-600 font-medium">
+          <button onClick={clearAllFilters} className="text-caption text-primary-500 hover:text-primary-600 font-medium cursor-pointer">
             Clear all
           </button>
         )}
@@ -172,7 +265,7 @@ export default function TendersPage() {
       <FilterSection title="Category" open={openSections.category} onToggle={() => toggleSection('category')}>
         {['Works', 'Goods', 'Services', 'Consultancy'].map((cat) => (
           <label key={cat} className="flex items-center gap-2.5 py-1 cursor-pointer group">
-            <input type="checkbox" checked={activeCategory === cat} onChange={() => handleCategoryChange(cat)} className="w-4 h-4 rounded border-border text-primary-500 focus:ring-primary-500 bg-transparent" />
+            <input type="checkbox" checked={activeCategory === cat} onChange={() => handleCategoryChange(cat)} className="w-4 h-4 rounded border-border text-primary-500 focus:ring-primary-500 bg-transparent cursor-pointer" />
             <span className="text-body-sm text-muted-foreground group-hover:text-foreground transition-colors flex-1">{cat}</span>
           </label>
         ))}
@@ -182,7 +275,7 @@ export default function TendersPage() {
         <div className="max-h-40 overflow-y-auto no-scrollbar space-y-0.5">
           {filteredStatesList.map((state) => (
             <label key={state} className="flex items-center gap-2.5 py-1 cursor-pointer group">
-              <input type="checkbox" checked={selectedStates.has(state)} onChange={() => toggleState(state)} className="w-4 h-4 rounded border-border text-primary-500 focus:ring-primary-500 bg-transparent" />
+              <input type="checkbox" checked={selectedStates.has(state)} onChange={() => toggleState(state)} className="w-4 h-4 rounded border-border text-primary-500 focus:ring-primary-500 bg-transparent cursor-pointer" />
               <span className="text-body-sm text-muted-foreground group-hover:text-foreground transition-colors flex-1">{state}</span>
             </label>
           ))}
@@ -190,27 +283,162 @@ export default function TendersPage() {
       </FilterSection>
       <FilterSection title="Value Range" open={openSections.value} onToggle={() => toggleSection('value')}>
         <div className="flex flex-wrap gap-1.5">
-          {['Under 10L', '10L-1Cr', '1Cr-10Cr', '10Cr-100Cr', '100Cr+'].map((range) => (
-            <button key={range} className="text-[11px] px-2.5 py-1 rounded-full bg-muted/50 text-muted-foreground hover:bg-primary-500/10 hover:text-primary-500 border border-border hover:border-primary-500/30 transition-all">{range}</button>
-          ))}
+          {Object.keys(VALUE_RANGES).map((range) => {
+            const isSelected = selectedValueRange === range;
+            return (
+              <button
+                key={range}
+                type="button"
+                onClick={() => handleValueRangeSelect(range)}
+                className={cn(
+                  'text-[11px] px-2.5 py-1 rounded-full border transition-all cursor-pointer',
+                  isSelected
+                    ? 'bg-primary-500 text-white border-primary-500 font-semibold shadow-sm'
+                    : 'bg-muted/50 text-muted-foreground hover:bg-primary-500/10 hover:text-primary-500 border-border hover:border-primary-500/30'
+                )}
+              >
+                {range}
+              </button>
+            );
+          })}
         </div>
       </FilterSection>
       <FilterSection title="Special Filters" open={openSections.special} onToggle={() => toggleSection('special')}>
-        {['MSME Reserved', 'Startup Reserved', 'EMD Exempt'].map((f) => (
-          <label key={f} className="flex items-center justify-between py-1 cursor-pointer group">
-            <span className="text-body-sm text-muted-foreground group-hover:text-foreground transition-colors">{f}</span>
-            <div className="relative w-9 h-5 bg-muted rounded-full cursor-pointer"><span className="absolute top-0.5 left-0.5 w-4 h-4 bg-foreground/30 rounded-full" /></div>
-          </label>
-        ))}
+        {[
+          { key: 'msme' as const, label: 'MSME Reserved' },
+          { key: 'startup' as const, label: 'Startup Reserved' },
+          { key: 'emdExempt' as const, label: 'EMD Exempt' },
+        ].map((f) => {
+          const isActive = specialFilters[f.key];
+          return (
+            <div
+              key={f.key}
+              onClick={() => toggleSpecialFilter(f.key)}
+              className="flex items-center justify-between py-1.5 cursor-pointer group"
+            >
+              <span className={cn('text-body-sm transition-colors', isActive ? 'text-foreground font-medium' : 'text-muted-foreground group-hover:text-foreground')}>
+                {f.label}
+              </span>
+              <div
+                className={cn(
+                  'relative w-9 h-5 rounded-full transition-colors duration-200 cursor-pointer',
+                  isActive ? 'bg-primary-500' : 'bg-muted'
+                )}
+              >
+                <span
+                  className={cn(
+                    'absolute top-0.5 w-4 h-4 rounded-full bg-white transition-transform duration-200 shadow-sm',
+                    isActive ? 'left-[18px]' : 'left-0.5'
+                  )}
+                />
+              </div>
+            </div>
+          );
+        })}
       </FilterSection>
     </>
   );
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-heading-lg text-foreground font-display">All Tenders</h1>
-        <p className="text-body-sm text-muted-foreground mt-0.5">Browse and search {total > 0 ? formatIndianNumber(total) : ''} active government tenders</p>
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-heading-lg text-foreground font-display">All Tenders</h1>
+          <p className="text-body-sm text-muted-foreground mt-0.5">
+            {statusTab === 'ACTIVE'
+              ? `Showing ${formatIndianNumber(activeCount)} active tenders open for bidding`
+              : statusTab === 'CLOSED'
+              ? `Showing ${formatIndianNumber(closedCount)} closed & awarded tenders`
+              : `Showing all ${formatIndianNumber(totalCount)} tenders in the database (${formatIndianNumber(activeCount)} active, ${formatIndianNumber(closedCount)} closed)`}
+          </p>
+        </div>
+
+        {/* Status Pill Tabs & Refresh */}
+        <div className="flex items-center gap-2 self-start sm:self-auto">
+          <div className="flex items-center gap-1.5 bg-muted/60 p-1 rounded-xl border border-border">
+            <button
+              type="button"
+              onClick={() => handleStatusTabChange('ACTIVE')}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5',
+                statusTab === 'ACTIVE'
+                  ? 'bg-primary-500 text-white shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              <span>Active</span>
+              <span
+                className={cn(
+                  'px-1.5 py-0.2 rounded-full text-[10px]',
+                  statusTab === 'ACTIVE'
+                    ? 'bg-white/20 text-white'
+                    : 'bg-muted text-muted-foreground'
+                )}
+              >
+                {formatIndianNumber(activeCount)}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleStatusTabChange('CLOSED')}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5',
+                statusTab === 'CLOSED'
+                  ? 'bg-primary-500 text-white shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              <span>Closed</span>
+              <span
+                className={cn(
+                  'px-1.5 py-0.2 rounded-full text-[10px]',
+                  statusTab === 'CLOSED'
+                    ? 'bg-white/20 text-white'
+                    : 'bg-muted text-muted-foreground'
+                )}
+              >
+                {formatIndianNumber(closedCount)}
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => handleStatusTabChange('ALL')}
+              className={cn(
+                'px-3 py-1.5 rounded-lg text-xs font-semibold transition-all flex items-center gap-1.5',
+                statusTab === 'ALL'
+                  ? 'bg-primary-500 text-white shadow-sm'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              <span>All</span>
+              <span
+                className={cn(
+                  'px-1.5 py-0.2 rounded-full text-[10px]',
+                  statusTab === 'ALL'
+                    ? 'bg-white/20 text-white'
+                    : 'bg-muted text-muted-foreground'
+                )}
+              >
+                {formatIndianNumber(totalCount)}
+              </span>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={async () => {
+              await Promise.all([
+                refreshCounts(),
+                search(),
+                fetchDashboard({ force: true }),
+              ]);
+            }}
+            title="Refresh tenders and counts"
+            className="p-2 rounded-xl border border-border bg-card text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+          >
+            <RefreshCw className={cn('w-4 h-4', (isLoading || countsLoading) && 'animate-spin')} />
+          </button>
+        </div>
       </div>
 
       {/* Search */}
@@ -227,7 +455,13 @@ export default function TendersPage() {
       <div className="flex gap-6">
         {/* Desktop sidebar */}
         <aside className="w-[260px] shrink-0 hidden md:block">
-          <div className="bg-card border border-border rounded-xl p-4 sticky top-20">{filterContent}</div>
+          {/* Bounded height with internal scrolling: with the Category, State
+              and Value sections expanded the panel exceeds the viewport, and a
+              sticky element taller than the screen cannot be scrolled, leaving
+              the lower filters unreachable. */}
+          <div className="bg-card border border-border rounded-xl p-4 sticky top-20 max-h-[calc(100vh-6rem)] overflow-y-auto overscroll-contain">
+            {filterContent}
+          </div>
         </aside>
 
         {/* Mobile filter drawer */}
@@ -250,7 +484,7 @@ export default function TendersPage() {
           <div className="flex items-center justify-between mb-4 flex-wrap gap-3">
             <div className="flex items-center gap-3 flex-wrap">
               <p className="text-body-sm text-muted-foreground">
-                {isLoading ? 'Loading...' : <>Showing <span className="font-mono text-foreground">{tenders.length}</span> of <span className="font-mono text-foreground">{formatIndianNumber(total)}</span> tenders</>}
+                {isLoading ? 'Loading...' : <>Showing <span className="font-mono text-foreground">{tenders.length}</span> of <span className="font-mono text-foreground">{formatIndianNumber(displayedTotal)}</span> tenders</>}
               </p>
               {activeFilters.map((f) => (
                 <button key={f.key} onClick={() => clearFilter(f.key)} className="inline-flex items-center gap-1 text-[11px] px-2.5 py-1 rounded-full bg-primary-500/10 text-primary-500 hover:bg-primary-500/15 transition-colors">

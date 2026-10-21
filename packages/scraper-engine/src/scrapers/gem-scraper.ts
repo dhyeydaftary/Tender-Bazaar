@@ -1,56 +1,110 @@
+import axios, { type AxiosResponse } from 'axios';
 import { BaseScraper, ScrapedTender, ScrapeResult } from './base-scraper';
 import { PrismaClient } from '@prisma/client';
 
 // ---------------------------------------------------------------------------
-// Types for GeM API responses
+// GeM public bid-search mechanism
+// ---------------------------------------------------------------------------
+//
+// The previous implementation targeted https://bidplus.gem.gov.in/all-bids-search
+// and .../bid-detail. Both return HTTP 404 — they never existed; the file itself
+// described them as "representative".
+//
+// The mechanism actually used by GeM's public bid listing (read from the page's
+// own JavaScript at https://bidplus.gem.gov.in/all-bids and confirmed with live
+// requests) is:
+//
+//   1. GET  /all-bids        → sets session cookies and embeds a CSRF token in the
+//                              page source as:  'csrf_bd_gem_nk': '<32 hex chars>'
+//   2. POST /all-bids-data   → form-encoded, with:
+//                                payload          = JSON string
+//                                csrf_bd_gem_nk   = the token from step 1
+//                              payload shape:
+//                                { "page": <number>, "param": {}, "filter": { "sort": ... } }
+//
+// Notes established by inspection, which this implementation depends on:
+//   • `page` must be a JSON *number*. The string "2" returns HTTP 500.
+//   • Sorting by 'Bid-Start-Date-Latest' returns newest bids first. This is what
+//     makes new-only scraping cheap: once a whole page is already known we can
+//     stop paginating.
+//   • The response is a Solr envelope:
+//       { status, code: 200, response: { response: { numFound, start, docs: [...] } } }
+//   • Every field inside a doc is an ARRAY, e.g. "b_id":[9995866]. Hence unwrap().
+//   • Page size is 10, fixed by the server.
+//
+// Access & ethics:
+//   • robots.txt on bidplus.gem.gov.in disallows only /resources/ and three
+//     bg_emd/epbgservice paths. /all-bids and /all-bids-data are not disallowed.
+//   • No credentials are involved. The CSRF token is served openly in the public
+//     page; reading it and echoing it back is simply using the site as intended.
+//     Nothing here bypasses authentication or anti-bot protection.
+//
+// Deliberate data limits (do not "fix" by guessing):
+//   • The listing carries NO estimated value, NO EMD amount and NO state/district.
+//     Those are left undefined rather than fabricated. They live only inside the
+//     bid document PDF, which this scraper does not parse.
+//   • state is set to 'All India' because GeM is a national portal.
+
+const GEM_BIDPLUS_BASE = 'https://bidplus.gem.gov.in';
+const GEM_ALL_BIDS_URL = `${GEM_BIDPLUS_BASE}/all-bids`;
+const GEM_ALL_BIDS_DATA_URL = `${GEM_BIDPLUS_BASE}/all-bids-data`;
+const GEM_CSRF_FIELD = 'csrf_bd_gem_nk';
+
+/** Server-side page size for /all-bids-data. */
+const GEM_PAGE_SIZE = 10;
+
+/** Solr sentinel for "no date" seen in final_end_date_sort. */
+const GEM_NULL_DATE_PREFIX = '-0001';
+
+// ---------------------------------------------------------------------------
+// Response types (mirroring the real payload)
 // ---------------------------------------------------------------------------
 
-interface GemBidSearchResponse {
-  data?: GemBidItem[];
-  totalRecords?: number;
-  pageNo?: number;
-  pageSize?: number;
+/** Every Solr field arrives wrapped in an array. */
+type SolrField<T> = T[] | T | undefined;
+
+interface GemBidDoc {
+  id?: SolrField<string>;
+  b_id?: SolrField<number>;
+  b_bid_number?: SolrField<string>;
+  b_bid_type?: SolrField<number>;
+  b_eval_type?: SolrField<number>;
+  b_status?: SolrField<number>;
+  b_category_name?: SolrField<string>;
+  bd_category_name?: SolrField<string>;
+  b_total_quantity?: SolrField<number>;
+  ba_official_details_minName?: SolrField<string>;
+  ba_official_details_deptName?: SolrField<string>;
+  final_start_date_sort?: SolrField<string>;
+  final_end_date_sort?: SolrField<string>;
+  ba_is_global_tendering?: SolrField<number>;
+  is_rc_bid?: SolrField<number>;
 }
 
-interface GemBidItem {
-  bidId?: string;
-  bidNumber?: string;
-  itemDescription?: string;
-  bidTitle?: string;
-  organizationName?: string;
-  departmentName?: string;
-  bidCategory?: string;
-  estimatedValue?: number;
-  emdAmount?: number;
-  publishDate?: string;
-  bidEndDate?: string;
-  bidOpenDate?: string;
-  mseExemption?: boolean;
-  startupExemption?: boolean;
-  bidUrl?: string;
-  state?: string;
-  district?: string;
-  quantity?: number;
-  uom?: string;
-  deliveryDays?: number;
+interface GemAllBidsDataResponse {
+  status?: number;
+  code?: number;
+  message?: string;
+  response?: {
+    response?: {
+      numFound?: number;
+      start?: number;
+      docs?: GemBidDoc[];
+    };
+  };
 }
 
-interface GemBidDetailResponse {
-  data?: GemBidDetail;
+interface GemSession {
+  cookie: string;
+  csrfToken: string;
 }
 
-interface GemBidDetail extends GemBidItem {
-  specifications?: string;
-  consigneeName?: string;
-  consigneeAddress?: string;
-  paymentTerms?: string;
-  warrantyPeriod?: string;
-  documents?: Array<{
-    fileName?: string;
-    fileUrl?: string;
-    fileType?: string;
-    fileSize?: number;
-  }>;
+/** Raised when GeM's public mechanism cannot be used. Never silently swallowed. */
+export class GemAccessError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'GemAccessError';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -58,21 +112,21 @@ interface GemBidDetail extends GemBidItem {
 // ---------------------------------------------------------------------------
 
 /**
- * Scraper for Government e-Marketplace (GeM) - https://gem.gov.in
+ * Scraper for Government e-Marketplace (GeM) — https://gem.gov.in
  *
- * GeM provides a search API for bid listings. This scraper uses the API
- * endpoints to fetch bid data and then scrapes individual bid detail pages
- * for complete information.
+ * Reads the public bid listing via the /all-bids-data endpoint. The listing is
+ * structured enough to build a complete Tender row, so no per-bid detail request
+ * is made at all: that is both faster and the correct new-only behaviour.
  */
 export class GemScraper extends BaseScraper {
-  private readonly searchApiUrl: string;
-  private readonly bidDetailApiUrl: string;
-  private readonly pageSize: number = 50;
+  private session: GemSession | null = null;
 
   constructor(options?: {
     prisma?: PrismaClient;
     maxConcurrency?: number;
     requestDelay?: number;
+    maxPages?: number;
+    fullRescrape?: boolean;
   }) {
     super('GeM', 'https://gem.gov.in', {
       maxConcurrency: options?.maxConcurrency ?? 2,
@@ -80,11 +134,135 @@ export class GemScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages ?? 10,
+      fullRescrape: options?.fullRescrape ?? false,
     });
+  }
 
-    // GeM API endpoints (representative — actual endpoints require auth/API keys)
-    this.searchApiUrl = 'https://bidplus.gem.gov.in/all-bids-search';
-    this.bidDetailApiUrl = 'https://bidplus.gem.gov.in/bid-detail';
+  // -----------------------------------------------------------------------
+  // Session handling
+  // -----------------------------------------------------------------------
+
+  /**
+   * Establish a session: fetch /all-bids, keep its cookies, extract the CSRF token.
+   *
+   * Throws GemAccessError when the token cannot be found — that means GeM changed
+   * its page and the scraper must fail loudly rather than report zero/fake bids.
+   */
+  private async establishSession(): Promise<GemSession> {
+    // /all-bids is intermittently 500 (observed roughly 1 request in 3 during
+    // testing, recovering immediately). Without a retry here a single transient
+    // 500 aborts the entire run, so back off and retry before giving up.
+    let response: AxiosResponse<string> | null = null;
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= this.retryCount; attempt++) {
+      try {
+        response = await axios.get<string>(GEM_ALL_BIDS_URL, {
+          timeout: 30_000,
+          headers: {
+            'User-Agent': this.getRandomUserAgent(),
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-IN,en;q=0.9,hi;q=0.8',
+          },
+          // Treat only 2xx as usable; anything else is an access problem we report.
+          validateStatus: (s) => s >= 200 && s < 300,
+        });
+        break;
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        this.logger.warn(
+          `GeM session attempt ${attempt}/${this.retryCount} failed: ${lastError.message}`,
+        );
+        if (attempt < this.retryCount) {
+          await this.delay(this.retryDelay * Math.pow(2, attempt - 1));
+        }
+      }
+    }
+
+    if (!response) {
+      throw new GemAccessError(
+        `Could not load ${GEM_ALL_BIDS_URL} after ${this.retryCount} attempts ` +
+        `(last error: ${lastError?.message ?? 'unknown'}). GeM's public bid page is ` +
+        `unreachable right now; no tenders are reported for this run.`,
+      );
+    }
+
+    const html = String(response.data ?? '');
+
+    const tokenMatch = html.match(
+      new RegExp(`['"]${GEM_CSRF_FIELD}['"]\\s*:\\s*['"]([a-f0-9]{32})['"]`, 'i'),
+    );
+    if (!tokenMatch) {
+      throw new GemAccessError(
+        `Could not find the ${GEM_CSRF_FIELD} CSRF token in ${GEM_ALL_BIDS_URL}. ` +
+        `GeM's public bid page has likely changed. The scraper is failing rather than ` +
+        `returning results, so no fabricated tenders are recorded.`,
+      );
+    }
+
+    const setCookie = response.headers['set-cookie'];
+    const cookie = Array.isArray(setCookie)
+      ? setCookie.map((c) => c.split(';')[0]).join('; ')
+      : '';
+
+    return { cookie, csrfToken: tokenMatch[1] };
+  }
+
+  // -----------------------------------------------------------------------
+  // Listing retrieval
+  // -----------------------------------------------------------------------
+
+  /**
+   * POST /all-bids-data for one page. `page` is 1-based; it is omitted for page 1
+   * to mirror the site's own behaviour (its JS only sets `page` when truthy).
+   */
+  private async fetchBidPage(page: number): Promise<GemAllBidsDataResponse> {
+    if (!this.session) {
+      this.session = await this.establishSession();
+    }
+
+    const payload: Record<string, unknown> = {
+      param: {},
+      filter: { sort: 'Bid-Start-Date-Latest' },
+    };
+    if (page > 1) {
+      // Must be a number — the string form returns HTTP 500.
+      payload.page = page;
+    }
+
+    const body = new URLSearchParams();
+    body.set('payload', JSON.stringify(payload));
+    body.set(GEM_CSRF_FIELD, this.session.csrfToken);
+
+    const run = async (): Promise<GemAllBidsDataResponse> => {
+      const response = await axios.post(GEM_ALL_BIDS_DATA_URL, body.toString(), {
+        timeout: 30_000,
+        headers: {
+          'User-Agent': this.getRandomUserAgent(),
+          'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+          Accept: 'application/json, text/javascript, */*; q=0.01',
+          'X-Requested-With': 'XMLHttpRequest',
+          Referer: GEM_ALL_BIDS_URL,
+          ...(this.session?.cookie ? { Cookie: this.session.cookie } : {}),
+        },
+        validateStatus: (s) => s >= 200 && s < 300,
+      });
+      return response.data as GemAllBidsDataResponse;
+    };
+
+    try {
+      return await run();
+    } catch (err) {
+      // A stale CSRF token / expired session shows up as 4xx or 500. Re-establish
+      // once and retry; if that still fails, let the error surface.
+      this.logger.warn(`Bid page ${page} failed, refreshing GeM session and retrying once`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      this.session = await this.establishSession();
+      body.set(GEM_CSRF_FIELD, this.session.csrfToken);
+      return run();
+    }
   }
 
   // -----------------------------------------------------------------------
@@ -97,147 +275,98 @@ export class GemScraper extends BaseScraper {
     let newTenders = 0;
     let updatedTenders = 0;
     let errors = 0;
+    let skippedExisting = 0;
+    let pagesScraped = 0;
 
-    this.logger.info('Starting GeM bid scraping run');
+    this.logger.info('Starting GeM bid scraping run', {
+      maxPages: this.maxPages,
+      mode: this.fullRescrape ? 'full-rescrape' : 'new-only',
+      endpoint: GEM_ALL_BIDS_DATA_URL,
+    });
 
     try {
-      // Fetch the first page to determine total records
-      const firstPageHtml = await this.fetchPage(this.searchApiUrl, {
-        headers: {
-          Accept: 'text/html,application/json',
-          Referer: 'https://gem.gov.in/',
-        },
-      });
+      // Fail fast and loudly if the public mechanism is unavailable.
+      this.session = await this.establishSession();
+      this.logger.info('GeM session established');
 
-      const listings = this.parseTenderList(firstPageHtml);
-      totalFound += listings.length;
-
-      // Process each listing
-      for (const listing of listings) {
+      for (let page = 1; page <= this.maxPages; page++) {
         try {
-          if (!listing.sourceId) continue;
+          const data = await this.fetchBidPage(page);
 
-          // Fetch detail page for each bid
-          const detailUrl = `${this.bidDetailApiUrl}/${listing.sourceId}`;
-          const detailHtml = await this.fetchPage(detailUrl, {
-            headers: {
-              Accept: 'text/html,application/json',
-              Referer: this.searchApiUrl,
-            },
-          });
+          if (data.code !== 200) {
+            throw new GemAccessError(
+              `GeM /all-bids-data returned code=${data.code ?? 'unknown'} ` +
+              `message=${data.message ?? 'none'} on page ${page}`,
+            );
+          }
 
-          const detail = this.parseTenderDetail(detailHtml);
+          const solr = data.response?.response;
+          const docs = solr?.docs ?? [];
 
-          // Merge listing and detail data
-          const tender: ScrapedTender = {
-            title: detail.title || listing.title || 'Untitled GeM Bid',
-            description: detail.description || listing.description,
-            referenceNumber: listing.referenceNumber || detail.referenceNumber || listing.sourceId!,
-            organization: detail.organization || listing.organization || 'Unknown',
-            department: detail.department || listing.department,
-            tenderType: 'RFQ',
-            category: this.mapGemCategory(listing.category),
-            status: 'ACTIVE',
-            state: detail.state || listing.state || 'All India',
-            district: detail.district || listing.district,
-            estimatedValue: detail.estimatedValue ?? listing.estimatedValue,
-            emdAmount: detail.emdAmount ?? listing.emdAmount,
-            publishedDate: listing.publishedDate || detail.publishedDate || new Date(),
-            bidSubmissionDeadline: listing.bidSubmissionDeadline || detail.bidSubmissionDeadline || new Date(),
-            bidOpeningDate: detail.bidOpeningDate || listing.bidOpeningDate,
-            sourcePortal: 'GeM',
-            sourceUrl: `https://bidplus.gem.gov.in/showbidDocument/${listing.sourceId}`,
-            sourceId: listing.sourceId!,
-            reservedForMSME: listing.reservedForMSME ?? detail.reservedForMSME ?? false,
-            reservedForStartups: listing.reservedForStartups ?? detail.reservedForStartups ?? false,
-            emdExemptMSME: listing.emdExemptMSME ?? detail.emdExemptMSME ?? false,
-            documents: detail.documents,
-          };
+          if (docs.length === 0) {
+            this.logger.info(`No bids on page ${page}, stopping pagination`);
+            break;
+          }
 
-          const result = await this.saveTender(tender);
-          if (result.isNew) newTenders++;
-          else updatedTenders++;
+          const listings = this.mapDocsToListings(docs);
+          // This page was fetched and its bids parsed, so it counts as scraped.
+          // Reached only past the code!==200 throw and the empty-docs break, so
+          // failed and empty pages are excluded.
+          pagesScraped++;
+          totalFound += listings.length;
+          this.logger.info(`Page ${page}: ${listings.length} bids (numFound=${solr?.numFound ?? '?'})`);
 
-          // Respect rate limits between detail fetches
-          await this.delay(this.requestDelay);
-        } catch (err) {
-          errors++;
-          this.handleError(err instanceof Error ? err : new Error(String(err)), {
-            action: 'processGemBid',
-            sourceId: listing.sourceId,
-          });
-        }
-      }
+          // New-only: single batch existence check for the page.
+          const { toProcess, skipped } = await this.partitionListings(listings);
+          skippedExisting += skipped.length;
 
-      // Fetch additional pages
-      const totalPages = Math.ceil(totalFound / this.pageSize);
-      for (let page = 2; page <= Math.min(totalPages, 10); page++) {
-        try {
-          const pageUrl = `${this.searchApiUrl}?page=${page}&pageSize=${this.pageSize}`;
-          const pageHtml = await this.fetchPage(pageUrl, {
-            headers: {
-              Accept: 'text/html,application/json',
-              Referer: this.searchApiUrl,
-            },
-          });
-
-          const pageListings = this.parseTenderList(pageHtml);
-          totalFound += pageListings.length;
-
-          for (const listing of pageListings) {
+          for (const listing of toProcess) {
             try {
-              if (!listing.sourceId) continue;
-
-              const detailUrl = `${this.bidDetailApiUrl}/${listing.sourceId}`;
-              const detailHtml = await this.fetchPage(detailUrl);
-
-              const detail = this.parseTenderDetail(detailHtml);
-
-              const tender: ScrapedTender = {
-                title: detail.title || listing.title || 'Untitled GeM Bid',
-                description: detail.description || listing.description,
-                referenceNumber: listing.referenceNumber || detail.referenceNumber || listing.sourceId!,
-                organization: detail.organization || listing.organization || 'Unknown',
-                department: detail.department || listing.department,
-                tenderType: 'RFQ',
-                category: this.mapGemCategory(listing.category),
-                status: 'ACTIVE',
-                state: detail.state || listing.state || 'All India',
-                district: detail.district || listing.district,
-                estimatedValue: detail.estimatedValue ?? listing.estimatedValue,
-                emdAmount: detail.emdAmount ?? listing.emdAmount,
-                publishedDate: listing.publishedDate || detail.publishedDate || new Date(),
-                bidSubmissionDeadline: listing.bidSubmissionDeadline || detail.bidSubmissionDeadline || new Date(),
-                bidOpeningDate: detail.bidOpeningDate || listing.bidOpeningDate,
-                sourcePortal: 'GeM',
-                sourceUrl: `https://bidplus.gem.gov.in/showbidDocument/${listing.sourceId}`,
-                sourceId: listing.sourceId!,
-                reservedForMSME: listing.reservedForMSME ?? false,
-                reservedForStartups: listing.reservedForStartups ?? false,
-                emdExemptMSME: listing.emdExemptMSME ?? false,
-                documents: detail.documents,
-              };
+              const tender = this.buildTender(listing);
+              if (!tender) continue;
 
               const result = await this.saveTender(tender);
               if (result.isNew) newTenders++;
               else updatedTenders++;
-
-              await this.delay(this.requestDelay);
             } catch (err) {
               errors++;
               this.handleError(err instanceof Error ? err : new Error(String(err)), {
-                action: 'processGemBid',
+                action: 'saveGemBid',
                 sourceId: listing.sourceId,
                 page,
               });
             }
           }
+
+          // One addBulk per page rather than one add per tender.
+          await this.flushTenderIndexQueue(`${this.portalName}:page-${page}`);
+
+          // Results are sorted newest-first, so a page in which every bid is
+          // already known means everything beyond it is older and also known.
+          // Stop here instead of walking the remaining pages.
+          if (!this.fullRescrape && toProcess.length === 0 && skipped.length > 0) {
+            this.logger.info(
+              `Page ${page} contained only already-known bids — stopping early (new-only)`,
+            );
+            break;
+          }
+
+          // Stop if we have consumed everything the server has.
+          const start = solr?.start ?? (page - 1) * GEM_PAGE_SIZE;
+          if (typeof solr?.numFound === 'number' && start + docs.length >= solr.numFound) {
+            this.logger.info('Reached the end of the GeM result set');
+            break;
+          }
+
+          await this.delay(this.requestDelay);
         } catch (err) {
           errors++;
           this.handleError(err instanceof Error ? err : new Error(String(err)), {
-            action: 'fetchGemPage',
+            action: 'fetchGemBidPage',
             page,
           });
+          // An access-level failure will not fix itself on the next page.
+          if (err instanceof GemAccessError) break;
         }
       }
     } catch (err) {
@@ -246,14 +375,20 @@ export class GemScraper extends BaseScraper {
         action: 'gemScrapeMain',
       });
     } finally {
+      // Guarantee every changed tender is queued, even on an early break or
+      // error. main.ts calls closeBrowser() rather than cleanup(), so this is
+      // the end-of-run flush for a scheduled/manual run.
+      await this.flushTenderIndexQueue();
       await this.closeBrowser();
     }
 
     const duration = Date.now() - startTime;
-    this.logger.info(`GeM scraping complete`, {
+    this.logger.info('GeM scraping complete', {
       totalFound,
       newTenders,
       updatedTenders,
+      skippedExisting,
+      pagesScraped,
       errors,
       durationMs: duration,
     });
@@ -265,226 +400,181 @@ export class GemScraper extends BaseScraper {
       updatedTenders,
       errors,
       duration,
+      skippedExisting,
+      pagesScraped,
     };
   }
 
   // -----------------------------------------------------------------------
-  // HTML / JSON Parsing
+  // Mapping
   // -----------------------------------------------------------------------
 
-  /**
-   * Parse the GeM bid listing page.
-   * GeM renders bids in a table/card layout with bid details.
-   */
-  parseTenderList(html: string): Partial<ScrapedTender>[] {
-    const tenders: Partial<ScrapedTender>[] = [];
-
-    // Try parsing as JSON first (API response)
-    try {
-      const jsonData = JSON.parse(html) as GemBidSearchResponse;
-      if (jsonData.data && Array.isArray(jsonData.data)) {
-        for (const bid of jsonData.data) {
-          tenders.push(this.mapGemBidToTender(bid));
-        }
-        return tenders;
-      }
-    } catch {
-      // Not JSON — parse as HTML
-    }
-
-    // Parse HTML listing page
-    const $ = this.loadHtml(html);
-
-    // GeM bid listing cards
-    $('#pagi_content .bid_no, .bid-result-item, tr[data-bidid]').each((_, el) => {
-      const $row = $(el);
-
-      const bidId = $row.attr('data-bidid') || this.cleanText($row.find('.bid_no_value, .bid-id').text());
-      const title = this.cleanText($row.find('.bid_title, .item-description, td:nth-child(2)').text());
-      const org = this.cleanText($row.find('.org_name, .department-name, td:nth-child(3)').text());
-      const valueText = this.cleanText($row.find('.bid_value, .estimated-value, td:nth-child(4)').text());
-      const emdText = this.cleanText($row.find('.emd_value, .emd-amount, td:nth-child(5)').text());
-      const startDate = this.cleanText($row.find('.start_date, .publish-date, td:nth-child(6)').text());
-      const endDate = this.cleanText($row.find('.end_date, .end-date, td:nth-child(7)').text());
-      const category = this.cleanText($row.find('.bid_category, .category, td:nth-child(8)').text());
-
-      const mseExempt = $row.find('.mse-exempt, .mse_exemption').length > 0
-        || $row.text().toLowerCase().includes('mse exemption');
-      const startupExempt = $row.text().toLowerCase().includes('startup');
-
-      if (bidId) {
-        tenders.push({
-          sourceId: bidId,
-          title: title || `GeM Bid ${bidId}`,
-          organization: org,
-          category: this.mapGemCategory(category),
-          estimatedValue: this.parseIndianCurrency(valueText),
-          emdAmount: this.parseIndianCurrency(emdText),
-          publishedDate: this.parseIndianDate(startDate),
-          bidSubmissionDeadline: this.parseIndianDate(endDate),
-          sourcePortal: 'GeM',
-          sourceUrl: `https://bidplus.gem.gov.in/showbidDocument/${bidId}`,
-          reservedForMSME: mseExempt,
-          reservedForStartups: startupExempt,
-          emdExemptMSME: mseExempt,
-          referenceNumber: bidId,
-          state: 'All India',
-        });
-      }
-    });
-
-    return tenders;
+  /** Unwrap a Solr array-valued field. */
+  private unwrap<T>(field: SolrField<T>): T | undefined {
+    if (field === undefined || field === null) return undefined;
+    if (Array.isArray(field)) return field.length > 0 ? field[0] : undefined;
+    return field;
   }
 
   /**
-   * Parse a GeM bid detail page for complete tender information.
+   * Parse a GeM Solr date. Returns undefined for the '-0001-11-30T00:00:00Z'
+   * sentinel that GeM uses for "no date".
    */
-  parseTenderDetail(html: string): Partial<ScrapedTender> {
-    // Try parsing as JSON first
-    try {
-      const jsonData = JSON.parse(html) as GemBidDetailResponse;
-      if (jsonData.data) {
-        return this.mapGemBidDetailToTender(jsonData.data);
-      }
-    } catch {
-      // Not JSON — parse as HTML
-    }
-
-    const $ = this.loadHtml(html);
-    const tender: Partial<ScrapedTender> = {};
-
-    // Bid number / reference
-    tender.referenceNumber = this.cleanText(
-      $('#bidNumber, .bid-number-value, [data-field="bidNumber"]').text(),
-    );
-
-    // Title / description
-    tender.title = this.cleanText($('#itemDescription, .bid-title, h2.bid-heading').text());
-    tender.description = this.cleanText(
-      $('#specifications, .bid-description, .item-specifications').text(),
-    );
-
-    // Organization and department
-    tender.organization = this.cleanText(
-      $('#organizationName, .org-name, [data-field="orgName"]').text(),
-    );
-    tender.department = this.cleanText(
-      $('#departmentName, .dept-name, [data-field="deptName"]').text(),
-    );
-
-    // Values
-    const estValueText = this.cleanText(
-      $('#estimatedValue, .estimated-value, [data-field="estimatedValue"]').text(),
-    );
-    tender.estimatedValue = this.parseIndianCurrency(estValueText);
-
-    const emdText = this.cleanText(
-      $('#emdAmount, .emd-amount, [data-field="emdAmount"]').text(),
-    );
-    tender.emdAmount = this.parseIndianCurrency(emdText);
-
-    // Dates
-    const publishDate = this.cleanText(
-      $('#publishDate, .publish-date, [data-field="publishDate"]').text(),
-    );
-    tender.publishedDate = this.parseIndianDate(publishDate);
-
-    const endDate = this.cleanText(
-      $('#bidEndDate, .bid-end-date, [data-field="bidEndDate"]').text(),
-    );
-    tender.bidSubmissionDeadline = this.parseIndianDate(endDate);
-
-    const openDate = this.cleanText(
-      $('#bidOpenDate, .bid-open-date, [data-field="bidOpenDate"]').text(),
-    );
-    tender.bidOpeningDate = this.parseIndianDate(openDate);
-
-    // Location
-    tender.state = this.cleanText($('#state, .delivery-state, [data-field="state"]').text()) || 'All India';
-    tender.district = this.cleanText($('#district, .delivery-district, [data-field="district"]').text());
-
-    // MSE / Startup exemptions
-    const mseText = this.cleanText($('#mseExemption, .mse-exempt').text()).toLowerCase();
-    tender.reservedForMSME = mseText.includes('yes') || mseText.includes('true');
-    tender.emdExemptMSME = tender.reservedForMSME;
-
-    const startupText = this.cleanText($('#startupExemption, .startup-exempt').text()).toLowerCase();
-    tender.reservedForStartups = startupText.includes('yes') || startupText.includes('true');
-
-    // Documents
-    const documents: ScrapedTender['documents'] = [];
-    $('.document-list a, .bid-documents a, #documentList a').each((_, el) => {
-      const $link = $(el);
-      const href = $link.attr('href');
-      const name = this.cleanText($link.text());
-      if (href && name) {
-        documents.push({
-          name,
-          fileUrl: href.startsWith('http') ? href : `https://bidplus.gem.gov.in${href}`,
-          fileType: this.extractFileExtension(href),
-        });
-      }
-    });
-    if (documents.length > 0) {
-      tender.documents = documents;
-    }
-
-    return tender;
+  private parseGemDate(value: string | undefined): Date | undefined {
+    if (!value || value.startsWith(GEM_NULL_DATE_PREFIX)) return undefined;
+    const d = new Date(value);
+    return isNaN(d.getTime()) ? undefined : d;
   }
 
-  // -----------------------------------------------------------------------
-  // Private helpers
-  // -----------------------------------------------------------------------
+  /**
+   * Build the public document URL for a bid.
+   *
+   * GeM routes by bid type — this mirrors the site's own logic. Using the wrong
+   * one 404s/500s (verified: showbidDocument returns 500 for a b_bid_type=2 bid).
+   *   b_bid_type 5            → showdirectradocumentPdf
+   *   b_bid_type 2, eval > 0  → list-ra-schedules
+   *   b_bid_type 2            → showradocumentPdf
+   *   otherwise               → showbidDocument
+   */
+  /** The route segment GeM uses for this bid type. */
+  private bidUrlSegment(bidType?: number, evalType?: number): string {
+    if (bidType === 5) return 'showdirectradocumentPdf';
+    if (bidType === 2) return (evalType ?? 0) > 0 ? 'list-ra-schedules' : 'showradocumentPdf';
+    return 'showbidDocument';
+  }
 
-  private mapGemBidToTender(bid: GemBidItem): Partial<ScrapedTender> {
+  /**
+   * Split a bid's links into a browsable source URL and any document.
+   *
+   * Three of the four segments above are PDF endpoints, not pages. Verified
+   * against the live portal:
+   *
+   *   showradocumentPdf/<id>   -> 200 application/pdf,
+   *                               Content-Disposition: attachment; GeM-RA-<id>.pdf
+   *   showbidDocument/<id>     -> 200 application/pdf,
+   *                               Content-Disposition: attachment; GeM-Bidding-<id>.pdf
+   *   list-ra-schedules/<id>   -> 200 text/html  (a real, bid-specific page)
+   *
+   * Storing a PDF endpoint in `sourceUrl` is what made "View Original" download
+   * a file instead of opening the notice. GeM publishes no per-bid detail page
+   * — its own listing links the bid number straight at `showbidDocument` — so
+   * no detail route is invented here. The document URL is preserved exactly as
+   * a TenderDocument, and `sourceUrl` falls back to the verified public listing.
+   */
+  private buildBidLinks(
+    bidId: number,
+    bidType?: number,
+    evalType?: number,
+  ): { sourceUrl: string; documents?: ScrapedTender['documents'] } {
+    const segment = this.bidUrlSegment(bidType, evalType);
+    const url = `${GEM_BIDPLUS_BASE}/${segment}/${bidId}`;
+
+    if (segment === 'list-ra-schedules') {
+      // An HTML page specific to this bid, so it is a legitimate source link.
+      return { sourceUrl: url };
+    }
+
+    const name =
+      segment === 'showradocumentPdf'
+        ? 'GeM RA Bid Document'
+        : segment === 'showdirectradocumentPdf'
+          ? 'GeM Direct RA Bid Document'
+          : 'GeM Bid Document';
+
     return {
-      sourceId: bid.bidId || bid.bidNumber || '',
-      referenceNumber: bid.bidNumber || bid.bidId || '',
-      title: bid.bidTitle || bid.itemDescription || '',
-      organization: bid.organizationName || '',
-      department: bid.departmentName,
-      category: this.mapGemCategory(bid.bidCategory),
-      estimatedValue: bid.estimatedValue,
-      emdAmount: bid.emdAmount,
-      publishedDate: bid.publishDate ? this.parseIndianDate(bid.publishDate) : undefined,
-      bidSubmissionDeadline: bid.bidEndDate ? this.parseIndianDate(bid.bidEndDate) : undefined,
-      bidOpeningDate: bid.bidOpenDate ? this.parseIndianDate(bid.bidOpenDate) : undefined,
-      state: bid.state || 'All India',
-      district: bid.district,
-      sourcePortal: 'GeM',
-      sourceUrl: bid.bidUrl || `https://bidplus.gem.gov.in/showbidDocument/${bid.bidId}`,
-      reservedForMSME: bid.mseExemption ?? false,
-      reservedForStartups: bid.startupExemption ?? false,
-      emdExemptMSME: bid.mseExemption ?? false,
+      sourceUrl: GEM_ALL_BIDS_URL,
+      documents: [{ name, fileUrl: url, fileType: 'pdf' }],
     };
   }
 
-  private mapGemBidDetailToTender(detail: GemBidDetail): Partial<ScrapedTender> {
-    const base = this.mapGemBidToTender(detail);
+  private mapDocsToListings(docs: GemBidDoc[]): Partial<ScrapedTender>[] {
+    const listings: Partial<ScrapedTender>[] = [];
 
-    // Compose a description from specifications and delivery info
-    const descParts: string[] = [];
-    if (detail.specifications) descParts.push(detail.specifications);
-    if (detail.consigneeName) descParts.push(`Consignee: ${detail.consigneeName}`);
-    if (detail.consigneeAddress) descParts.push(`Delivery Address: ${detail.consigneeAddress}`);
-    if (detail.deliveryDays) descParts.push(`Delivery Period: ${detail.deliveryDays} days`);
-    if (detail.paymentTerms) descParts.push(`Payment Terms: ${detail.paymentTerms}`);
+    for (const doc of docs) {
+      const bidId = this.unwrap(doc.b_id) ?? Number(this.unwrap(doc.id));
+      if (!bidId || Number.isNaN(bidId)) continue;
 
-    base.description = descParts.join(' | ') || undefined;
+      const bidNumber = this.unwrap(doc.b_bid_number);
+      const bidType = this.unwrap(doc.b_bid_type);
+      const evalType = this.unwrap(doc.b_eval_type);
+      const category = this.unwrap(doc.b_category_name) ?? this.unwrap(doc.bd_category_name);
+      const ministry = this.unwrap(doc.ba_official_details_minName);
+      const department = this.unwrap(doc.ba_official_details_deptName);
 
-    // Map documents
-    if (detail.documents && detail.documents.length > 0) {
-      base.documents = detail.documents
-        .filter((d) => d.fileName && d.fileUrl)
-        .map((d) => ({
-          name: d.fileName!,
-          fileUrl: d.fileUrl!,
-          fileType: d.fileType,
-          fileSize: d.fileSize,
-        }));
+      const publishedDate = this.parseGemDate(this.unwrap(doc.final_start_date_sort));
+      const deadline = this.parseGemDate(this.unwrap(doc.final_end_date_sort));
+
+      listings.push({
+        // b_id is GeM's stable internal bid id — the right new-only identity key.
+        sourceId: String(bidId),
+        referenceNumber: bidNumber ?? String(bidId),
+        title: category ? this.cleanText(category).slice(0, 500) : `GeM Bid ${bidNumber ?? bidId}`,
+        description: this.unwrap(doc.bd_category_name)
+          ? this.cleanText(this.unwrap(doc.bd_category_name) as string)
+          : undefined,
+        organization: ministry ? this.cleanText(ministry) : 'Government e-Marketplace',
+        department: department ? this.cleanText(department) : undefined,
+        category: this.mapGemCategory(category),
+        tenderType: bidType === 2 || bidType === 5 ? 'AUCTION' : 'RFQ',
+        status: 'ACTIVE',
+        state: 'All India',
+        publishedDate,
+        bidSubmissionDeadline: deadline,
+        ...this.buildBidLinks(bidId, bidType, evalType),
+        // estimatedValue / emdAmount are intentionally absent — see the file header.
+      });
     }
 
-    return base;
+    return listings;
+  }
+
+  /**
+   * Promote a listing to a full ScrapedTender.
+   *
+   * Returns null when a required field is genuinely missing, so an incomplete
+   * record is skipped rather than saved with invented values.
+   */
+  private buildTender(listing: Partial<ScrapedTender>): ScrapedTender | null {
+    if (!listing.sourceId) return null;
+
+    // publishedDate and bidSubmissionDeadline are non-nullable in the Tender model.
+    // GeM always supplies a start date; the end date can be the null sentinel, in
+    // which case we cannot honestly claim a deadline.
+    if (!listing.publishedDate || !listing.bidSubmissionDeadline) {
+      this.logger.warn(`Skipping GeM bid ${listing.referenceNumber ?? listing.sourceId} — missing dates`, {
+        hasPublished: Boolean(listing.publishedDate),
+        hasDeadline: Boolean(listing.bidSubmissionDeadline),
+      });
+      return null;
+    }
+
+    return {
+      title: listing.title ?? `GeM Bid ${listing.sourceId}`,
+      description: listing.description,
+      referenceNumber: listing.referenceNumber ?? listing.sourceId,
+      organization: listing.organization ?? 'Government e-Marketplace',
+      department: listing.department,
+      tenderType: listing.tenderType ?? 'RFQ',
+      category: listing.category ?? 'GOODS',
+      status: listing.status ?? 'ACTIVE',
+      state: 'All India',
+      publishedDate: listing.publishedDate,
+      bidSubmissionDeadline: listing.bidSubmissionDeadline,
+      sourcePortal: this.portalName,
+      sourceUrl: listing.sourceUrl ?? GEM_ALL_BIDS_URL,
+      sourceId: listing.sourceId,
+      // Carried through so the bid PDF is stored as a document rather than
+      // masquerading as the tender's web page.
+      documents: listing.documents,
+      // Not available from the public listing — left undefined, never guessed:
+      estimatedValue: undefined,
+      emdAmount: undefined,
+      district: undefined,
+      city: undefined,
+      reservedForMSME: false,
+      reservedForStartups: false,
+      emdExemptMSME: false,
+    };
   }
 
   private mapGemCategory(
@@ -499,8 +589,36 @@ export class GemScraper extends BaseScraper {
     return 'GOODS';
   }
 
-  private extractFileExtension(url: string): string | undefined {
-    const match = url.match(/\.(\w{2,5})(?:\?|$)/);
-    return match ? match[1].toLowerCase() : undefined;
+  // -----------------------------------------------------------------------
+  // BaseScraper contract
+  // -----------------------------------------------------------------------
+
+  /**
+   * GeM returns JSON from /all-bids-data rather than an HTML listing, so this
+   * accepts the raw JSON body. Kept to satisfy the BaseScraper contract and to
+   * make the mapping unit-testable without network access.
+   */
+  parseTenderList(html: string): Partial<ScrapedTender>[] {
+    try {
+      const parsed = JSON.parse(html) as GemAllBidsDataResponse;
+      const docs = parsed.response?.response?.docs ?? [];
+      return this.mapDocsToListings(docs);
+    } catch {
+      this.logger.warn('parseTenderList received a non-JSON body; GeM returns JSON from /all-bids-data');
+      return [];
+    }
+  }
+
+  /**
+   * Not used for GeM.
+   *
+   * The /all-bids-data listing already contains every field the Tender model needs
+   * from this portal, so there is no detail request to parse. The remaining
+   * fields (estimated value, EMD) exist only inside the bid document PDF, which is
+   * out of scope. Returning {} keeps the BaseScraper contract honest instead of
+   * pretending to extract data.
+   */
+  parseTenderDetail(_html: string): Partial<ScrapedTender> {
+    return {};
   }
 }

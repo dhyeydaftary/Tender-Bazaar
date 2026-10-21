@@ -6,7 +6,8 @@ export const resultsController = {
   async searchResults(req: Request, res: Response, next: NextFunction) {
     try {
       const filters = searchResultsSchema.parse(req.query);
-      const result = await resultsService.searchResults(filters);
+      const query = filters.query || filters.search;
+      const result = await resultsService.searchResults({ ...filters, query });
       res.json({ success: true, data: result.results, meta: result.meta });
     } catch (error) {
       next(error);

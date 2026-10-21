@@ -26,7 +26,18 @@ pnpm install
 docker compose up -d
 ```
 
-This starts PostgreSQL, Redis, and Elasticsearch.
+This starts PostgreSQL, Redis, and Elasticsearch (plus the app services).
+
+> This is the **development** command. It also loads
+> `docker-compose.override.yml`, which publishes the database, Redis,
+> Elasticsearch and the scraper control API to localhost. For production use
+> the explicit two-file form — see
+> [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md):
+>
+> ```bash
+> docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+> # or: ./scripts/docker-start.sh --prod
+> ```
 
 ### 3. Set up environment
 
@@ -38,10 +49,19 @@ cp .env.example .env
 ### 4. Set up database
 
 ```bash
-pnpm db:generate    # Generate Prisma client
-pnpm db:push        # Create tables
-pnpm db:seed        # Seed subscription plans
+pnpm db:generate       # Generate Prisma client
+pnpm db:migrate:deploy # Apply committed migrations (use this, not db:push)
+pnpm db:seed           # Subscription plans (+ demo tenders outside production)
 ```
+
+`pnpm db:push` still exists for throwaway experiments, but the schema is
+managed by committed Prisma migrations in `prisma/migrations/`. In Docker the
+`db-init` container runs `prisma migrate deploy` for you and does **not** seed
+unless `DB_INIT_SEED=true`.
+
+The seed never changes an existing administrator's password; it only creates
+accounts that are missing, and outside development only from an explicit
+`SEED_ADMIN_EMAIL` / `SEED_ADMIN_PASSWORD`.
 
 ### 5. Start development
 

@@ -20,7 +20,11 @@ COPY packages/shared/package.json packages/shared/
 COPY prisma/ prisma/
 
 # Install dependencies
-RUN pnpm install --frozen-lockfile
+# A BuildKit cache mount for pnpm's content-addressable store. Packages
+# downloaded by one build are reused by the next, so rebuilds (and CI runs with
+# a warm cache) skip the network entirely instead of re-fetching the whole tree.
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store \
+    pnpm install --frozen-lockfile --store-dir=/pnpm-store
 
 # Copy source code
 COPY packages/scraper-engine/ packages/scraper-engine/
@@ -36,9 +40,17 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 ENV SCRAPER_API_PORT=4001
 ENV SCRAPER_API_ENABLED=true
 
+# Run as the unprivileged user that ships with the Playwright base image,
+# instead of root (every other service already drops privileges). The app only
+# needs to read /app; logging to a file is off by default.
+RUN chown -R pwuser:pwuser /app
+USER pwuser
+
 EXPOSE 4001
 
+# /api/ready fails when the scheduler is not running, so a scheduler-less
+# container can no longer report itself healthy (/api/health is liveness only).
 HEALTHCHECK --interval=60s --timeout=15s --start-period=30s --retries=3 \
-  CMD curl -f http://localhost:4001/api/health || exit 1
+  CMD curl -f http://localhost:4001/api/ready || exit 1
 
 CMD ["node", "packages/scraper-engine/dist/main.js"]

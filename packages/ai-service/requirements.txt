@@ -1,7 +1,13 @@
-fastapi==0.111.0
+# fastapi 0.111.0 pinned starlette to >=0.37.2,<0.38.0, and starlette 0.37.2
+# carries 7 advisories (PYSEC-2026-1941/1943/161/2280/2281/248/249). The pin is
+# the only thing holding starlette back, so FastAPI moves with it; the AI
+# service only uses FastAPI, HTTPException and CORSMiddleware, all unchanged.
+fastapi==0.156.4
 uvicorn[standard]==0.29.0
 anthropic==0.25.0
-pydantic==2.7.0
-python-dotenv==1.0.0
+# fastapi 0.156 requires pydantic >=2.9; 2.14.1 is the current 2.x.
+pydantic==2.14.1
+# 1.0.0 is affected by PYSEC-2026-2270.
+python-dotenv==1.2.4
 httpx==0.27.0
 redis==5.0.0

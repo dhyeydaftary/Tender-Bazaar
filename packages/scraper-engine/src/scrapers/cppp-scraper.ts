@@ -21,6 +21,8 @@ export class CpppScraper extends BaseScraper {
     prisma?: PrismaClient;
     maxConcurrency?: number;
     requestDelay?: number;
+    maxPages?: number;
+    fullRescrape?: boolean;
   }) {
     super('CPPP', 'https://eprocure.gov.in/cppp', {
       maxConcurrency: options?.maxConcurrency ?? 2,
@@ -28,6 +30,8 @@ export class CpppScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
 
     this.searchUrl = 'https://eprocure.gov.in/cppp/latestactivetendersnew/cpppdata';
@@ -44,6 +48,8 @@ export class CpppScraper extends BaseScraper {
     let newTenders = 0;
     let updatedTenders = 0;
     let errors = 0;
+    let skippedExisting = 0;
+    let pagesScraped = 0;
 
     this.logger.info('Starting CPPP tender scraping run');
 
@@ -57,12 +63,20 @@ export class CpppScraper extends BaseScraper {
       });
 
       const listings = this.parseTenderList(firstPageHtml);
+      // Fetched and parsed into listings, so page 1 counts as scraped.
+      // fetchPage() throws on failure, so a failed fetch never reaches here.
+      if (listings.length > 0) pagesScraped++;
       totalFound += listings.length;
 
       this.logger.info(`Found ${listings.length} tenders on page 1`);
 
+      // New-only: one batch existence check per page; known-and-unchanged
+      // tenders never reach the detail fetch below.
+      const firstPage = await this.partitionListings(listings);
+      skippedExisting += firstPage.skipped.length;
+
       // Process each listing
-      for (const listing of listings) {
+      for (const listing of firstPage.toProcess) {
         try {
           if (!listing.sourceId) continue;
 
@@ -132,9 +146,13 @@ export class CpppScraper extends BaseScraper {
           });
 
           const pageListings = this.parseTenderList(pageHtml);
+          if (pageListings.length > 0) pagesScraped++;
           totalFound += pageListings.length;
 
-          for (const listing of pageListings) {
+          const pagePartition = await this.partitionListings(pageListings);
+          skippedExisting += pagePartition.skipped.length;
+
+          for (const listing of pagePartition.toProcess) {
             try {
               if (!listing.sourceId) continue;
 
@@ -196,6 +214,10 @@ export class CpppScraper extends BaseScraper {
         action: 'cpppScrapeMain',
       });
     } finally {
+      // Guarantee every changed tender is queued, even on an early break or
+      // error. main.ts calls closeBrowser() rather than cleanup(), so this is
+      // the end-of-run flush for a scheduled/manual run.
+      await this.flushTenderIndexQueue();
       await this.closeBrowser();
     }
 
@@ -204,6 +226,8 @@ export class CpppScraper extends BaseScraper {
       totalFound,
       newTenders,
       updatedTenders,
+      skippedExisting,
+      pagesScraped,
       errors,
       durationMs: duration,
     });
@@ -215,6 +239,8 @@ export class CpppScraper extends BaseScraper {
       updatedTenders,
       errors,
       duration,
+      skippedExisting,
+      pagesScraped,
     };
   }
 

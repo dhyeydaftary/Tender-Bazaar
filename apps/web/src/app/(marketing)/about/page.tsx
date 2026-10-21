@@ -16,6 +16,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { cn, formatIndianNumber } from '@/lib/utils';
+import { useTenderCounts } from '@/lib/hooks/use-tenders';
 
 /* ------------------------------------------------------------------ */
 /* Hooks                                                              */
@@ -181,6 +182,7 @@ function StatCounter({
 /* ------------------------------------------------------------------ */
 
 export default function AboutPage() {
+  const counts = useTenderCounts();
   const statsView = useInView(0.2);
 
   return (
@@ -218,7 +220,22 @@ export default function AboutPage() {
       <section className="py-16 bg-card border-y border-border">
         <div ref={statsView.ref} className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6 md:gap-8">
-            {STATS.map((stat) => (
+            {[
+              {
+                target: counts.active > 0 ? counts.active : 50000,
+                label: 'Active Tenders',
+                suffix: counts.active > 0 ? '' : '+',
+                prefix: '',
+              },
+              { target: 28, label: 'States Covered', suffix: '', prefix: '' },
+              { target: 15000, label: 'Businesses Trust Us', suffix: '+', prefix: '' },
+              {
+                target: counts.newToday > 0 ? counts.newToday : 3500,
+                label: 'New Tenders Daily',
+                suffix: counts.newToday > 0 ? '' : '+',
+                prefix: '',
+              },
+            ].map((stat) => (
               <StatCounter
                 key={stat.label}
                 target={stat.target}

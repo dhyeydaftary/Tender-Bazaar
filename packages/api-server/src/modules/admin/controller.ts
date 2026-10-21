@@ -29,6 +29,7 @@ import {
   updateScraperBodySchema,
   notificationListQuerySchema,
   broadcastNotificationBodySchema,
+  broadcastListQuerySchema,
   postListQuerySchema,
   createPostBodySchema,
   updatePostBodySchema,
@@ -114,7 +115,12 @@ export const adminController = {
       const result = await usersService.getUserList(filters);
       res.json({
         success: true,
-        data: result.users,
+        data: {
+          users: result.users,
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+        },
         meta: { page: result.page, limit: result.limit, total: result.total },
       });
     } catch (error) {
@@ -183,7 +189,12 @@ export const adminController = {
       const result = await tendersService.getTenderList(filters);
       res.json({
         success: true,
-        data: result.tenders,
+        data: {
+          tenders: result.tenders,
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+        },
         meta: { page: result.page, limit: result.limit, total: result.total },
       });
     } catch (error) {
@@ -240,7 +251,12 @@ export const adminController = {
       const result = await subscriptionsService.getSubscriptionList(filters);
       res.json({
         success: true,
-        data: result.subscriptions,
+        data: {
+          subscriptions: result.subscriptions,
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+        },
         meta: { page: result.page, limit: result.limit, total: result.total },
       });
     } catch (error) {
@@ -432,6 +448,39 @@ export const adminController = {
     }
   },
 
+  async getBroadcastList(req: Request, res: Response, next: NextFunction) {
+    try {
+      const filters = broadcastListQuerySchema.parse(req.query);
+      const result = await notificationsService.getBroadcastList(filters as any);
+      res.json({
+        success: true,
+        data: result.broadcasts,
+        meta: { page: result.page, limit: result.limit, total: result.total },
+      });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async getBroadcastStats(_req: Request, res: Response, next: NextFunction) {
+    try {
+      const stats = await notificationsService.getBroadcastStats();
+      res.json({ success: true, data: stats });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async getAudienceEstimate(req: Request, res: Response, next: NextFunction) {
+    try {
+      const target = (req.query.target as string) || 'ALL';
+      const estimate = await notificationsService.getAudienceEstimate(target);
+      res.json({ success: true, data: estimate });
+    } catch (error) {
+      next(error);
+    }
+  },
+
   async getNotificationStats(_req: Request, res: Response, next: NextFunction) {
     try {
       const stats = await notificationsService.getNotificationStats();
@@ -444,6 +493,15 @@ export const adminController = {
   /* ══════════════════════════════════════════════════════════
      CONTENT — Blog Posts
      ══════════════════════════════════════════════════════════ */
+
+  async getContentStats(_req: Request, res: Response, next: NextFunction) {
+    try {
+      const stats = await contentService.getContentStats();
+      res.json({ success: true, data: stats });
+    } catch (error) {
+      next(error);
+    }
+  },
 
   async getPostList(req: Request, res: Response, next: NextFunction) {
     try {

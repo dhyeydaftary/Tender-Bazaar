@@ -15,19 +15,30 @@ concurrency:
   group: db-migrate-${{ inputs.environment }}
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   migrate:
     name: Run Prisma Migration
     runs-on: ubuntu-latest
+    # IMPORTANT: naming an environment here does not gate anything on its own.
+    # This repository currently has NO environments configured (the
+    # environments API returns an empty list), so GitHub creates `staging` /
+    # `production` implicitly on first use with no protection rules, and this
+    # job runs `prisma migrate deploy` against secrets.DATABASE_URL with no
+    # approval step. Required reviewers must be configured on the `production`
+    # environment before this is safe to use against production data - see
+    # docs/release-gating.md.
     environment: ${{ inputs.environment }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: pnpm/action-setup@v2
+      - uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: 'pnpm'
@@ -38,11 +49,53 @@ jobs:
       - name: Generate Prisma client
         run: pnpm db:generate
 
+      # The target database must be PROVEN to be the one that was asked for.
+      # `secrets.DATABASE_URL` resolves to the repository-level secret whenever
+      # the selected environment does not define its own, so choosing
+      # "staging" and choosing "production" could both have migrated the same
+      # database with nothing to say so. `vars.DB_TARGET` has to be set ON each
+      # environment and has to match the input: an unconfigured environment
+      # therefore fails here instead of running `migrate deploy` against
+      # whatever the repository-level secret happens to point at.
+      #
+      # Neither the URL nor the host is echoed; only whether they are set.
+      - name: Confirm the migration target
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          DB_TARGET: ${{ vars.DB_TARGET }}
+          REQUESTED: ${{ inputs.environment }}
+        run: |
+          set -eu
+          if [ -z "${DATABASE_URL:-}" ]; then
+            echo "::error::DATABASE_URL is not set for the '$REQUESTED' environment. No migration was run."
+            exit 1
+          fi
+          if [ -z "${DB_TARGET:-}" ]; then
+            echo "::error::The '$REQUESTED' environment does not define the DB_TARGET variable, so the database this would migrate cannot be confirmed. No migration was run."
+            echo "Set DB_TARGET=$REQUESTED as an environment variable on the '$REQUESTED' environment." >&2
+            exit 1
+          fi
+          if [ "$DB_TARGET" != "$REQUESTED" ]; then
+            echo "::error::Refusing to migrate: DB_TARGET is '$DB_TARGET' but '$REQUESTED' was requested. No migration was run."
+            exit 1
+          fi
+          echo "Target confirmed: $REQUESTED."
+
+      # Printed before anything is applied, so the run records WHICH migrations
+      # were pending. Non-blocking: `migrate status` exits non-zero precisely
+      # when migrations are pending, which is the normal reason to be here.
+      - name: Pending migrations (before)
+        continue-on-error: true
+        run: npx prisma migrate status
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+
       - name: Run migrations
         run: npx prisma migrate deploy
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
 
+      # Blocking: after a successful deploy nothing may still be pending.
       - name: Verify migration status
         run: npx prisma migrate status
         env:

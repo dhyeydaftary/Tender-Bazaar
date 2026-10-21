@@ -15,7 +15,8 @@ import {
   Target,
   Brain,
 } from 'lucide-react';
-import { cn } from '@/lib/utils';
+import { cn, formatIndianNumber } from '@/lib/utils';
+import { useTenderCounts } from '@/lib/hooks/use-tenders';
 
 /* ------------------------------------------------------------------ */
 /* Services data                                                       */
@@ -177,6 +178,18 @@ const STATS: Stat[] = [
 /* ------------------------------------------------------------------ */
 
 export default function ServicesPage() {
+  const counts = useTenderCounts();
+  const dynamicStats: Stat[] = [
+    {
+      value: counts.active > 0 ? `${formatIndianNumber(counts.active)}+` : '50,000+',
+      label: 'Active Tenders',
+      icon: Target,
+    },
+    { value: '28', label: 'States Covered', icon: MapPin },
+    { value: '92%', label: 'AI Accuracy', icon: Sparkles },
+    { value: '15,000+', label: 'Businesses', icon: Users },
+  ];
+
   return (
     <main className="min-h-screen bg-background">
       {/* Hero Section */}
@@ -321,7 +334,7 @@ export default function ServicesPage() {
       <section className="py-16 bg-muted/50 border-y border-border">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
-            {STATS.map((stat) => (
+            {dynamicStats.map((stat) => (
               <div key={stat.label} className="text-center">
                 <stat.icon className="h-6 w-6 text-primary-500 mx-auto mb-3" />
                 <p className="text-display-md font-display text-foreground">

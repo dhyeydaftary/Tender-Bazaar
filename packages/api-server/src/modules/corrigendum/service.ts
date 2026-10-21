@@ -1,6 +1,7 @@
 import { prisma } from '../../config/database';
 import redis from '../../config/redis';
 import { AppError } from '../../shared/middleware/error-handler';
+import { invalidateUnreadCount } from '../notifications/service';
 
 const CORRIGENDUM_TTL = 365 * 24 * 60 * 60; // 365 days in seconds
 
@@ -106,6 +107,7 @@ export const corrigendumService = {
           },
         })),
       });
+      await invalidateUnreadCount(userIds);
     }
 
     return {

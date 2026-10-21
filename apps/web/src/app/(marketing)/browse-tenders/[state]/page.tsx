@@ -1,5 +1,6 @@
 import { Metadata } from 'next';
 import Link from 'next/link';
+import { StateStatsRow } from './state-stats-row';
 
 /* ------------------------------------------------------------------ */
 /* Data                                                               */
@@ -108,12 +109,13 @@ export function generateStaticParams() {
   return ALL_REGIONS.map((state) => ({ state }));
 }
 
-export function generateMetadata({
+export async function generateMetadata({
   params,
 }: {
-  params: { state: string };
-}): Metadata {
-  const stateName = slugToStateName(params.state);
+  params: Promise<{ state: string }>;
+}): Promise<Metadata> {
+  const { state } = await params;
+  const stateName = slugToStateName(state);
   return {
     title: `Latest ${stateName} Government Tenders 2026`,
     description: `Find the latest government tenders in ${stateName}. Browse 1,200+ active tenders across construction, IT, healthcare and more.`,
@@ -128,42 +130,18 @@ export function generateMetadata({
 /* Page                                                               */
 /* ------------------------------------------------------------------ */
 
-export default function StateTendersPage({
+export default async function StateTendersPage({
   params,
 }: {
-  params: { state: string };
+  params: Promise<{ state: string }>;
 }) {
-  const stateName = slugToStateName(params.state);
+  const { state } = await params;
+  const stateName = slugToStateName(state);
   const tenders = getMockTenders(stateName);
-  const relatedStates = RELATED_STATES_MAP[params.state] ?? ALL_REGIONS.filter((s) => s !== params.state).slice(0, 4);
+  const relatedStates = RELATED_STATES_MAP[state] ?? ALL_REGIONS.filter((s) => s !== state).slice(0, 4);
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Nav */}
-      <nav className="sticky top-0 z-40 border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
-        <div className="container mx-auto px-4">
-          <div className="flex items-center justify-between h-14">
-            <Link href="/" className="font-bold text-xl text-primary-500">
-              TenderBazaar
-            </Link>
-            <div className="flex items-center gap-4">
-              <Link
-                href="/login"
-                className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
-              >
-                Log in
-              </Link>
-              <Link
-                href="/register"
-                className="inline-flex items-center justify-center rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600 transition-colors"
-              >
-                Sign up free
-              </Link>
-            </div>
-          </div>
-        </div>
-      </nav>
-
+    <div className="min-h-screen bg-background pt-16 sm:pt-20">
       <div className="container mx-auto px-4 py-8">
         {/* Breadcrumb */}
         <nav aria-label="Breadcrumb" className="mb-6">
@@ -189,21 +167,8 @@ export default function StateTendersPage({
           Government Tenders in {stateName} &mdash; 2026
         </h1>
 
-        {/* Stats row */}
-        <section className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-10">
-          <div className="bg-card border border-border rounded-xl p-5">
-            <p className="text-sm text-muted-foreground mb-1">Total Tenders</p>
-            <p className="text-2xl font-bold text-foreground">3,847</p>
-          </div>
-          <div className="bg-card border border-border rounded-xl p-5">
-            <p className="text-sm text-muted-foreground mb-1">Active Tenders</p>
-            <p className="text-2xl font-bold text-accent-500">1,234</p>
-          </div>
-          <div className="bg-card border border-border rounded-xl p-5">
-            <p className="text-sm text-muted-foreground mb-1">Closing Today</p>
-            <p className="text-2xl font-bold text-primary-500">28</p>
-          </div>
-        </section>
+        {/* Real Dynamic Stats row */}
+        <StateStatsRow stateName={stateName} />
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
           {/* Main content — tender list */}
@@ -240,7 +205,7 @@ export default function StateTendersPage({
                   </span>
                 </div>
                 <Link
-                  href={`/dashboard/tenders/${tender.id}`}
+                  href={`/tenders/${tender.id}`}
                   className="inline-flex items-center text-sm font-semibold text-primary-500 hover:text-primary-600 transition-colors"
                 >
                   View Details &rarr;
@@ -260,7 +225,7 @@ export default function StateTendersPage({
                 {CATEGORIES.map((cat) => (
                   <li key={cat.slug}>
                     <Link
-                      href={`/browse-tenders/${params.state}/${cat.slug}`}
+                      href={`/browse-tenders/${state}/${cat.slug}`}
                       className="text-sm text-muted-foreground hover:text-primary-500 transition-colors flex items-center gap-2"
                     >
                       <span className="w-1.5 h-1.5 rounded-full bg-primary-400" />
@@ -280,7 +245,7 @@ export default function StateTendersPage({
                 {tenders.slice(0, 4).map((t) => (
                   <li key={t.id}>
                     <Link
-                      href={`/dashboard/tenders/${t.id}`}
+                      href={`/tenders/${t.id}`}
                       className="text-sm text-muted-foreground hover:text-foreground transition-colors line-clamp-2"
                     >
                       {t.title}

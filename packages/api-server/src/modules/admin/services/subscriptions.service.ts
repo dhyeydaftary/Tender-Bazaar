@@ -9,13 +9,14 @@ interface SubscriptionListFilters {
   plan?: string;
   status?: string;
   billingCycle?: string;
+  expiringBefore?: string;
   sortBy: string;
   sortOrder: string;
 }
 
 export const subscriptionsService = {
   async getSubscriptionList(filters: SubscriptionListFilters) {
-    const { page, limit, search, plan, status, billingCycle, sortBy, sortOrder } = filters;
+    const { page, limit, search, plan, status, billingCycle, expiringBefore, sortBy, sortOrder } = filters;
     const skip = (page - 1) * limit;
 
     const where: any = {};
@@ -23,6 +24,13 @@ export const subscriptionsService = {
     if (status) where.status = status;
     if (billingCycle) where.billingCycle = billingCycle;
     if (plan) where.plan = { slug: plan };
+
+    if (expiringBefore) {
+      where.endDate = {
+        gte: new Date(),
+        lte: new Date(expiringBefore),
+      };
+    }
 
     if (search) {
       where.user = {
@@ -124,20 +132,32 @@ export const subscriptionsService = {
       }),
     ]);
 
-    // Resolve plan names
-    let planDistribution: { plan: string; slug: string; count: number }[] = [];
-    if (byPlan.length > 0) {
-      const plans = await prisma.subscriptionPlan.findMany({
-        where: { id: { in: byPlan.map((p) => p.planId) } },
+    // Resolve all plans and distribution (including Free users)
+    const [allPlans, usersWithoutSub] = await Promise.all([
+      prisma.subscriptionPlan.findMany({
+        where: { isActive: true },
+        orderBy: { displayOrder: 'asc' },
         select: { id: true, name: true, slug: true },
-      });
-      const planMap = new Map(plans.map((p) => [p.id, p]));
-      planDistribution = byPlan.map((p) => ({
-        plan: planMap.get(p.planId)?.name || 'Unknown',
-        slug: planMap.get(p.planId)?.slug || 'unknown',
-        count: p._count,
-      }));
+      }),
+      prisma.user.count({ where: { subscription: null } }),
+    ]);
+
+    const planCounts: Record<string, number> = {};
+    for (const p of byPlan) {
+      planCounts[p.planId] = (p._count as any)?._all ?? (p._count as any)?.planId ?? (typeof p._count === 'number' ? p._count : 0);
     }
+
+    const planDistribution = allPlans.map((plan) => {
+      let count = planCounts[plan.id] || 0;
+      if (plan.slug === 'free') {
+        count += usersWithoutSub;
+      }
+      return {
+        plan: plan.name,
+        slug: plan.slug,
+        count,
+      };
+    });
 
     // MRR calculation
     const [activeMonthly, activeYearly] = await Promise.all([
@@ -152,8 +172,8 @@ export const subscriptionsService = {
     ]);
 
     const mrr =
-      activeMonthly.reduce((sum, s) => sum + s.plan.monthlyPrice, 0) +
-      activeYearly.reduce((sum, s) => sum + s.plan.yearlyPrice / 12, 0);
+      activeMonthly.reduce((sum, s) => sum + (s.plan?.monthlyPrice || 0), 0) +
+      activeYearly.reduce((sum, s) => sum + (s.plan?.yearlyPrice || 0) / 12, 0);
 
     const arr = mrr * 12;
 
@@ -165,7 +185,7 @@ export const subscriptionsService = {
       planDistribution,
       billingCycleDistribution: byBillingCycle.map((b) => ({
         cycle: b.billingCycle,
-        count: b._count,
+        count: (b._count as any)?._all ?? (b._count as any)?.billingCycle ?? (typeof b._count === 'number' ? b._count : 0),
       })),
       expiringNext7Days,
       mrr: Math.round(mrr * 100) / 100,

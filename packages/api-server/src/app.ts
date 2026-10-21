@@ -26,16 +26,56 @@ import referralRoutes from './modules/referral/routes';
 import bidAssistantRoutes from './modules/bid-assistant/routes';
 import comparisonRoutes from './modules/comparison/routes';
 import apiKeyRoutes from './modules/api-keys/routes';
+import dashboardRoutes from './modules/dashboard/routes';
 
 const app = express();
 
+// Trust the reverse proxy in front of the app so `req.ip` (used to key
+// anonymous rate limiting) reflects the real client rather than the proxy,
+// which would otherwise collapse all anonymous traffic into one bucket.
+// Only enabled outside development: with no proxy in front, trusting
+// X-Forwarded-For would let any client spoof its own IP to evade the limit.
+if (process.env.NODE_ENV !== 'development') {
+  app.set('trust proxy', 1);
+}
+
 // Middleware
 app.use(helmet());
+const DEV_ORIGINS = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:3001',
+  'http://localhost:3002',
+  'http://127.0.0.1:3002',
+];
+
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  process.env.ADMIN_URL,
+  ...(process.env.NODE_ENV === 'development' ? DEV_ORIGINS : []),
+].filter(Boolean) as string[];
+
+// Any http://localhost:* / http://127.0.0.1:* origin used to be allowed with
+// credentials, in production too, so a page served from any port on a user's
+// machine could make credentialed cross-origin calls to the production API.
+// The loopback allowance is now development-only; production uses exactly the
+// configured origins (FRONTEND_URL / ADMIN_URL), which docker-compose.prod.yml
+// requires to be set.
+const allowLoopbackOrigins = process.env.NODE_ENV === 'development';
+
 app.use(cors({
-  origin: [
-    process.env.FRONTEND_URL || 'http://localhost:3000',
-    process.env.ADMIN_URL || 'http://localhost:3001',
-  ],
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    if (
+      allowLoopbackOrigins &&
+      (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:'))
+    ) {
+      return callback(null, true);
+    }
+    return callback(new Error(`Origin ${origin} not allowed by CORS`));
+  },
   credentials: true,
 }));
 app.use(compression());
@@ -77,6 +117,29 @@ app.get('/health', async (_req, res) => {
     health.status = 'degraded';
   }
 
+  // Check Elasticsearch.
+  //
+  // GET /api/v1/tenders reads exclusively from Elasticsearch, so without this
+  // check /health reported "ok" while the primary tender-listing endpoint was
+  // failing — which is exactly how the original index_not_found outage stayed
+  // invisible. Both the cluster and the tenders index are checked, because a
+  // reachable cluster with no index is still a broken search.
+  try {
+    const { esClient } = await import('./config/elasticsearch');
+    const { TENDER_INDEX } = await import('./config/elasticsearch-setup');
+    await esClient.cluster.health({});
+    const indexExists = await esClient.indices.exists({ index: TENDER_INDEX });
+    if (indexExists) {
+      health.services.elasticsearch = 'healthy';
+    } else {
+      health.services.elasticsearch = `index "${TENDER_INDEX}" missing`;
+      health.status = 'degraded';
+    }
+  } catch {
+    health.services.elasticsearch = 'unhealthy';
+    health.status = 'degraded';
+  }
+
   res.status(health.status === 'ok' ? 200 : 503).json(health);
 });
 
@@ -108,6 +171,7 @@ app.use('/api/v1/referral', referralRoutes);
 app.use('/api/v1/bid-assistant', bidAssistantRoutes);
 app.use('/api/v1/comparison', comparisonRoutes);
 app.use('/api/v1/api-keys', apiKeyRoutes);
+app.use('/api/v1/dashboard', dashboardRoutes);
 
 // Search suggestions
 app.get('/api/v1/search/suggestions', async (req, res, next) => {
@@ -119,6 +183,21 @@ app.get('/api/v1/search/suggestions', async (req, res, next) => {
   } catch (error) {
     next(error);
   }
+});
+
+// 404 for unmatched API routes.
+//
+// Without this, an unknown /api/... path fell through to Express's default
+// handler, which replies with an HTML error page. Every other response from this
+// server is JSON in the { success, error: { code, message } } shape, so a client
+// that parsed the body (the web app's axios instance included) broke on the one
+// case it was most likely to hit — a wrong or renamed endpoint. Scoped to /api
+// so any non-API route keeps its current behaviour.
+app.use('/api', (_req, res) => {
+  res.status(404).json({
+    success: false,
+    error: { code: 'NOT_FOUND', message: 'Endpoint not found' },
+  });
 });
 
 // Sentry error tracking (before error handler)

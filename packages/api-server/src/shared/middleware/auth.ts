@@ -26,10 +26,15 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
       throw new AppError('Token has been revoked', 401, 'TOKEN_REVOKED');
     }
 
-    const decoded = jwt.verify(token, env.JWT_SECRET) as JwtPayload;
+    const decoded = jwt.verify(token, env.JWT_SECRET) as any;
+    const userId = decoded.userId || decoded.id || decoded.sub;
+
+    if (!userId) {
+      throw new AppError('Invalid token payload', 401, 'INVALID_TOKEN');
+    }
 
     const user = await prisma.user.findUnique({
-      where: { id: decoded.userId },
+      where: { id: userId },
       select: {
         id: true,
         name: true,
@@ -44,6 +49,16 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
 
     if (!user) {
       throw new AppError('User not found', 401, 'USER_NOT_FOUND');
+    }
+
+    // Check maintenance mode for non-admin users
+    if (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN') {
+      const maintenanceSetting = await prisma.adminSetting.findUnique({
+        where: { category_key: { category: 'general', key: 'maintenanceMode' } },
+      });
+      if (maintenanceSetting && maintenanceSetting.value === true) {
+        throw new AppError('Platform is currently under maintenance. Please try again later.', 503, 'MAINTENANCE_MODE');
+      }
     }
 
     (req as any).user = user;

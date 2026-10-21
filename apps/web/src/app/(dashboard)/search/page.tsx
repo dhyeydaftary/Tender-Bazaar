@@ -75,6 +75,35 @@ function getValueRangeParams(range: string): { minValue?: number; maxValue?: num
   }
 }
 
+/* Deadline preset to API date range.
+ *
+ * The deadline radio group and the source-portal checkboxes were rendered and
+ * counted as active filters but never sent to the API, so selecting them
+ * changed nothing. Dates are sent as plain ISO instants, which is what the
+ * publishedFrom/To and deadlineFrom/To parameters already accept. */
+function getDeadlineParams(preset: string): { deadlineFrom?: string; deadlineTo?: string } {
+  if (preset === 'any') return {};
+  const now = new Date();
+  const from = now.toISOString();
+
+  if (preset === 'this-week') {
+    // End of the current week (Sunday), local time.
+    const end = new Date(now);
+    end.setDate(end.getDate() + (7 - end.getDay()));
+    end.setHours(23, 59, 59, 999);
+    return { deadlineFrom: from, deadlineTo: end.toISOString() };
+  }
+  if (preset === 'this-month') {
+    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+    return { deadlineFrom: from, deadlineTo: end.toISOString() };
+  }
+  if (preset === 'next-30') {
+    const end = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    return { deadlineFrom: from, deadlineTo: end.toISOString() };
+  }
+  return {};
+}
+
 /* Sort option to API sortBy/sortOrder mapping */
 function getSortParams(sort: string): { sortBy?: string; sortOrder?: string } {
   switch (sort) {
@@ -168,11 +197,16 @@ export default function SearchPage() {
   const [selectedSort, setSelectedSort] = useState('relevance');
   const [showFilters, setShowFilters] = useState(false);
 
-  /* Filter sidebar state */
+  /* Filter sidebar state.
+   *
+   * Every section starts collapsed on a fresh mount, so the panel opens in a
+   * compact state and the user expands only the filters they want. This is
+   * presentation only: the selected filter values below keep their own
+   * defaults, so search results and the active-filter count are unaffected. */
   const [openSections, setOpenSections] = useState({
-    category: true,
-    state: true,
-    value: true,
+    category: false,
+    state: false,
+    value: false,
     deadline: false,
     tenderType: false,
     source: false,
@@ -187,15 +221,6 @@ export default function SearchPage() {
 
   const toggleSection = (key: keyof typeof openSections) =>
     setOpenSections((s) => ({ ...s, [key]: !s[key] }));
-
-  const toggleSetItem = (setter: React.Dispatch<React.SetStateAction<Set<string>>>, item: string) => {
-    setter((prev) => {
-      const next = new Set(prev);
-      if (next.has(item)) next.delete(item);
-      else next.add(item);
-      return next;
-    });
-  };
 
   /* Active filter count */
   const activeFilterCount =
@@ -224,6 +249,8 @@ export default function SearchPage() {
       sidebarCategories: new Set<string>(),
       sidebarStates: new Set<string>(),
       sidebarTenderTypes: new Set<string>(),
+      sidebarSources: new Set<string>(),
+      deadline: 'any',
       page: 1,
     });
   };
@@ -239,6 +266,8 @@ export default function SearchPage() {
       sidebarCategories?: Set<string>;
       sidebarStates?: Set<string>;
       sidebarTenderTypes?: Set<string>;
+      sidebarSources?: Set<string>;
+      deadline?: string;
       page?: number;
     } = {}) => {
       const q = overrides.query ?? searchQuery;
@@ -249,6 +278,8 @@ export default function SearchPage() {
       const cats = overrides.sidebarCategories ?? filterCategories;
       const states = overrides.sidebarStates ?? filterStates;
       const types = overrides.sidebarTenderTypes ?? filterTenderTypes;
+      const sources = overrides.sidebarSources ?? filterSources;
+      const deadline = overrides.deadline ?? filterDeadline;
       const page = overrides.page ?? 1;
 
       // Merge category from pills and sidebar
@@ -263,19 +294,28 @@ export default function SearchPage() {
 
       const sortParams = getSortParams(sort);
       const valueParams = getValueRangeParams(vr);
+      const deadlineParams = getDeadlineParams(deadline);
 
+      // Every key is passed on every call, using `undefined` to clear, so a
+      // deselected filter is actually removed from the query rather than
+      // lingering from the previous search.
       updateFilters({
         query: q || undefined,
         categories: allCategories.length > 0 ? allCategories : undefined,
         states: allStates.length > 0 ? allStates : undefined,
         tenderTypes: types.size > 0 ? Array.from(types) : undefined,
-        ...valueParams,
-        ...sortParams,
+        sourcePortals: sources.size > 0 ? Array.from(sources) : undefined,
+        minValue: valueParams.minValue,
+        maxValue: valueParams.maxValue,
+        deadlineFrom: deadlineParams.deadlineFrom,
+        deadlineTo: deadlineParams.deadlineTo,
+        sortBy: sortParams.sortBy,
+        sortOrder: sortParams.sortOrder,
         page,
         limit: ITEMS_PER_PAGE,
       });
     },
-    [searchQuery, activeCategory, selectedState, selectedValueRange, selectedSort, filterCategories, filterStates, filterTenderTypes, updateFilters],
+    [searchQuery, activeCategory, selectedState, selectedValueRange, selectedSort, filterCategories, filterStates, filterTenderTypes, filterSources, filterDeadline, updateFilters],
   );
 
   /* Derived data from API result */
@@ -402,7 +442,7 @@ export default function SearchPage() {
               type="radio"
               name="sidebar-deadline"
               checked={filterDeadline === opt.value}
-              onChange={() => setFilterDeadline(opt.value)}
+              onChange={() => { setFilterDeadline(opt.value); triggerSearch({ deadline: opt.value, page: 1 }); }}
               className="w-4 h-4 border-border text-primary-500 focus:ring-primary-500 bg-transparent"
             />
             <span className="text-body-sm text-muted-foreground group-hover:text-foreground transition-colors flex-1">
@@ -441,7 +481,12 @@ export default function SearchPage() {
             <input
               type="checkbox"
               checked={filterSources.has(portal)}
-              onChange={() => toggleSetItem(setFilterSources, portal)}
+              onChange={() => {
+                const next = new Set(filterSources);
+                if (next.has(portal)) next.delete(portal); else next.add(portal);
+                setFilterSources(next);
+                triggerSearch({ sidebarSources: next, page: 1 });
+              }}
               className="w-4 h-4 rounded border-border text-primary-500 focus:ring-primary-500 bg-transparent"
             />
             <span className="text-body-sm text-muted-foreground group-hover:text-foreground transition-colors flex-1">
@@ -451,6 +496,38 @@ export default function SearchPage() {
         ))}
       </FilterSection>
     </>
+  );
+
+  /* Shared Recent Searches card.
+   *
+   * Extracted so the desktop sidebar and the narrow-screen layout render the
+   * same markup. It used to live only inside the `hidden md:block` sidebar,
+   * which meant recent searches were unreachable below the md breakpoint. */
+  const recentSearchesCard = (
+    <div className="bg-card border border-border rounded-xl p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="text-heading-sm text-foreground font-display flex items-center gap-2">
+          <Star className="w-4 h-4 text-primary-500" /> Recent Searches
+        </h3>
+      </div>
+      <div className="space-y-2 mb-3">
+        {recentSearches.slice(0, 5).map((term, idx) => (
+          <button
+            key={idx}
+            onClick={() => handleSearch(term)}
+            className="w-full text-left p-2.5 rounded-lg bg-muted/50 hover:bg-primary-500/5 border border-transparent hover:border-primary-500/20 transition-all group"
+          >
+            <p className="text-body-sm font-medium text-foreground group-hover:text-primary-500 transition-colors">
+              {term}
+            </p>
+          </button>
+        ))}
+      </div>
+      <button className="w-full py-2 rounded-lg border border-dashed border-border text-caption font-medium text-muted-foreground hover:text-primary-500 hover:border-primary-500/30 transition-all flex items-center justify-center gap-1.5">
+        <Bookmark className="w-3.5 h-3.5" />
+        Save this search
+      </button>
+    </div>
   );
 
   /* ------------------------------------------------------------------ */
@@ -600,37 +677,27 @@ export default function SearchPage() {
       <div className="flex gap-6">
         {/* Desktop filter sidebar */}
         <aside className="w-[260px] shrink-0 hidden md:block">
-          <div className="bg-card border border-border rounded-xl p-4 sticky top-20">
-            {filterContent}
-          </div>
+          {/* The sticky element is the whole column, not the filter card.
+              Pinning only the filter card left Recent Searches as a static
+              sibling: a stuck element is lifted out of its flow position, so
+              the following sibling kept its own position and scrolled up
+              underneath the pinned panel. Making the column sticky and laying
+              both cards out inside it means their boxes are always stacked and
+              can never overlap, whatever the panel's height.
 
-          {/* Recent searches card */}
-          {recentSearches.length > 0 && (
-            <div className="bg-card border border-border rounded-xl p-4 mt-4 sticky top-[calc(20rem+5rem)]">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="text-heading-sm text-foreground font-display flex items-center gap-2">
-                  <Star className="w-4 h-4 text-primary-500" /> Recent Searches
-                </h3>
-              </div>
-              <div className="space-y-2 mb-3">
-                {recentSearches.slice(0, 5).map((term, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => handleSearch(term)}
-                    className="w-full text-left p-2.5 rounded-lg bg-muted/50 hover:bg-primary-500/5 border border-transparent hover:border-primary-500/20 transition-all group"
-                  >
-                    <p className="text-body-sm font-medium text-foreground group-hover:text-primary-500 transition-colors">
-                      {term}
-                    </p>
-                  </button>
-                ))}
-              </div>
-              <button className="w-full py-2 rounded-lg border border-dashed border-border text-caption font-medium text-muted-foreground hover:text-primary-500 hover:border-primary-500/30 transition-all flex items-center justify-center gap-1.5">
-                <Bookmark className="w-3.5 h-3.5" />
-                Save this search
-              </button>
+              The column is bounded to the viewport and split with flexbox:
+              the filter card takes the remaining space and scrolls internally
+              (`min-h-0` is required for a flex child to be allowed to shrink
+              below its content height), while Recent Searches keeps its
+              natural height via `shrink-0`. No hard-coded offsets. */}
+          <div className="sticky top-20 flex flex-col gap-4 max-h-[calc(100vh-6rem)]">
+            <div className="bg-card border border-border rounded-xl p-4 flex-1 min-h-0 overflow-y-auto overscroll-contain">
+              {filterContent}
             </div>
-          )}
+            {recentSearches.length > 0 && (
+              <div className="shrink-0">{recentSearchesCard}</div>
+            )}
+          </div>
         </aside>
 
         {/* Mobile filter drawer */}
@@ -657,6 +724,14 @@ export default function SearchPage() {
 
         {/* Results area */}
         <div className="flex-1 min-w-0">
+          {/* Recent searches, narrow screens only. The sidebar that normally
+              holds this card is hidden below md, so without this the section
+              was simply unreachable on a phone. Stacked in normal flow above
+              the results, so nothing can overlap. */}
+          {recentSearches.length > 0 && (
+            <div className="md:hidden mb-4">{recentSearchesCard}</div>
+          )}
+
           {/* Results count */}
           <div className="flex items-center justify-between mb-4">
             <p className="text-body-sm text-muted-foreground">

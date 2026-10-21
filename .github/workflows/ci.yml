@@ -1,27 +1,42 @@
 name: CI
 
 on:
+  # `dev` is this repository's integration branch and the base for pull
+  # requests, but CI only watched main/develop — so nothing merged to dev was
+  # ever checked, and a failing api-server test sat unnoticed.
   pull_request:
-    branches: [main, develop]
+    branches: [main, dev, develop]
   push:
-    branches: [main, develop]
+    branches: [main, dev, develop]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job here only reads the checked-out tree. Declaring this at the top
+# level replaces whatever the repository default happens to be (which can be
+# read/write) with the least privilege each job actually needs.
+permissions:
+  contents: read
+
 jobs:
+  # Named for what it actually does. This job type-checks; it does NOT lint.
+  # No ESLint is installed or configured in this workspace (`packages/api-server`
+  # has an `eslint src/` script with no eslint dependency, and `next lint` in
+  # apps/web|admin has no config and prompts interactively), so a lint step here
+  # would either fail or hang. Setting ESLint up is tracked separately; until
+  # then this name does not promise coverage that does not exist.
   lint-and-typecheck:
-    name: Lint & Type Check
+    name: Type Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: pnpm/action-setup@v2
+      - uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: 'pnpm'
@@ -31,6 +46,11 @@ jobs:
 
       - name: Generate Prisma client
         run: pnpm db:generate
+
+      - name: Validate Prisma schema
+        run: npx prisma validate
+        env:
+          DATABASE_URL: postgresql://placeholder:placeholder@localhost:5432/tenderbazaar_validation
 
       - name: Type Check - Shared
         run: pnpm --filter @tenderbazaar/shared type-check
@@ -50,18 +70,84 @@ jobs:
       - name: Type Check - Notification Service
         run: pnpm --filter @tenderbazaar/notification-service type-check
 
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-test-password
+          POSTGRES_DB: tenderbazaar_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      # Disposable CI databases. The scheduler and stale-run suites only touch
+      # what they are pointed at explicitly, and skip when these are unset.
+      TEST_REDIS_URL: redis://127.0.0.1:6379
+      TEST_DATABASE_URL: postgresql://postgres:ci-test-password@127.0.0.1:5432/tenderbazaar_test
+      DATABASE_URL: postgresql://postgres:ci-test-password@127.0.0.1:5432/tenderbazaar_test
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2
+        with:
+          version: 10
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Apply migrations to the disposable test database
+        run: npx prisma migrate deploy
+
+      - name: Re-apply migrations (must be a no-op)
+        run: npx prisma migrate deploy
+
+      - name: API server tests
+        run: pnpm --filter @tenderbazaar/api-server test
+
+      - name: Scraper engine tests
+        run: pnpm --filter @tenderbazaar/scraper-engine test
+
+      # This suite existed and passed but was never wired into CI, so nothing
+      # guarded the push-delivery and Firebase-credential behaviour it pins.
+      - name: Notification service tests
+        run: pnpm --filter @tenderbazaar/notification-service test
+
   build:
     name: Build
     runs-on: ubuntu-latest
     needs: lint-and-typecheck
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: pnpm/action-setup@v2
+      - uses: pnpm/action-setup@eae0cfeb286e66ffb5155f1a79b90583a127a68b # v2
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
           cache: 'pnpm'
@@ -77,13 +163,144 @@ jobs:
         env:
           SKIP_ENV_VALIDATION: 'true'
 
+  docker-images:
+    name: Docker Images
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # Nothing built these images in CI, so a broken Dockerfile or a mistake in
+      # the partial workspace copy only surfaced on a deployment attempt.
+      - name: Build db-init image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: docker/Dockerfile.db-init
+          push: false
+          cache-from: type=gha,scope=db-init
+          cache-to: type=gha,mode=max,scope=db-init
+
+      - name: Build api-server image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: packages/api-server/Dockerfile
+          push: false
+          cache-from: type=gha,scope=api-server
+          cache-to: type=gha,mode=max,scope=api-server
+
+      - name: Build scraper-engine image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: packages/scraper-engine/Dockerfile
+          push: false
+          cache-from: type=gha,scope=scraper
+          cache-to: type=gha,mode=max,scope=scraper
+
+      - name: Build notification-service image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: packages/notification-service/Dockerfile
+          push: false
+          cache-from: type=gha,scope=notification
+          cache-to: type=gha,mode=max,scope=notification
+
+      - name: Build web image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: apps/web/Dockerfile
+          push: false
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://api.ci.invalid/api/v1
+          cache-from: type=gha,scope=web
+          cache-to: type=gha,mode=max,scope=web
+
+      - name: Build admin image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: apps/admin/Dockerfile
+          push: false
+          build-args: |
+            NEXT_PUBLIC_API_URL=https://api.ci.invalid/api/v1
+          cache-from: type=gha,scope=admin
+          cache-to: type=gha,mode=max,scope=admin
+
+      - name: Build ai-service image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: ./packages/ai-service
+          file: ./packages/ai-service/Dockerfile
+          push: false
+          cache-from: type=gha,scope=ai
+          cache-to: type=gha,mode=max,scope=ai
+
+  compose-config:
+    name: Compose Configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # check-prod-ports.py (the last step of this job) imports PyYAML, and the
+      # ubuntu-latest runner image does not ship it for the system python3 — the
+      # step exited with "PyYAML is required: pip install pyyaml", failing this
+      # job. Ubuntu 24.04 also marks its system python as externally managed
+      # (PEP 668), so `pip install` has to go to a setup-python interpreter
+      # rather than the system one.
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+
+      - name: Install the port check's dependency
+        run: pip install pyyaml
+
+      - name: Validate the DEVELOPMENT file set
+        run: |
+          cp .env.example .env
+          docker compose config --quiet
+          echo "development compose config OK"
+
+      - name: Production must REFUSE an incomplete configuration
+        run: |
+          rm -f .env
+          if docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet 2>/dev/null; then
+            echo "FAIL: production config validated without the required secrets"
+            exit 1
+          fi
+          echo "OK: production refused an incomplete configuration"
+
+      - name: Validate the PRODUCTION file set (throwaway CI values)
+        run: |
+          {
+            echo "POSTGRES_PASSWORD=ci-throwaway-pg-password"
+            echo "REDIS_PASSWORD=ci-throwaway-redis-password"
+            echo "SCRAPER_API_TOKEN=ci-throwaway-scraper-api-token"
+            echo "FRONTEND_URL=https://app.ci.invalid"
+            echo "ADMIN_URL=https://admin.ci.invalid"
+            echo "NEXT_PUBLIC_API_URL=https://api.ci.invalid/api/v1"
+            echo "ANTHROPIC_API_KEY=ci-throwaway"
+          } > .env
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config --quiet
+          echo "production compose config OK"
+
+      - name: Production must not publish infrastructure ports
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml config > /tmp/prod.yml
+          python3 scripts/check-prod-ports.py /tmp/prod.yml
+
   ai-service:
     name: AI Service Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -94,14 +311,26 @@ jobs:
           cd packages/ai-service
           pip install -r requirements.txt
 
-      - name: Lint with ruff
+      # Advisory, not blocking. ruff reports 106 findings against its default
+      # rule set (this package has no ruff configuration), so enforcing it today
+      # would fail the job on style debt rather than on a regression. Unlike
+      # `|| true`, `continue-on-error` records the real exit status, so the step
+      # shows as failed-but-tolerated and the findings stay visible instead of
+      # being buried under a green tick. Adopting a rule set and clearing the
+      # backlog is a separate task; then this becomes blocking too.
+      - name: Lint with ruff (advisory)
+        continue-on-error: true
         run: |
-          pip install ruff
+          pip install 'ruff==0.17.1'
           cd packages/ai-service
-          ruff check . || true
+          ruff check .
 
+      # Blocking. This was suppressed with `|| true`, which hid one real defect
+      # (an implicit-Optional default in app/bid_assistant/analyzer.py). With
+      # that fixed mypy is clean, so it can report genuinely: any new type error
+      # in the AI service now fails CI instead of being silently swallowed.
       - name: Type check with mypy
         run: |
-          pip install mypy
+          pip install 'mypy==2.4.0'
           cd packages/ai-service
-          mypy . --ignore-missing-imports || true
+          mypy . --ignore-missing-imports

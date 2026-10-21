@@ -1,7 +1,8 @@
 import { z } from 'zod';
 
 export const analyzeTenderSchema = z.object({
-  documentText: z.string().min(1, 'Document text is required').max(100000, 'Document text too long'),
+  tenderId: z.string().optional(),
+  documentText: z.string().max(100000).optional(),
 });
 
 export const strategyParamsSchema = z.object({
@@ -9,5 +10,5 @@ export const strategyParamsSchema = z.object({
 });
 
 export const analyzeParamsSchema = z.object({
-  tenderId: z.string().min(1),
+  tenderId: z.string().optional(),
 });

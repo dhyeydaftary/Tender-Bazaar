@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { Calendar, Building2, MapPin, IndianRupee, Eye, Bookmark } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { renderHighlight } from '@/lib/safe-html';
 
 interface TenderCardProps {
   tender: {
@@ -49,7 +50,10 @@ function getDaysRemaining(deadline: string): { days: number; color: string; text
 
 export function TenderCard({ tender, isSaved, onToggleSave }: TenderCardProps) {
   const deadline = getDaysRemaining(tender.bidSubmissionDeadline);
-  const title = tender.highlight?.title?.[0] || tender.title;
+  // Both branches are scraped text. The highlight fragment is markup only to
+  // the extent of the <mark> tags the search service inserts; renderHighlight
+  // keeps those and escapes everything else.
+  const title = renderHighlight(tender.highlight?.title?.[0] || tender.title);
 
   return (
     <div className="bg-card border border-border rounded-xl p-5 hover:shadow-md transition-shadow">

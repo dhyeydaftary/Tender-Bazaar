@@ -109,8 +109,14 @@ export const auditService = {
       totalLogs,
       logsLast24h,
       logsLast7d,
-      byAction: byAction.map((a) => ({ action: a.action, count: a._count })),
-      byEntity: byEntity.map((e) => ({ entity: e.entity, count: e._count })),
+      byAction: byAction.map((a) => ({
+        action: a.action,
+        count: (a._count as any)?._all ?? (a._count as any)?.action ?? (typeof a._count === 'number' ? a._count : 0),
+      })),
+      byEntity: byEntity.map((e) => ({
+        entity: e.entity,
+        count: (e._count as any)?._all ?? (e._count as any)?.entity ?? (typeof e._count === 'number' ? e._count : 0),
+      })),
     };
   },
 };

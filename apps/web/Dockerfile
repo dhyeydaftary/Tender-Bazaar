@@ -13,7 +13,11 @@ COPY apps/web/package.json apps/web/
 COPY packages/shared/package.json packages/shared/
 
 # Install dependencies
-RUN pnpm install --frozen-lockfile
+# A BuildKit cache mount for pnpm's content-addressable store. Packages
+# downloaded by one build are reused by the next, so rebuilds (and CI runs with
+# a warm cache) skip the network entirely instead of re-fetching the whole tree.
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store \
+    pnpm install --frozen-lockfile --store-dir=/pnpm-store
 
 # Copy source code
 COPY apps/web/ apps/web/
@@ -22,6 +26,10 @@ COPY packages/shared/ packages/shared/
 # Accept build-time env vars so they get baked into the JS bundle
 ARG NEXT_PUBLIC_API_URL=http://localhost:4000/api/v1
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ARG NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH=true
+ENV NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH=$NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH
+ARG NEXT_PUBLIC_GOOGLE_CLIENT_ID=your-google-client-id
+ENV NEXT_PUBLIC_GOOGLE_CLIENT_ID=$NEXT_PUBLIC_GOOGLE_CLIENT_ID
 
 # Build Next.js (standalone output)
 RUN pnpm --filter @tenderbazaar/web run build

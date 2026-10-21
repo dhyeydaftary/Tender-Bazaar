@@ -1,5 +1,9 @@
 import nodemailer from 'nodemailer';
-import { SES } from '@aws-sdk/client-ses';
+import type { Transporter } from 'nodemailer';
+import type SESTransport from 'nodemailer/lib/ses-transport';
+import type SMTPTransport from 'nodemailer/lib/smtp-transport';
+import type JSONTransport from 'nodemailer/lib/json-transport';
+import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { config } from '../config';
 import {
   tenderAlertTemplate,
@@ -10,25 +14,107 @@ import {
   DeadlineTenderItem,
 } from '../templates/deadline-reminder';
 
-let transporter: nodemailer.Transporter | null = null;
+let transporter: Transporter | null = null;
 
-async function getTransporter(): Promise<nodemailer.Transporter> {
+/**
+ * Which transport the configured environment selects, and the options to build
+ * it with.
+ *
+ * Split out of `getTransporter` so the choice can be asserted without opening a
+ * connection or caching a module-level transporter. The SES branch changed
+ * shape when nodemailer went from 6 to 10 (the SDK v2/v3 `{ ses, aws }` form
+ * was removed in favour of `{ sesClient, SendEmailCommand }` from
+ * @aws-sdk/client-sesv2), and nothing exercised it, so the break would only
+ * have surfaced the first time production tried to send mail through SES.
+ */
+export type EmailTransportChoice =
+  | { kind: 'smtp'; description: string; options: SMTPTransport.Options }
+  | { kind: 'gmail'; description: string; options: SMTPTransport.Options }
+  | { kind: 'ses'; description: string; options: SESTransport.Options }
+  | { kind: 'json'; description: string; options: JSONTransport.Options };
+
+const SES_PLACEHOLDERS = new Set(['your-ses-access-key', 'your-ses-secret-key']);
+
+function configured(value: string | undefined): value is string {
+  return typeof value === 'string' && value.length > 0 && !SES_PLACEHOLDERS.has(value);
+}
+
+export function selectEmailTransport(
+  env: NodeJS.ProcessEnv = process.env,
+  region: string = config.aws.region,
+): EmailTransportChoice {
+  const smtpHost = env.SMTP_HOST;
+  const smtpUser = env.SMTP_USER;
+  const smtpPass = env.SMTP_PASS;
+
+  const gmailUser = env.GMAIL_USER;
+  const gmailPass = env.GMAIL_APP_PASSWORD;
+
+  const sesKey = env.AWS_SES_ACCESS_KEY;
+  const sesSecret = env.AWS_SES_SECRET_KEY;
+
+  if (configured(smtpHost) && configured(smtpUser) && configured(smtpPass)) {
+    const port = Number(env.SMTP_PORT) || 587;
+    return {
+      kind: 'smtp',
+      description: `[Email] Using custom SMTP transport (${smtpHost})`,
+      options: {
+        host: smtpHost,
+        port,
+        secure: port === 465,
+        auth: { user: smtpUser, pass: smtpPass },
+      },
+    };
+  }
+
+  if (configured(gmailUser) && configured(gmailPass)) {
+    return {
+      kind: 'gmail',
+      description: `[Email] Using Gmail SMTP transport (${gmailUser})`,
+      options: {
+        service: 'gmail',
+        auth: { user: gmailUser, pass: gmailPass },
+      },
+    };
+  }
+
+  if (configured(sesKey) && configured(sesSecret)) {
+    const sesClient = new SESv2Client({
+      region,
+      credentials: { accessKeyId: sesKey, secretAccessKey: sesSecret },
+    });
+    return {
+      kind: 'ses',
+      description: '[Email] Using AWS SES transport',
+      // Nodemailer 7 dropped the SES SDK v2/v3 clients: the SES transport now
+      // takes `{ sesClient, SendEmailCommand }` from @aws-sdk/client-sesv2 and
+      // issues the SendEmail call itself.
+      options: { SES: { sesClient, SendEmailCommand } },
+    };
+  }
+
+  // Unconfigured fallback: logs to console rather than pretending to deliver.
+  return {
+    kind: 'json',
+    description:
+      '[Email] No live SMTP / AWS SES credentials configured in .env. Messages will log to service console. Set SMTP_HOST/USER/PASS or GMAIL_USER/GMAIL_APP_PASSWORD for internet email dispatch.',
+    options: { jsonTransport: true },
+  };
+}
+
+async function getTransporter(): Promise<Transporter> {
   if (transporter) return transporter;
 
-  if (config.isDev) {
-    // In development, use a JSON transport that logs to console
-    transporter = nodemailer.createTransport({
-      jsonTransport: true,
-    });
-    console.log('[Email] Using JSON transport (dev mode)');
-  } else {
-    // In production, use AWS SES
-    const ses = new SES({ region: config.aws.region });
-    transporter = nodemailer.createTransport({
-      SES: { ses, aws: { SES } },
-    } as nodemailer.TransportOptions);
-    console.log('[Email] Using AWS SES transport');
-  }
+  const choice = selectEmailTransport();
+  // Switched rather than passed straight through: createTransport is overloaded
+  // per transport, so a union of option shapes matches no single overload.
+  transporter =
+    choice.kind === 'ses'
+      ? nodemailer.createTransport(choice.options)
+      : choice.kind === 'json'
+        ? nodemailer.createTransport(choice.options)
+        : nodemailer.createTransport(choice.options);
+  console.log(choice.description);
 
   return transporter;
 }

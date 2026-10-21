@@ -25,9 +25,13 @@ import {
   Loader2,
   Menu,
   X,
+  Sun,
+  Moon,
 } from 'lucide-react';
 import { useState, useEffect, createContext, useContext } from 'react';
 import { useAuthStore } from '@/lib/auth';
+
+import { AppearanceProvider, useAppearance } from '@/lib/appearance';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SIDEBAR CONTEXT — shared collapsed state between Sidebar & Main
@@ -166,7 +170,7 @@ function Sidebar() {
           <div className="flex items-center gap-3 px-3 py-2">
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500/30 to-accent-500/30 flex items-center justify-center shrink-0">
               <span className="text-xs font-bold text-primary-500">
-                {user.name.split(' ').map(n => n[0]).join('')}
+                {(user.name || '').split(' ').filter(Boolean).map(n => n[0]).join('') || 'A'}
               </span>
             </div>
             <div className="min-w-0 flex-1">
@@ -181,7 +185,7 @@ function Sidebar() {
           <div className="flex justify-center py-2" title={`${user.name} (${user.role})`}>
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500/30 to-accent-500/30 flex items-center justify-center">
               <span className="text-xs font-bold text-primary-500">
-                {user.name.split(' ').map(n => n[0]).join('')}
+                {(user.name || '').split(' ').filter(Boolean).map(n => n[0]).join('') || 'A'}
               </span>
             </div>
           </div>
@@ -222,6 +226,7 @@ function Sidebar() {
 
 function TopBar() {
   const { user } = useAuthStore();
+  const { isDark, toggleTheme } = useAppearance();
   const pathname = usePathname();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
@@ -266,6 +271,20 @@ function TopBar() {
             <Search className="w-4 h-4" />
             <span>Search...</span>
             <kbd className="text-[10px] font-mono bg-background/50 border border-border rounded px-1.5 py-0.5 text-muted-foreground ml-2">Ctrl+K</kbd>
+          </button>
+
+          {/* Theme toggle */}
+          <button
+            onClick={toggleTheme}
+            className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors border border-border"
+            title={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            aria-label="Toggle theme"
+          >
+            {isDark ? (
+              <Sun className="w-4 h-4 text-amber-400" />
+            ) : (
+              <Moon className="w-4 h-4 text-indigo-500" />
+            )}
           </button>
 
           {/* Role badge */}
@@ -377,8 +396,21 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
     }
   }, [isAuthenticated, isLoading, isLoginPage, router]);
 
-  if (isLoading) return <LoadingScreen />;
+  // The login page is checked BEFORE isLoading on purpose.
+  //
+  // The auth store reuses one global `isLoading` for both app-boot rehydration
+  // and each login request, flipping it true while the request is in flight.
+  // With the old order the login page was swapped out for <LoadingScreen/> on
+  // submit, which unmounted it and destroyed its local email/password/error
+  // state; the failed-login catch then called setError() on a dead component
+  // and a fresh, empty one mounted in its place � so invalid credentials
+  // produced no visible feedback at all.
+  //
+  // The login page has its own local isLoading for the button spinner and
+  // disabled inputs, so it never needed the global screen. Every other route
+  // still gets the boot LoadingScreen below.
   if (isLoginPage) return <>{children}</>;
+  if (isLoading) return <LoadingScreen />;
   if (!isAuthenticated) return <LoadingScreen />;
 
   return (
@@ -406,17 +438,60 @@ function AuthGuard({ children }: { children: React.ReactNode }) {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
         <title>TenderBazaar Admin</title>
         <meta name="description" content="TenderBazaar Administration Dashboard" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
         <link
-          href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap"
+          href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&display=swap"
           rel="stylesheet"
+        />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              (function() {
+                try {
+                  var theme = localStorage.getItem('tb_admin_theme');
+                  if (theme === 'light') {
+                    document.documentElement.classList.remove('dark');
+                  } else {
+                    document.documentElement.classList.add('dark');
+                  }
+                  var font = localStorage.getItem('tb_admin_font');
+                  var fontMap = {
+                    'plus-jakarta-sans': "'Plus Jakarta Sans', system-ui, sans-serif",
+                    'inter': "'Inter', system-ui, sans-serif",
+                    'poppins': "'Poppins', system-ui, sans-serif",
+                    'dm-sans': "'DM Sans', system-ui, sans-serif"
+                  };
+                  if (font && fontMap[font]) {
+                    document.documentElement.style.setProperty('--font-family', fontMap[font]);
+                  }
+                  var colors = localStorage.getItem('tb_admin_colors');
+                  if (colors) {
+                    var parsed = JSON.parse(colors);
+                    if (parsed.primary) {
+                      document.documentElement.style.setProperty('--color-primary-500', parsed.primary);
+                    }
+                    if (parsed.secondary) {
+                      document.documentElement.style.setProperty('--color-secondary-900', parsed.secondary);
+                    }
+                    if (parsed.accent) {
+                      document.documentElement.style.setProperty('--color-accent-500', parsed.accent);
+                    }
+                  }
+                } catch(e) {}
+              })();
+            `,
+          }}
         />
       </head>
       <body className="antialiased bg-background text-foreground font-sans">
-        <AuthGuard>{children}</AuthGuard>
+        <AppearanceProvider>
+          <AuthGuard>{children}</AuthGuard>
+        </AppearanceProvider>
       </body>
     </html>
   );

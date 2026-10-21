@@ -9,6 +9,10 @@ interface StateScraperOptions {
   prisma?: PrismaClient;
   maxConcurrency?: number;
   requestDelay?: number;
+  /** Max listing pages for this run; falls back to the scraper's getMaxPages(). */
+  maxPages?: number;
+  /** Re-fetch already-known tenders (used by the daily full re-scrape). */
+  fullRescrape?: boolean;
 }
 
 /**
@@ -30,6 +34,9 @@ async function runStateScrapeLoop(
   let newTenders = 0;
   let updatedTenders = 0;
   let errors = 0;
+  let skippedExisting = 0;
+  let pagesScraped = 0;
+  let consecutivePageErrors = 0;
 
   const logger = {
     info: (msg: string, meta?: Record<string, unknown>) =>
@@ -43,7 +50,11 @@ async function runStateScrapeLoop(
   logger.info('Starting scraping run');
 
   try {
-    for (let page = 1; page <= scraper.getMaxPages(); page++) {
+    // Prefer the run's configured page budget (PORTAL_CONFIGS.maxPages, threaded
+    // through main.ts); fall back to the scraper's own default.
+    const pageBudget = (scraper as any).maxPages ?? scraper.getMaxPages();
+
+    for (let page = 1; page <= pageBudget; page++) {
       try {
         const listingUrl = scraper.buildListingUrl(page);
         const listingHtml = await (scraper as any).fetchPage(listingUrl, {
@@ -52,16 +63,26 @@ async function runStateScrapeLoop(
             Accept: 'text/html,application/xhtml+xml',
           },
         });
+        consecutivePageErrors = 0;
 
         const listings = scraper.parseTenderList(listingHtml);
         if (listings.length === 0) {
           logger.info(`No tenders on page ${page}, stopping pagination`);
           break;
         }
+        // This page was fetched and parsed into listings, so it counts as
+        // scraped. Reached only past fetchPage() (which throws on failure) and
+        // past the empty-listings break, so failed and empty pages are excluded.
+        pagesScraped++;
         totalFound += listings.length;
         logger.info(`Found ${listings.length} tenders on page ${page}`);
 
-        for (const listing of listings) {
+        // New-only: one batch existence check per listing page (PostgreSQL is the
+        // source of truth). Known-and-unchanged tenders never reach the detail fetch.
+        const { toProcess, skipped } = await (scraper as any).partitionListings(listings);
+        skippedExisting += skipped.length;
+
+        for (const listing of toProcess) {
           try {
             if (!listing.sourceId) continue;
 
@@ -108,19 +129,77 @@ async function runStateScrapeLoop(
             logger.error(`Failed to process tender ${listing.sourceId}: ${(err as Error).message}`);
           }
         }
+        // One addBulk per page rather than one add per tender.
+        await (scraper as any).flushTenderIndexQueue(`${scraper.portalName}:page-${page}`);
       } catch (err) {
+        // If page > 1 and 404, the portal simply has fewer pages than the requested budget
+        const is404 = (err as any)?.response?.status === 404 || String(err).includes('404');
+        if (page > 1 && is404) {
+          logger.info(`Reached end of listings at page ${page} (404), ending pagination`);
+          break;
+        }
+
         errors++;
+        consecutivePageErrors++;
         logger.error(`Failed to fetch page ${page}: ${(err as Error).message}`);
+        if (consecutivePageErrors >= 2) {
+          logger.warn(`Stopping pagination after ${consecutivePageErrors} consecutive page errors: ${(err as Error).message}`);
+          break;
+        }
       }
     }
   } finally {
+    // Guarantee every changed tender is queued, even on an early break or error.
+    await (scraper as any).flushTenderIndexQueue();
     await (scraper as any).closeBrowser();
   }
 
   const duration = Date.now() - startTime;
-  logger.info('Scraping complete', { totalFound, newTenders, updatedTenders, errors, durationMs: duration });
 
-  return { portal: scraper.portalName, totalFound, newTenders, updatedTenders, errors, duration };
+  // A run that scraped NOTHING because every listing request failed is a
+  // failure, not a success.
+  //
+  // The loop above deliberately tolerates individual page errors (a portal
+  // dropping one page should not discard the rest), but it also absorbed the
+  // case where the portal was entirely unavailable: it stopped after two
+  // consecutive errors and returned a normal result with `errors: n`. The
+  // caller then recorded the run COMPLETED, BullMQ marked the job completed —
+  // so the configured retries/backoff never engaged — and StorageWriter
+  // counted it as a SUCCESS, refreshing lastSuccessAt. A portal that was 100%
+  // down therefore stayed HEALTHY for ever and never reached DEGRADED.
+  //
+  // Throwing here routes the run through the failure path: the run is recorded
+  // FAILED, portal health degrades, and BullMQ applies attempts + backoff.
+  if (pagesScraped === 0 && errors > 0) {
+    logger.error('Scraping failed: every listing request failed', {
+      errors,
+      durationMs: duration,
+    });
+    throw new Error(
+      `${scraper.portalName}: all ${errors} listing page request(s) failed; no page could be scraped`,
+    );
+  }
+
+  logger.info('Scraping complete', {
+    totalFound,
+    newTenders,
+    updatedTenders,
+    skippedExisting,
+    pagesScraped,
+    errors,
+    durationMs: duration,
+  });
+
+  return {
+    portal: scraper.portalName,
+    totalFound,
+    newTenders,
+    updatedTenders,
+    errors,
+    duration,
+    skippedExisting,
+    pagesScraped,
+  };
 }
 
 // ===========================================================================
@@ -129,12 +208,14 @@ async function runStateScrapeLoop(
 
 export class GujaratScraper extends BaseScraper {
   constructor(options?: StateScraperOptions) {
-    super('Gujarat (nProcure)', 'https://www.nprocure.com', {
+    super('Gujarat (nProcure)', 'https://tender.nprocure.com', {
       maxConcurrency: options?.maxConcurrency ?? 2,
       requestDelay: options?.requestDelay ?? 3000,
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -142,7 +223,9 @@ export class GujaratScraper extends BaseScraper {
   getMaxPages(): number { return 10; }
 
   buildListingUrl(page: number): string {
-    return `${this.portalUrl}/tender/search?page=${page}&state=Gujarat&status=active`;
+    return page === 1
+      ? `${this.portalUrl}/dashboard/getTenderClosingData`
+      : `${this.portalUrl}/dashboard/getTenderClosingData?page=${page}`;
   }
 
   buildDetailUrl(sourceId: string): string {
@@ -268,6 +351,8 @@ export class MaharashtraScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -275,11 +360,11 @@ export class MaharashtraScraper extends BaseScraper {
   getMaxPages(): number { return 10; }
 
   buildListingUrl(page: number): string {
-    return `${this.portalUrl}/tender/active?page=${page}`;
+    return `${this.portalUrl}/nicgep/app?page=FrontEndLatestActiveTenders&service=page&pageNo=${page}`;
   }
 
   buildDetailUrl(sourceId: string): string {
-    return `${this.portalUrl}/tender/view/${sourceId}`;
+    return `${this.portalUrl}/nicgep/app?page=FrontEndTenderPreview&service=page&tenderid=${sourceId}`;
   }
 
   async scrape(): Promise<ScrapeResult> {
@@ -290,19 +375,22 @@ export class MaharashtraScraper extends BaseScraper {
     const tenders: Partial<ScrapedTender>[] = [];
     const $ = this.loadHtml(html);
 
-    $('table.tenderTable tbody tr, .tender-row, #tenderListTable tbody tr').each((_, row) => {
+    $('table.list_table tbody tr, table#activeTenders tbody tr, table.tenderTable tbody tr, #tenderListTable tbody tr').each((_, row) => {
       const $cols = $(row).find('td');
       if ($cols.length < 5) return;
 
-      const sourceId = this.cleanText(
-        $cols.eq(0).find('a').attr('href')?.match(/view\/(\w+)/)?.[1] || $cols.eq(0).text(),
-      );
-      const refNumber = this.cleanText($cols.eq(1).text());
-      const title = this.cleanText($cols.eq(2).text());
+      const slNo = this.cleanText($cols.eq(0).text());
+      if (!slNo || isNaN(parseInt(slNo))) return;
+
+      const $titleLink = $cols.eq(1).find('a');
+      const title = this.cleanText($titleLink.text() || $cols.eq(1).text());
+      const detailHref = $titleLink.attr('href') || '';
+      const sourceId = detailHref.match(/tenderid=(\d+)/)?.[1] || this.cleanText($cols.eq(0).text());
+
+      const refNumber = this.cleanText($cols.eq(2).text());
       const org = this.cleanText($cols.eq(3).text());
-      const department = this.cleanText($cols.eq(4).text());
-      const valueText = this.cleanText($cols.eq(5).text());
-      const closingDate = this.cleanText($cols.eq(6).text());
+      const closingDate = this.cleanText($cols.eq(4).text());
+      const valueText = $cols.length > 5 ? this.cleanText($cols.eq(5).text()) : '';
 
       if (!sourceId || !title) return;
 
@@ -311,7 +399,6 @@ export class MaharashtraScraper extends BaseScraper {
         referenceNumber: refNumber || sourceId,
         title,
         organization: org,
-        department,
         estimatedValue: this.parseIndianCurrency(valueText),
         bidSubmissionDeadline: this.parseIndianDate(closingDate),
         sourcePortal: this.portalName,
@@ -408,6 +495,8 @@ export class RajasthanScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -521,12 +610,14 @@ export class RajasthanScraper extends BaseScraper {
 
 export class KarnatakaScraper extends BaseScraper {
   constructor(options?: StateScraperOptions) {
-    super('Karnataka (eProc)', 'https://eproc.karnataka.gov.in', {
+    super('Karnataka (eProc)', 'https://kppp.karnataka.gov.in', {
       maxConcurrency: options?.maxConcurrency ?? 2,
       requestDelay: options?.requestDelay ?? 3000,
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -534,11 +625,11 @@ export class KarnatakaScraper extends BaseScraper {
   getMaxPages(): number { return 10; }
 
   buildListingUrl(page: number): string {
-    return `${this.portalUrl}/eprocurement/tenderList?page=${page}&status=active`;
+    return `${this.portalUrl}/ui/tenders?page=${page}`;
   }
 
   buildDetailUrl(sourceId: string): string {
-    return `${this.portalUrl}/eprocurement/tenderDetail?tenderId=${sourceId}`;
+    return `${this.portalUrl}/ui/tenders/${sourceId}`;
   }
 
   async scrape(): Promise<ScrapeResult> {
@@ -641,6 +732,8 @@ export class TamilNaduScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -758,6 +851,8 @@ export class UPScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -878,6 +973,8 @@ export class MPScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -993,6 +1090,8 @@ export class DelhiScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -1115,6 +1214,8 @@ export class KeralaScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 
@@ -1234,6 +1335,8 @@ export class WestBengalScraper extends BaseScraper {
       retryCount: 3,
       retryDelay: 2000,
       prisma: options?.prisma,
+      maxPages: options?.maxPages,
+      fullRescrape: options?.fullRescrape,
     });
   }
 

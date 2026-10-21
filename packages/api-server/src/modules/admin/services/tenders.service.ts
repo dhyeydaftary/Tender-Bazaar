@@ -1,5 +1,6 @@
 import { prisma } from '../../../config/database';
 import { AppError } from '../../../shared/middleware/error-handler';
+import { enqueueTenderIndex } from '../../../queue/tender-index-queue';
 
 interface TenderListFilters {
   page: number;
@@ -26,10 +27,13 @@ export const tendersService = {
         { referenceNumber: { contains: search, mode: 'insensitive' } },
         { organization: { contains: search, mode: 'insensitive' } },
         { department: { contains: search, mode: 'insensitive' } },
+        { state: { contains: search, mode: 'insensitive' } },
       ];
     }
 
-    if (sourcePortal) where.sourcePortal = sourcePortal;
+    if (sourcePortal) {
+      where.sourcePortal = { contains: sourcePortal, mode: 'insensitive' };
+    }
     if (category) where.category = category;
     if (status) where.status = status;
     if (state) where.state = state;
@@ -133,6 +137,13 @@ export const tendersService = {
       data: updateData,
     });
 
+    // Keep Elasticsearch in step with the admin edit. Best-effort: a failed
+    // enqueue is logged and never fails the update (PostgreSQL is the source of
+    // truth); the boot-time reindex is the fallback.
+    if (Object.keys(updateData).length > 0) {
+      await enqueueTenderIndex(tenderId, 'index', 'admin:update');
+    }
+
     return { tender: updated, changes };
   },
 
@@ -143,6 +154,10 @@ export const tendersService = {
     }
 
     await prisma.tender.delete({ where: { id: tenderId } });
+
+    // Remove it from the search index too, with the queue's retry behaviour.
+    await enqueueTenderIndex(tenderId, 'delete', 'admin:delete');
+
     return { message: 'Tender deleted successfully', tender: { id: tender.id, title: tender.title } };
   },
 
@@ -163,7 +178,7 @@ export const tendersService = {
     ] = await Promise.all([
       prisma.tender.count(),
       prisma.tender.count({ where: { status: 'ACTIVE' } }),
-      prisma.tender.count({ where: { status: 'CLOSED' } }),
+      prisma.tender.count({ where: { status: { in: ['CLOSED', 'AWARDED', 'CANCELLED'] } } }),
       prisma.tender.count({ where: { createdAt: { gte: startOfMonth } } }),
       prisma.tender.groupBy({
         by: ['category'],
@@ -198,10 +213,22 @@ export const tendersService = {
       active: activeTenders,
       closed: closedTenders,
       addedThisMonth: tendersThisMonth,
-      byCategory: byCategory.map((c) => ({ category: c.category, count: c._count })),
-      byStatus: byStatus.map((s) => ({ status: s.status, count: s._count })),
-      byState: byState.map((s) => ({ state: s.state, count: s._count })),
-      byPortal: byPortal.map((p) => ({ portal: p.sourcePortal, count: p._count })),
+      byCategory: byCategory.map((c) => ({
+        category: c.category,
+        count: (c._count as any)?._all ?? (c._count as any)?.category ?? (typeof c._count === "number" ? c._count : 0),
+      })),
+      byStatus: byStatus.map((s) => ({
+        status: s.status,
+        count: (s._count as any)?._all ?? (s._count as any)?.status ?? (typeof s._count === "number" ? s._count : 0),
+      })),
+      byState: byState.map((s) => ({
+        state: s.state,
+        count: (s._count as any)?._all ?? (s._count as any)?.state ?? (typeof s._count === "number" ? s._count : 0),
+      })),
+      byPortal: byPortal.map((p) => ({
+        portal: p.sourcePortal,
+        count: (p._count as any)?._all ?? (p._count as any)?.sourcePortal ?? (typeof p._count === "number" ? p._count : 0),
+      })),
       valueStats: {
         average: avgValue._avg.estimatedValue || 0,
         max: avgValue._max.estimatedValue || 0,

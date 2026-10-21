@@ -72,12 +72,16 @@ router.patch('/scrapers/:portalName', adminController.updateScraper);
 
 router.get('/notifications', adminController.getNotificationList);
 router.get('/notifications/stats', adminController.getNotificationStats);
+router.get('/notifications/broadcasts', adminController.getBroadcastList);
+router.get('/notifications/broadcasts/stats', adminController.getBroadcastStats);
+router.get('/notifications/broadcasts/audience', adminController.getAudienceEstimate);
 router.post('/notifications/broadcast', adminController.sendBroadcast);
 
 /* ═══════════════════════════════════════════════════════════════
    CONTENT — Blog Posts
    ═══════════════════════════════════════════════════════════════ */
 
+router.get('/content/stats', adminController.getContentStats);
 router.get('/content/posts', adminController.getPostList);
 router.post('/content/posts', adminController.createPost);
 router.get('/content/posts/:id', adminController.getPostDetail);

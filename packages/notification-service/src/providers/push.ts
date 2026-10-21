@@ -1,4 +1,9 @@
 import { config } from '../config';
+import {
+  describePushCredential,
+  resolveFirebaseCredential,
+  type PushCredentialStatus,
+} from './firebase-credentials';
 
 // Lazy-initialized firebase admin
 let firebaseApp: FirebaseApp | null = null;
@@ -8,11 +13,48 @@ let messaging: FirebaseMessaging | null = null;
 type FirebaseApp = import('firebase-admin').app.App;
 type FirebaseMessaging = import('firebase-admin').messaging.Messaging;
 
+/** Last resolved credential state, for honest health reporting. */
+let credentialStatus: PushCredentialStatus | null = null;
+
+/**
+ * Current push-channel status, resolved on first use and cached.
+ *
+ * Exposed so health reporting can say "disabled" or "misconfigured" instead of
+ * implying push works. Never returns a credential value.
+ */
+export function getPushStatus(): PushCredentialStatus {
+  if (!credentialStatus) {
+    credentialStatus = resolveFirebaseCredential({
+      serviceAccountPath: config.firebase.serviceAccountPath,
+      projectId: config.firebase.projectId,
+    }).status;
+  }
+  return credentialStatus;
+}
+
+/** Test-only: drop the cached credential and app so config is re-read. */
+export function resetPushProviderForTests(): void {
+  credentialStatus = null;
+  firebaseApp = null;
+  messaging = null;
+}
+
 async function getMessaging(): Promise<FirebaseMessaging | null> {
   if (messaging) return messaging;
 
-  if (!config.firebase.projectId) {
-    console.log('[Push] Firebase project ID not configured, skipping initialization');
+  // Resolve a REAL service-account credential.
+  //
+  // This previously called initializeApp({ projectId }) with no credential, so
+  // Firebase Admin silently fell back to Application Default Credentials that
+  // do not exist here: initialization "succeeded" and every send failed.
+  const resolved = resolveFirebaseCredential({
+    serviceAccountPath: config.firebase.serviceAccountPath,
+    projectId: config.firebase.projectId,
+  });
+  credentialStatus = resolved.status;
+
+  if (resolved.status.state !== 'configured' || !resolved.serviceAccount) {
+    console.warn(`[Push] ${describePushCredential(resolved.status)}`);
     return null;
   }
 
@@ -22,17 +64,32 @@ async function getMessaging(): Promise<FirebaseMessaging | null> {
     // Only initialize if no apps exist yet
     if (admin.apps.length === 0) {
       firebaseApp = admin.initializeApp({
-        projectId: config.firebase.projectId,
+        credential: admin.credential.cert({
+          projectId: resolved.serviceAccount.projectId,
+          clientEmail: resolved.serviceAccount.clientEmail,
+          privateKey: resolved.serviceAccount.privateKey,
+        }),
+        projectId: resolved.serviceAccount.projectId,
       });
     } else {
       firebaseApp = admin.apps[0]!;
     }
 
     messaging = admin.messaging(firebaseApp);
-    console.log('[Push] Firebase Admin initialized');
+    console.log(
+      `[Push] Firebase Admin initialized (project=${resolved.serviceAccount.projectId})`,
+    );
     return messaging;
   } catch (error) {
-    console.error('[Push] Failed to initialize Firebase Admin:', error);
+    // An initialization failure is a misconfiguration, not a disabled feature,
+    // so it is recorded as such. The message is logged without the credential.
+    credentialStatus = {
+      state: 'error',
+      reason: `Firebase Admin initialization failed: ${
+        error instanceof Error ? error.message : 'unknown error'
+      }`,
+    };
+    console.error(`[Push] ${describePushCredential(credentialStatus)}`);
     return null;
   }
 }

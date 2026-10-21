@@ -1,4 +1,24 @@
-# Development overrides
+# ───────────────────────────────────────────────────────────────────────────
+# Development overrides — loaded AUTOMATICALLY by a bare `docker compose up`.
+#
+# Everything here is development-only. Production must be started with an
+# explicit file list so this file is skipped:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Port publishing for the infrastructure services and for the scraper control
+# API lives here rather than in docker-compose.yml, so production cannot expose
+# them by accident. (An empty `ports: []` in the production override does NOT
+# clear a list inherited from the base file — Compose merges list fields — so
+# the base file must simply not publish them.)
+#
+# Loading the developer's `.env` lives here for the same reason. `env_file` is
+# merged the same way `ports` is, so while the base file declared
+# `env_file: .env` no override could take it back, and every production
+# container was handed the development environment — including a dev
+# DATABASE_URL/REDIS_URL and live third-party API keys. Production instead
+# supplies `.env.production` (see docker-compose.prod.yml).
+# ───────────────────────────────────────────────────────────────────────────
 services:
   postgres:
     ports:
@@ -14,3 +34,33 @@ services:
       - '9200:9200'
     environment:
       - 'ES_JAVA_OPTS=-Xms512m -Xmx512m'
+
+  ai-service:
+    ports:
+      - '5050:5000'
+
+  # Published so the control API can be exercised from the host during
+  # development (http://localhost:4001/api/health). Never published in
+  # production — it performs scheduler start/stop and portal runs.
+  scraper:
+    env_file: .env
+    ports:
+      - '4001:4001'
+
+  # ── Development environment ────────────────────────────────────────────
+  # Was `env_file: .env` in docker-compose.yml; moved here unchanged so a bare
+  # `docker compose up` behaves exactly as before.
+  db-init:
+    env_file: .env
+
+  api-server:
+    env_file: .env
+
+  web:
+    env_file: .env
+
+  admin:
+    env_file: .env
+
+  notification-service:
+    env_file: .env

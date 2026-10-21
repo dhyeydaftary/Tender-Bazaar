@@ -12,7 +12,17 @@ export const notificationController = {
       const { page, limit, unreadOnly } = getNotificationsSchema.parse(req.query);
       const result = await notificationService.getNotifications(userId, { page, limit, unreadOnly });
 
-      res.json({ success: true, data: result.notifications, meta: result.meta });
+      res.json({
+        success: true,
+        data: {
+          notifications: result.notifications,
+          total: result.meta.total,
+          page: result.meta.page,
+          limit: result.meta.limit,
+          totalPages: result.meta.totalPages,
+        },
+        meta: result.meta,
+      });
     } catch (error) {
       next(error);
     }
@@ -26,6 +36,20 @@ export const notificationController = {
       const notification = await notificationService.markAsRead(userId, req.params.id);
 
       res.json({ success: true, data: notification });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async markManyAsRead(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = (req as any).user?.id;
+      if (!userId) throw new AppError('Not authenticated', 401, 'NOT_AUTHENTICATED');
+
+      const { ids } = req.body;
+      const result = await notificationService.markReadByIds(userId, Array.isArray(ids) ? ids : []);
+
+      res.json({ success: true, data: result });
     } catch (error) {
       next(error);
     }

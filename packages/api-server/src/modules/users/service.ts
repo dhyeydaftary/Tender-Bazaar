@@ -83,6 +83,7 @@ export const userService = {
       data: {
         ...(data.name !== undefined && { name: data.name }),
         ...(data.phone !== undefined && { phone: data.phone }),
+        ...(data.avatarUrl !== undefined && { avatarUrl: data.avatarUrl }),
       },
       select: {
         id: true,
@@ -110,10 +111,64 @@ export const userService = {
       throw new AppError('User not found', 404, 'USER_NOT_FOUND');
     }
 
-    // Build the data object, converting date string to Date if present
-    const profileData: Record<string, unknown> = { ...data };
-    if (data.incorporationDate) {
-      profileData.incorporationDate = new Date(data.incorporationDate);
+    // Parse turnover if passed as range string or number
+    let parsedTurnover: number | null | undefined;
+    if (typeof data.annualTurnover === 'number') {
+      parsedTurnover = data.annualTurnover;
+    } else if (typeof data.annualTurnover === 'string') {
+      const trimmed = data.annualTurnover.trim();
+      if (!trimmed) {
+        parsedTurnover = null;
+      } else {
+        switch (trimmed) {
+          case 'below_25l': parsedTurnover = 1500000; break;
+          case '25l_1cr': parsedTurnover = 6000000; break;
+          case 'under_1cr': parsedTurnover = 5000000; break;
+          case '1cr_5cr': parsedTurnover = 25000000; break;
+          case '5cr_25cr': parsedTurnover = 150000000; break;
+          case '25cr_100cr': parsedTurnover = 500000000; break;
+          case '100cr_500cr': parsedTurnover = 2500000000; break;
+          case 'above_100cr': parsedTurnover = 1500000000; break;
+          case 'above_500cr': parsedTurnover = 7500000000; break;
+          default: {
+            const n = parseFloat(trimmed);
+            if (!isNaN(n)) parsedTurnover = n;
+          }
+        }
+      }
+    }
+
+    // Parse experience if passed as range string or number
+    const expRaw = data.yearsInBusiness ?? data.experience;
+    let parsedYears: number | null | undefined;
+    if (typeof expRaw === 'number') {
+      parsedYears = Math.round(expRaw);
+    } else if (typeof expRaw === 'string') {
+      const trimmed = expRaw.trim();
+      if (!trimmed) {
+        parsedYears = null;
+      } else {
+        switch (trimmed) {
+          case '0_1':
+          case 'under_1': parsedYears = 1; break;
+          case '1_3': parsedYears = 2; break;
+          case '3_5': parsedYears = 4; break;
+          case '5_10': parsedYears = 7; break;
+          case '10_20': parsedYears = 15; break;
+          case 'above_10':
+          case 'above_20': parsedYears = 22; break;
+          default: {
+            const n = parseInt(trimmed, 10);
+            if (!isNaN(n)) parsedYears = n;
+          }
+        }
+      }
+    }
+
+    const certificates = data.isoCertificates ?? data.certifications ?? [];
+    const categories = [...(data.workCategories ?? [])];
+    if (data.industry && !categories.includes(data.industry)) {
+      categories.unshift(data.industry);
     }
 
     const companyProfile = await prisma.companyProfile.upsert({
@@ -126,20 +181,20 @@ export const userService = {
         companyType: data.companyType ?? undefined,
         registrationNumber: data.registrationNumber ?? undefined,
         incorporationDate: data.incorporationDate ? new Date(data.incorporationDate) : undefined,
-        annualTurnover: data.annualTurnover ?? undefined,
+        annualTurnover: parsedTurnover,
         netWorth: data.netWorth ?? undefined,
         employeeCount: data.employeeCount ?? undefined,
-        yearsInBusiness: data.yearsInBusiness ?? undefined,
+        yearsInBusiness: parsedYears,
         msmeRegistered: data.msmeRegistered ?? false,
         msmeNumber: data.msmeNumber ?? undefined,
         msmeCategory: data.msmeCategory ?? undefined,
-        isoRegistered: data.isoRegistered ?? false,
-        isoCertificates: data.isoCertificates ?? [],
+        isoRegistered: certificates.length > 0 ? true : (data.isoRegistered ?? false),
+        isoCertificates: certificates,
         startupDpiit: data.startupDpiit ?? false,
         gemRegistered: data.gemRegistered ?? false,
         epfRegistered: data.epfRegistered ?? false,
         gstRegistered: data.gstRegistered ?? false,
-        workCategories: data.workCategories ?? [],
+        workCategories: categories,
         specializations: data.specializations ?? [],
         statesOperated: data.statesOperated ?? [],
         pastProjectValues: data.pastProjectValues ?? [],
@@ -147,27 +202,26 @@ export const userService = {
       },
       update: {
         ...(data.companyName !== undefined && { companyName: data.companyName }),
-        ...(data.gstin !== undefined && { gstin: data.gstin }),
+        ...(data.gstin !== undefined && { gstin: data.gstin ? data.gstin : null }),
         ...(data.pan !== undefined && { pan: data.pan }),
         ...(data.companyType !== undefined && { companyType: data.companyType }),
         ...(data.registrationNumber !== undefined && { registrationNumber: data.registrationNumber }),
         ...(data.incorporationDate !== undefined && {
           incorporationDate: data.incorporationDate ? new Date(data.incorporationDate) : null,
         }),
-        ...(data.annualTurnover !== undefined && { annualTurnover: data.annualTurnover }),
+        ...(parsedTurnover !== undefined && { annualTurnover: parsedTurnover }),
         ...(data.netWorth !== undefined && { netWorth: data.netWorth }),
         ...(data.employeeCount !== undefined && { employeeCount: data.employeeCount }),
-        ...(data.yearsInBusiness !== undefined && { yearsInBusiness: data.yearsInBusiness }),
+        ...(parsedYears !== undefined && { yearsInBusiness: parsedYears }),
         ...(data.msmeRegistered !== undefined && { msmeRegistered: data.msmeRegistered }),
         ...(data.msmeNumber !== undefined && { msmeNumber: data.msmeNumber }),
         ...(data.msmeCategory !== undefined && { msmeCategory: data.msmeCategory }),
-        ...(data.isoRegistered !== undefined && { isoRegistered: data.isoRegistered }),
-        ...(data.isoCertificates !== undefined && { isoCertificates: data.isoCertificates }),
+        ...(certificates.length > 0 && { isoRegistered: true, isoCertificates: certificates }),
         ...(data.startupDpiit !== undefined && { startupDpiit: data.startupDpiit }),
         ...(data.gemRegistered !== undefined && { gemRegistered: data.gemRegistered }),
         ...(data.epfRegistered !== undefined && { epfRegistered: data.epfRegistered }),
         ...(data.gstRegistered !== undefined && { gstRegistered: data.gstRegistered }),
-        ...(data.workCategories !== undefined && { workCategories: data.workCategories }),
+        ...(categories.length > 0 && { workCategories: categories }),
         ...(data.specializations !== undefined && { specializations: data.specializations }),
         ...(data.statesOperated !== undefined && { statesOperated: data.statesOperated }),
         ...(data.pastProjectValues !== undefined && { pastProjectValues: data.pastProjectValues }),
@@ -391,6 +445,195 @@ export const userService = {
     return {
       percentage: Math.round(overallPercentage),
       sections,
+    };
+  },
+
+  /**
+   * Calculate dynamic user analytics in real-time
+   */
+  async getUserAnalytics(userId: string) {
+    // 1. Saved tenders
+    const [savedTenders, totalSavedCount] = await Promise.all([
+      prisma.savedTender.findMany({
+        where: { userId },
+        include: {
+          tender: {
+            select: {
+              id: true,
+              title: true,
+              category: true,
+              estimatedValue: true,
+            },
+          },
+        },
+      }),
+      prisma.savedTender.count({ where: { userId } }),
+    ]);
+
+    const catCounts: Record<string, number> = {
+      WORKS: 0,
+      GOODS: 0,
+      SERVICES: 0,
+      CONSULTANCY: 0,
+    };
+
+    for (const item of savedTenders) {
+      const cat = (item.tender?.category || 'WORKS').toUpperCase();
+      if (cat in catCounts) {
+        catCounts[cat]++;
+      } else {
+        catCounts.WORKS++;
+      }
+    }
+
+    let savedByCategory: Array<{ name: string; count: number; pct: number; color: string }>;
+    let hasSavedTenders = totalSavedCount > 0;
+
+    if (totalSavedCount > 0) {
+      savedByCategory = [
+        {
+          name: 'Works',
+          count: catCounts.WORKS,
+          pct: Math.round((catCounts.WORKS / totalSavedCount) * 100),
+          color: 'bg-primary-500',
+        },
+        {
+          name: 'Goods',
+          count: catCounts.GOODS,
+          pct: Math.round((catCounts.GOODS / totalSavedCount) * 100),
+          color: 'bg-blue-500',
+        },
+        {
+          name: 'Services',
+          count: catCounts.SERVICES,
+          pct: Math.round((catCounts.SERVICES / totalSavedCount) * 100),
+          color: 'bg-accent-500',
+        },
+        {
+          name: 'Consultancy',
+          count: catCounts.CONSULTANCY,
+          pct: Math.round((catCounts.CONSULTANCY / totalSavedCount) * 100),
+          color: 'bg-purple-500',
+        },
+      ];
+    } else {
+      // Calculate from live platform tenders in DB as baseline market split
+      const platformCats = await prisma.tender.groupBy({
+        by: ['category'],
+        _count: { category: true },
+      });
+      const totalPlatform = platformCats.reduce((sum, c) => sum + c._count.category, 0) || 1;
+      const getPlatformPct = (catName: string) => {
+        const found = platformCats.find((c) => c.category === catName);
+        return found ? Math.round((found._count.category / totalPlatform) * 100) : 0;
+      };
+
+      savedByCategory = [
+        { name: 'Works', count: 0, pct: getPlatformPct('WORKS'), color: 'bg-primary-500' },
+        { name: 'Goods', count: 0, pct: getPlatformPct('GOODS'), color: 'bg-blue-500' },
+        { name: 'Services', count: 0, pct: getPlatformPct('SERVICES'), color: 'bg-accent-500' },
+        { name: 'Consultancy', count: 0, pct: getPlatformPct('CONSULTANCY'), color: 'bg-purple-500' },
+      ];
+    }
+
+    // 2. Eligibility checks
+    const eligibilityChecks = await prisma.eligibilityCheck.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        tender: {
+          select: {
+            id: true,
+            title: true,
+          },
+        },
+      },
+    });
+
+    const eligibilityChecksCount = eligibilityChecks.length;
+    const avgScore =
+      eligibilityChecksCount > 0
+        ? Math.round(
+            eligibilityChecks.reduce((sum, c) => sum + (c.score || 0), 0) /
+              eligibilityChecksCount
+          )
+        : 0;
+
+    const eligibilityTrend = eligibilityChecks.slice(0, 5).map((check) => ({
+      tender: check.tender?.title || 'Tender Eligibility Check',
+      score: Math.round(check.score),
+      date: new Date(check.createdAt).toLocaleDateString('en-IN', {
+        month: 'short',
+        day: '2-digit',
+      }),
+    }));
+
+    // 3. Search history
+    const userSearches = await prisma.searchHistory.groupBy({
+      by: ['query'],
+      where: { userId },
+      _count: { query: true },
+      orderBy: {
+        _count: { query: 'desc' },
+      },
+      take: 5,
+    });
+
+    let topSearches = userSearches.map((s) => ({
+      keyword: s.query,
+      count: s._count.query,
+    }));
+
+    if (topSearches.length < 5) {
+      const platformSearches = await prisma.searchHistory.groupBy({
+        by: ['query'],
+        _count: { query: true },
+        orderBy: {
+          _count: { query: 'desc' },
+        },
+        take: 5 - topSearches.length,
+      });
+
+      const existingKeywords = new Set(topSearches.map((s) => s.keyword.toLowerCase()));
+      for (const ps of platformSearches) {
+        if (!existingKeywords.has(ps.query.toLowerCase())) {
+          topSearches.push({ keyword: ps.query, count: ps._count.query });
+          existingKeywords.add(ps.query.toLowerCase());
+        }
+      }
+
+      if (topSearches.length < 5) {
+        const fallbackKeywords = [
+          'Aluminium Cable 1100V Grade',
+          'Solar Power Plant Grid Connected',
+          'Road Construction and Widening',
+          'Hospital Equipment AIIMS Supply',
+          'Railway Bridge Infrastructure Works',
+        ];
+        for (const kw of fallbackKeywords) {
+          if (topSearches.length >= 5) break;
+          if (!existingKeywords.has(kw.toLowerCase())) {
+            topSearches.push({ keyword: kw, count: 1 });
+            existingKeywords.add(kw.toLowerCase());
+          }
+        }
+      }
+    }
+
+    // 4. Platform stats
+    const totalPlatformViews = await prisma.tender.aggregate({
+      _sum: { viewCount: true },
+    });
+
+    return {
+      tendersSaved: totalSavedCount,
+      hasSavedTenders,
+      savedByCategory,
+      eligibilityChecksCount,
+      avgScore,
+      eligibilityTrend,
+      topSearches,
+      platformTotalViews: totalPlatformViews._sum.viewCount || 0,
     };
   },
 };

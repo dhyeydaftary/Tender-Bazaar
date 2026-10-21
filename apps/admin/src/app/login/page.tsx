@@ -2,18 +2,35 @@
 
 import { useState, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { Eye, EyeOff, Loader2, AlertCircle, Shield } from 'lucide-react';
+import {
+  Eye,
+  EyeOff,
+  Loader2,
+  AlertCircle,
+  Shield,
+  Sun,
+  Moon,
+  Lock,
+  Mail,
+  Crown,
+  UserCheck,
+  Sparkles,
+  ArrowRight,
+} from 'lucide-react';
 import { useAuthStore } from '@/lib/auth';
+import { useAppearance } from '@/lib/appearance';
 
 export default function LoginPage() {
   const router = useRouter();
   const { login } = useAuthStore();
+  const { isDark, toggleTheme } = useAppearance();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [selectedRole, setSelectedRole] = useState<'superadmin' | 'admin' | null>(null);
 
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
@@ -38,85 +55,170 @@ export default function LoginPage() {
     }
   }
 
+  const selectSuperAdmin = () => {
+    setSelectedRole('superadmin');
+    setEmail('superadmin@tenderbazaar.com');
+    setPassword('SuperAdmin@123');
+    setError('');
+  };
+
+  const selectAdmin = () => {
+    setSelectedRole('admin');
+    setEmail('admin@tenderbazaar.com');
+    setPassword('Admin@123');
+    setError('');
+  };
+
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-secondary-900 overflow-hidden">
-      {/* Background decorative elements */}
-      <div className="absolute inset-0 overflow-hidden">
-        {/* Grid pattern */}
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-background text-foreground overflow-hidden transition-colors duration-300">
+      {/* Theme Toggle Button */}
+      <div className="absolute top-5 right-5 z-20">
+        <button
+          type="button"
+          onClick={toggleTheme}
+          className="p-2.5 rounded-xl border border-border bg-card hover:bg-muted text-muted-foreground hover:text-foreground transition-all duration-200 shadow-sm"
+          title={isDark ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+          aria-label="Toggle theme"
+        >
+          {isDark ? (
+            <Sun className="w-4 h-4 text-primary-500" />
+          ) : (
+            <Moon className="w-4 h-4 text-foreground" />
+          )}
+        </button>
+      </div>
+
+      {/* TenderBazaar Brand Ambient Glows & Grid */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div
           className="absolute inset-0 opacity-[0.03]"
           style={{
             backgroundImage:
-              'linear-gradient(rgba(255,255,255,0.1) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.1) 1px, transparent 1px)',
-            backgroundSize: '64px 64px',
+              'linear-gradient(currentColor 1px, transparent 1px), linear-gradient(90deg, currentColor 1px, transparent 1px)',
+            backgroundSize: '48px 48px',
           }}
         />
-        {/* Gradient orbs */}
-        <div className="absolute -top-40 -right-40 w-[500px] h-[500px] rounded-full bg-primary-500/10 blur-[120px]" />
-        <div className="absolute -bottom-40 -left-40 w-[500px] h-[500px] rounded-full bg-primary-500/5 blur-[120px]" />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] rounded-full bg-secondary-900/40 blur-[100px]" />
+        <div className="absolute -top-32 -left-32 w-[550px] h-[550px] rounded-full bg-primary-500/10 blur-[120px]" />
+        <div className="absolute -bottom-32 -right-32 w-[550px] h-[550px] rounded-full bg-accent-500/10 blur-[120px]" />
       </div>
 
       {/* Login Card */}
       <div className="relative z-10 w-full max-w-md mx-4">
-        <div className="bg-white border border-border rounded-2xl p-8 shadow-2xl shadow-black/40">
-          {/* Branding */}
-          <div className="flex flex-col items-center mb-8">
-            <div className="w-12 h-12 rounded-xl bg-primary-500 flex items-center justify-center text-white font-extrabold text-lg mb-3 shadow-lg shadow-primary-500/20">
-              TB
+        <div className="relative rounded-2xl bg-card border border-border p-8 shadow-2xl shadow-black/10 dark:shadow-black/50 transition-all">
+          {/* Top Primary Color Bar */}
+          <div className="absolute inset-x-0 top-0 h-1 bg-primary-500 rounded-t-2xl" />
+
+          {/* Branding Header */}
+          <div className="flex flex-col items-center mb-6 text-center">
+            <div className="relative mb-3">
+              <div className="w-13 h-13 rounded-2xl bg-primary-500 flex items-center justify-center p-3 shadow-lg shadow-primary-500/25">
+                <span className="font-extrabold text-2xl tracking-tight text-white">
+                  TB
+                </span>
+              </div>
             </div>
-            <h1 className="text-xl font-bold text-foreground tracking-tight">TenderBazaar</h1>
-            <p className="text-sm text-muted-foreground mt-0.5">Admin Panel</p>
+
+            <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-primary-500/10 border border-primary-500/20 text-xs font-semibold text-primary-600 dark:text-primary-400 mb-2">
+              <Sparkles className="w-3.5 h-3.5 text-primary-500" />
+              Administrative Command Center
+            </div>
+
+            <h1 className="text-2xl font-bold tracking-tight text-foreground font-display">
+              TenderBazaar Admin
+            </h1>
+            <p className="text-xs text-muted-foreground mt-1">
+              Secure authorization gateway for platform management
+            </p>
+          </div>
+
+          {/* Role Quick Selector Tabs */}
+          <div className="mb-6 grid grid-cols-2 gap-2 p-1 bg-muted rounded-xl border border-border">
+            <button
+              type="button"
+              onClick={selectSuperAdmin}
+              className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-semibold transition-all duration-200 ${
+                selectedRole === 'superadmin'
+                  ? 'bg-card text-foreground shadow-sm border border-border'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <Crown className="w-3.5 h-3.5 text-amber-500" />
+              <span>Super Admin</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={selectAdmin}
+              className={`flex items-center justify-center gap-2 py-2 px-3 rounded-lg text-xs font-semibold transition-all duration-200 ${
+                selectedRole === 'admin'
+                  ? 'bg-card text-foreground shadow-sm border border-border'
+                  : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <UserCheck className="w-3.5 h-3.5 text-primary-500" />
+              <span>Admin</span>
+            </button>
           </div>
 
           {/* Error Alert */}
           {error && (
-            <div className="mb-6 flex items-start gap-3 rounded-lg bg-red-500/10 border border-red-500/20 px-4 py-3 text-sm text-red-400">
+            <div className="mb-5 flex items-start gap-3 rounded-xl bg-destructive/10 border border-destructive/20 px-4 py-3 text-sm text-destructive animate-in fade-in duration-200">
               <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
-              <span>{error}</span>
+              <span className="text-xs leading-relaxed">{error}</span>
             </div>
           )}
 
           {/* Form */}
-          <form onSubmit={handleSubmit} className="space-y-5">
+          <form onSubmit={handleSubmit} className="space-y-4">
             {/* Email Field */}
-            <div className="space-y-2">
-              <label htmlFor="email" className="block text-sm font-medium text-foreground/80">
+            <div className="space-y-1.5">
+              <label htmlFor="email" className="block text-xs font-semibold text-foreground/80 tracking-wide uppercase">
                 Email Address
               </label>
-              <input
-                id="email"
-                type="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="admin@tenderbazaar.in"
-                autoComplete="email"
-                disabled={isLoading}
-                className="w-full rounded-lg border border-border bg-muted/50 px-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-ring/50 focus:border-primary-500 hover:border-border disabled:opacity-50 disabled:cursor-not-allowed"
-              />
+              <div className="relative">
+                <Mail className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+                <input
+                  id="email"
+                  type="email"
+                  value={email}
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    setSelectedRole(null);
+                  }}
+                  placeholder="name@tenderbazaar.com"
+                  autoComplete="email"
+                  disabled={isLoading}
+                  className="w-full rounded-xl border border-border bg-muted/40 pl-10 pr-4 py-2.5 text-sm text-foreground placeholder:text-muted-foreground transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 hover:border-border disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+              </div>
             </div>
 
             {/* Password Field */}
-            <div className="space-y-2">
-              <label htmlFor="password" className="block text-sm font-medium text-foreground/80">
+            <div className="space-y-1.5">
+              <label htmlFor="password" className="block text-xs font-semibold text-foreground/80 tracking-wide uppercase">
                 Password
               </label>
               <div className="relative">
+                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                 <input
                   id="password"
                   type={showPassword ? 'text' : 'password'}
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder="Enter your password"
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    setSelectedRole(null);
+                  }}
+                  placeholder="••••••••••••"
                   autoComplete="current-password"
                   disabled={isLoading}
-                  className="w-full rounded-lg border border-border bg-muted/50 px-4 py-2.5 pr-11 text-sm text-foreground placeholder:text-muted-foreground transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-ring/50 focus:border-primary-500 hover:border-border disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full rounded-xl border border-border bg-muted/40 pl-10 pr-11 py-2.5 text-sm text-foreground placeholder:text-muted-foreground transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-primary-500/20 focus:border-primary-500 hover:border-border disabled:opacity-50 disabled:cursor-not-allowed font-mono text-xs tracking-wider"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
                   tabIndex={-1}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground/80 transition-colors"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors p-1 rounded-md"
+                  aria-label={showPassword ? 'Hide password' : 'Show password'}
                 >
                   {showPassword ? (
                     <EyeOff className="w-4 h-4" />
@@ -131,40 +233,50 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full flex items-center justify-center gap-2 rounded-lg bg-primary-500 px-4 py-2.5 text-sm font-semibold text-white transition-all duration-200 hover:bg-primary-600 focus:outline-none focus:ring-2 focus:ring-ring/50 focus:ring-offset-2 focus:ring-offset-gray-900 active:scale-[0.98] disabled:opacity-70 disabled:cursor-not-allowed disabled:active:scale-100 shadow-lg shadow-primary-500/20 hover:shadow-primary-500/30"
+              className="w-full mt-2 flex items-center justify-center gap-2 rounded-xl bg-primary-500 hover:bg-primary-600 px-4 py-2.5 text-sm font-semibold text-white shadow-lg shadow-primary-500/20 hover:shadow-primary-500/30 transition-all duration-200 active:scale-[0.99] disabled:opacity-70 disabled:cursor-not-allowed cursor-pointer"
             >
               {isLoading ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  Signing in...
+                  Authenticating...
                 </>
               ) : (
-                'Sign In'
+                <>
+                  <span>Sign In to Console</span>
+                  <ArrowRight className="w-4 h-4" />
+                </>
               )}
             </button>
           </form>
 
-          {/* Mock Credentials Hint */}
-          <div className="mt-6 rounded-lg bg-muted/50 border border-border px-4 py-3">
-            <p className="text-xs text-muted-foreground font-medium mb-2">Demo Credentials</p>
-            <div className="space-y-2">
-              <div>
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Super Admin</p>
-                <p className="text-xs text-muted-foreground font-mono">superadmin@tenderbazaar.com</p>
-                <p className="text-xs text-muted-foreground font-mono">SuperAdmin@123</p>
+          {/* Quick Credential Hint Pills */}
+          <div className="mt-5 pt-4 border-t border-border">
+            <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-2">
+              <span className="font-semibold text-foreground">Quick Access Accounts:</span>
+              <span className="text-[10px] text-primary-500">Click tab above to fill</span>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
+              <div
+                onClick={selectSuperAdmin}
+                className="cursor-pointer p-2.5 rounded-lg bg-muted/40 border border-border hover:border-primary-500/40 hover:bg-muted/70 transition-colors"
+              >
+                <div className="text-amber-500 font-sans font-bold text-[10px] uppercase">Super Admin</div>
+                <div className="text-muted-foreground truncate">superadmin@...</div>
               </div>
-              <div className="border-t border-border pt-2">
-                <p className="text-[10px] text-muted-foreground uppercase tracking-wider mb-0.5">Admin</p>
-                <p className="text-xs text-muted-foreground font-mono">admin@tenderbazaar.com</p>
-                <p className="text-xs text-muted-foreground font-mono">Admin@123</p>
+              <div
+                onClick={selectAdmin}
+                className="cursor-pointer p-2.5 rounded-lg bg-muted/40 border border-border hover:border-primary-500/40 hover:bg-muted/70 transition-colors"
+              >
+                <div className="text-primary-500 font-sans font-bold text-[10px] uppercase">Admin</div>
+                <div className="text-muted-foreground truncate">admin@...</div>
               </div>
             </div>
           </div>
 
-          {/* Footer */}
-          <div className="mt-6 flex items-center justify-center gap-1.5 text-xs text-muted-foreground">
-            <Shield className="w-3 h-3" />
-            <span>Authorized personnel only. All actions are logged.</span>
+          {/* Footer Security Badge */}
+          <div className="mt-5 flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
+            <Shield className="w-3.5 h-3.5 text-accent-500 shrink-0" />
+            <span>256-Bit TLS Encryption • Audit Logged • RBAC Protected</span>
           </div>
         </div>
       </div>

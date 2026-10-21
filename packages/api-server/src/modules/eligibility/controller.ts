@@ -46,6 +46,20 @@ export const eligibilityController = {
     }
   },
 
+  async getTenderEligibility(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = (req as any).user?.id;
+      if (!userId) throw new AppError('Not authenticated', 401, 'NOT_AUTHENTICATED');
+
+      const { tenderId } = req.params;
+      const result = await eligibilityService.getTenderEligibility(userId, tenderId);
+
+      res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  },
+
   async getMatchingTenders(req: Request, res: Response, next: NextFunction) {
     try {
       const userId = (req as any).user?.id;

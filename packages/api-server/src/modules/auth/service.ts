@@ -1,10 +1,12 @@
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import axios from 'axios';
 import { prisma } from '../../config/database';
 import redis from '../../config/redis';
 import { env } from '../../config/env';
 import { AppError } from '../../shared/middleware/error-handler';
+import { publishNotificationJob } from '../../queue/notification-publisher';
 
 const SALT_ROUNDS = 12;
 const OTP_TTL = 300; // 5 minutes
@@ -33,6 +35,14 @@ function generateOtp(): string {
 
 export const authService = {
   async register(data: { name: string; email: string; password: string; phone?: string }) {
+    // Check if registration is open
+    const regSetting = await prisma.adminSetting.findUnique({
+      where: { category_key: { category: 'general', key: 'registrationOpen' } },
+    });
+    if (regSetting && regSetting.value === false) {
+      throw new AppError('User registration is temporarily disabled by administrator', 403, 'REGISTRATION_DISABLED');
+    }
+
     const existingUser = await prisma.user.findFirst({
       where: {
         OR: [
@@ -108,6 +118,16 @@ export const authService = {
       throw new AppError('Invalid email or password', 401, 'INVALID_CREDENTIALS');
     }
 
+    // Enforce maintenance mode for non-admin users
+    if (user.role !== 'SUPER_ADMIN' && user.role !== 'ADMIN') {
+      const maintenanceSetting = await prisma.adminSetting.findUnique({
+        where: { category_key: { category: 'general', key: 'maintenanceMode' } },
+      });
+      if (maintenanceSetting && maintenanceSetting.value === true) {
+        throw new AppError('Platform is currently under maintenance. Please try again later.', 503, 'MAINTENANCE_MODE');
+      }
+    }
+
     const tokenPayload: TokenPayload = { userId: user.id, email: user.email, role: user.role };
     const accessToken = generateAccessToken(tokenPayload);
     const refreshToken = generateRefreshToken(tokenPayload);
@@ -122,41 +142,165 @@ export const authService = {
       },
     });
 
+    if (user.role === 'ADMIN' || user.role === 'SUPER_ADMIN') {
+      try {
+        await prisma.auditLog.create({
+          data: {
+            actorId: user.id,
+            actorEmail: user.email,
+            actorRole: user.role,
+            action: 'auth.login',
+            entity: 'AdminPanel',
+            entityId: 'session',
+            metadata: {
+              ipAddress: meta?.ipAddress,
+              userAgent: meta?.userAgent,
+              details: `${user.name || user.email} logged into the Admin Panel`,
+            },
+          },
+        });
+      } catch (err) {
+        console.error('[AuditLog] Failed to log admin login:', err);
+      }
+    }
+
     const { passwordHash: _, ...userWithoutPassword } = user;
     return { user: userWithoutPassword, accessToken, refreshToken };
   },
 
   async sendOtp(phone: string) {
+    const cleanPhone = phone.replace(/\D/g, '').slice(-10);
     const otp = generateOtp();
-    await redis.setex(`${OTP_PREFIX}${phone}`, OTP_TTL, otp);
+    await redis.setex(`${OTP_PREFIX}${cleanPhone}`, OTP_TTL, otp);
 
-    // In production, send OTP via SMS (MSG91)
-    // For development, log it
-    console.log(`[DEV] OTP for ${phone}: ${otp}`);
+    const msg91AuthKey = process.env.MSG91_AUTH_KEY;
+    const twilioSid = process.env.TWILIO_ACCOUNT_SID;
+    const twilioToken = process.env.TWILIO_AUTH_TOKEN;
+    const twilioFrom = process.env.TWILIO_PHONE_NUMBER;
+    const fast2smsKey = process.env.FAST2SMS_API_KEY;
+
+    let sent = false;
+
+    // 1. Try Twilio if configured
+    if (twilioSid && twilioToken && twilioFrom && twilioSid !== 'your-twilio-sid') {
+      try {
+        const auth = Buffer.from(`${twilioSid}:${twilioToken}`).toString('base64');
+        const params = new URLSearchParams();
+        params.append('To', `+91${cleanPhone}`);
+        params.append('From', twilioFrom);
+        params.append('Body', `Your TenderBazaar verification code is ${otp}. Valid for 10 minutes.`);
+
+        await axios.post(
+          `https://api.twilio.com/2010-04-01/Accounts/${twilioSid}/Messages.json`,
+          params.toString(),
+          {
+            headers: {
+              Authorization: `Basic ${auth}`,
+              'Content-Type': 'application/x-www-form-urlencoded',
+            },
+          }
+        );
+        console.log(`[SMS] OTP dispatched via Twilio to +91${cleanPhone}`);
+        sent = true;
+      } catch (twErr: any) {
+        console.error('[SMS] Failed to send OTP via Twilio:', twErr?.response?.data || twErr.message);
+      }
+    }
+
+    // 2. Try MSG91 if configured
+    if (!sent && msg91AuthKey && msg91AuthKey !== 'your-msg91-auth-key') {
+      try {
+        await axios.post(
+          'https://control.msg91.com/api/v5/otp',
+          {
+            mobile: `91${cleanPhone}`,
+            otp,
+            sender: process.env.MSG91_SENDER_ID || 'TNDBZR',
+            template_id: process.env.MSG91_TEMPLATE_ID,
+            message: `Your TenderBazaar verification code is ${otp}. Valid for 10 minutes.`,
+          },
+          {
+            headers: {
+              authkey: msg91AuthKey,
+              'Content-Type': 'application/json',
+            },
+          }
+        );
+        console.log(`[SMS] OTP dispatched via MSG91 to 91${cleanPhone}`);
+        sent = true;
+      } catch (smsErr: any) {
+        console.error('[SMS] Failed to send OTP via MSG91:', smsErr?.response?.data || smsErr.message);
+      }
+    }
+
+    // 3. Try Fast2SMS if configured
+    if (!sent && fast2smsKey && fast2smsKey !== 'your-fast2sms-api-key') {
+      try {
+        await axios.post(
+          'https://www.fast2sms.com/dev/bulkV2',
+          {
+            variables_values: otp,
+            route: 'otp',
+            numbers: cleanPhone,
+          },
+          {
+            headers: {
+              authorization: fast2smsKey,
+            },
+          }
+        );
+        console.log(`[SMS] OTP dispatched via Fast2SMS to ${cleanPhone}`);
+        sent = true;
+      } catch (f2sErr: any) {
+        console.error('[SMS] Failed to send OTP via Fast2SMS:', f2sErr?.response?.data || f2sErr.message);
+      }
+    }
+
+    if (!sent) {
+      console.log(`[SMS] SMS Gateway credentials pending in .env. Generated OTP for ${cleanPhone}: ${otp}`);
+    }
 
     return { message: 'OTP sent successfully' };
   },
 
   async verifyOtp(phone: string, otp: string) {
-    const storedOtp = await redis.get(`${OTP_PREFIX}${phone}`);
+    const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+    const storedOtp = await redis.get(`${OTP_PREFIX}${cleanPhone}`);
 
     if (!storedOtp || storedOtp !== otp) {
       throw new AppError('Invalid or expired OTP', 401, 'INVALID_OTP');
     }
 
-    await redis.del(`${OTP_PREFIX}${phone}`);
+    await redis.del(`${OTP_PREFIX}${cleanPhone}`);
 
-    let user = await prisma.user.findUnique({ where: { phone } });
+    let user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { phone: cleanPhone },
+          { phone: `+91${cleanPhone}` },
+          { phone },
+        ],
+      },
+    });
 
     if (!user) {
-      user = await prisma.user.create({
-        data: {
-          name: 'User',
-          email: `${phone}@phone.tenderbazaar.com`,
-          phone,
-          isPhoneVerified: true,
-        },
-      });
+      const email = `${cleanPhone}@phone.tenderbazaar.com`;
+      const existingByEmail = await prisma.user.findUnique({ where: { email } });
+      if (existingByEmail) {
+        user = await prisma.user.update({
+          where: { id: existingByEmail.id },
+          data: { phone: cleanPhone, isPhoneVerified: true },
+        });
+      } else {
+        user = await prisma.user.create({
+          data: {
+            name: 'User',
+            email,
+            phone: cleanPhone,
+            isPhoneVerified: true,
+          },
+        });
+      }
     } else {
       await prisma.user.update({
         where: { id: user.id },
@@ -184,6 +328,32 @@ export const authService = {
   },
 
   async googleAuth(idToken: string) {
+    // SECURITY GATE
+    //
+    // The decode path below does NOT verify the token's signature, so anyone
+    // who can reach this endpoint could otherwise present a self-made token
+    // claiming any email address — including an existing admin's — and receive
+    // a real session with that account's role.
+    //
+    // It is therefore refused unless BOTH hold:
+    //   * the operator explicitly opted in (ALLOW_DEMO_GOOGLE_AUTH=true), and
+    //   * this is a development server (NODE_ENV=development).
+    //
+    // The second condition means a production deployment cannot enable the
+    // unsafe path by configuration alone. Replace this whole branch with a real
+    // OAuth2Client.verifyIdToken() check before offering Google sign-in to
+    // users; google-auth-library is already a dependency.
+    const demoGoogleAuthEnabled =
+      env.ALLOW_DEMO_GOOGLE_AUTH === 'true' && env.NODE_ENV === 'development';
+
+    if (!demoGoogleAuthEnabled) {
+      throw new AppError(
+        'Google sign-in is not available on this server',
+        503,
+        'GOOGLE_AUTH_DISABLED',
+      );
+    }
+
     // For development, decode the token without Google verification
     // In production, use google-auth-library to verify:
     // const { OAuth2Client } = require('google-auth-library');
@@ -299,9 +469,19 @@ export const authService = {
 
     await redis.setex(`${RESET_PREFIX}${hashedToken}`, RESET_TOKEN_TTL, user.id);
 
-    // In production, send email with reset link
+    // Publish password reset email job to notification queue
     const resetUrl = `${env.FRONTEND_URL}/reset-password?token=${resetToken}`;
-    console.log(`[DEV] Password reset link for ${email}: ${resetUrl}`);
+    console.log(`[Email] Password reset link for ${email}: ${resetUrl}`);
+
+    await publishNotificationJob({
+      userId: user.id,
+      type: 'SYSTEM',
+      channel: 'EMAIL',
+      title: 'Reset Your TenderBazaar Password',
+      message: `We received a request to reset your password. Click the link to set a new password: ${resetUrl}. This link is valid for 1 hour. If you did not request this, you can safely ignore this email.`,
+      recipientEmail: email,
+      data: { resetUrl },
+    });
 
     return { message: 'If the email exists, a reset link has been sent' };
   },
@@ -327,6 +507,30 @@ export const authService = {
     await prisma.session.deleteMany({ where: { userId } });
 
     return { message: 'Password reset successfully' };
+  },
+
+  async changePassword(userId: string, data: { currentPassword: string; newPassword: string }) {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, passwordHash: true },
+    });
+
+    if (!user || !user.passwordHash) {
+      throw new AppError('User not found or password not configured', 404, 'USER_NOT_FOUND');
+    }
+
+    const isMatch = await bcrypt.compare(data.currentPassword, user.passwordHash);
+    if (!isMatch) {
+      throw new AppError('Current password is incorrect', 400, 'INVALID_CURRENT_PASSWORD');
+    }
+
+    const passwordHash = await bcrypt.hash(data.newPassword, SALT_ROUNDS);
+    await prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+    });
+
+    return { message: 'Password updated successfully' };
   },
 
   async logout(refreshToken: string, accessToken?: string) {

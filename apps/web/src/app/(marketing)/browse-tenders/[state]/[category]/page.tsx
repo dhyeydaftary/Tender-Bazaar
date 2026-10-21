@@ -154,13 +154,14 @@ export function generateStaticParams() {
   return params;
 }
 
-export function generateMetadata({
+export async function generateMetadata({
   params,
 }: {
-  params: { state: string; category: string };
-}): Metadata {
-  const stateName = slugToStateName(params.state);
-  const categoryName = slugToCategory(params.category);
+  params: Promise<{ state: string; category: string }>;
+}): Promise<Metadata> {
+  const { state, category } = await params;
+  const stateName = slugToStateName(state);
+  const categoryName = slugToCategory(category);
   return {
     title: `${categoryName} Tenders in ${stateName} 2026`,
     description: `Browse the latest ${categoryName.toLowerCase()} tenders in ${stateName}. Find government contract opportunities, bid deadlines, and estimated values.`,
@@ -175,42 +176,18 @@ export function generateMetadata({
 /* Page                                                               */
 /* ------------------------------------------------------------------ */
 
-export default function StateCategoryPage({
+export default async function StateCategoryPage({
   params,
 }: {
-  params: { state: string; category: string };
+  params: Promise<{ state: string; category: string }>;
 }) {
-  const stateName = slugToStateName(params.state);
-  const categoryName = slugToCategory(params.category);
+  const { state, category } = await params;
+  const stateName = slugToStateName(state);
+  const categoryName = slugToCategory(category);
   const tenders = getMockCategoryTenders(stateName, categoryName);
 
   return (
-    <div className="min-h-screen bg-background">
-      {/* Nav */}
-      <nav className="sticky top-0 z-40 border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
-        <div className="container mx-auto px-4">
-          <div className="flex items-center justify-between h-14">
-            <Link href="/" className="font-bold text-xl text-primary-500">
-              TenderBazaar
-            </Link>
-            <div className="flex items-center gap-4">
-              <Link
-                href="/login"
-                className="text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
-              >
-                Log in
-              </Link>
-              <Link
-                href="/register"
-                className="inline-flex items-center justify-center rounded-lg bg-primary-500 px-4 py-2 text-sm font-semibold text-white hover:bg-primary-600 transition-colors"
-              >
-                Sign up free
-              </Link>
-            </div>
-          </div>
-        </div>
-      </nav>
-
+    <div className="min-h-screen bg-background pt-16 sm:pt-20">
       <div className="container mx-auto px-4 py-8">
         {/* Breadcrumb */}
         <nav aria-label="Breadcrumb" className="mb-6">
@@ -229,7 +206,7 @@ export default function StateCategoryPage({
             <li aria-hidden="true">&gt;</li>
             <li>
               <Link
-                href={`/browse-tenders/${params.state}`}
+                href={`/browse-tenders/${state}`}
                 className="hover:text-foreground transition-colors"
               >
                 {stateName}
@@ -279,7 +256,7 @@ export default function StateCategoryPage({
                   </span>
                 </div>
                 <Link
-                  href={`/dashboard/tenders/${tender.id}`}
+                  href={`/tenders/${tender.id}`}
                   className="inline-flex items-center text-sm font-semibold text-primary-500 hover:text-primary-600 transition-colors"
                 >
                   View Details &rarr;
@@ -296,10 +273,10 @@ export default function StateCategoryPage({
                 Other Categories in {stateName}
               </h3>
               <ul className="space-y-2">
-                {CATEGORIES.filter((c) => c.slug !== params.category).map((cat) => (
+                {CATEGORIES.filter((c) => c.slug !== category).map((cat) => (
                   <li key={cat.slug}>
                     <Link
-                      href={`/browse-tenders/${params.state}/${cat.slug}`}
+                      href={`/browse-tenders/${state}/${cat.slug}`}
                       className="text-sm text-muted-foreground hover:text-primary-500 transition-colors flex items-center gap-2"
                     >
                       <span className="w-1.5 h-1.5 rounded-full bg-primary-400" />
@@ -316,12 +293,12 @@ export default function StateCategoryPage({
                 {categoryName} Tenders in Other States
               </h3>
               <ul className="space-y-2">
-                {TOP_STATES.filter((s) => s !== params.state)
+                {TOP_STATES.filter((s) => s !== state)
                   .slice(0, 5)
                   .map((s) => (
                     <li key={s}>
                       <Link
-                        href={`/browse-tenders/${s}/${params.category}`}
+                        href={`/browse-tenders/${s}/${category}`}
                         className="text-sm text-muted-foreground hover:text-primary-500 transition-colors"
                       >
                         {slugToStateName(s)}
@@ -340,7 +317,7 @@ export default function StateCategoryPage({
                 View tenders across all categories in {stateName}.
               </p>
               <Link
-                href={`/browse-tenders/${params.state}`}
+                href={`/browse-tenders/${state}`}
                 className="inline-flex items-center text-sm font-semibold text-primary-400 hover:text-primary-300 transition-colors"
               >
                 Browse all categories &rarr;

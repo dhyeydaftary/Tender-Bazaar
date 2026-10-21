@@ -600,16 +600,19 @@ export default function AdvancedSearchPage() {
             <div key={label} className="flex items-center justify-between">
               <span className="text-sm text-muted-foreground">{label}</span>
               <button
+                type="button"
+                role="switch"
+                aria-checked={Boolean(value)}
                 onClick={() => setter(!value)}
                 className={cn(
-                  'relative inline-flex h-5 w-9 items-center rounded-full transition-colors',
-                  value ? 'bg-primary-500' : 'bg-border'
+                  'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-200 focus:outline-none',
+                  value ? 'bg-primary-500' : 'bg-muted-foreground/30'
                 )}
               >
                 <span
                   className={cn(
-                    'inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform',
-                    value ? 'translate-x-4.5' : 'translate-x-0.5'
+                    'pointer-events-none block h-5 w-5 rounded-full bg-white shadow-md transition-transform duration-200 ease-in-out',
+                    value ? 'translate-x-5' : 'translate-x-0'
                   )}
                 />
               </button>
@@ -934,7 +937,7 @@ export default function AdvancedSearchPage() {
                             </p>
                           </div>
                           <Link
-                            href="/login"
+                            href={`/tenders/${tender.id}`}
                             className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold text-primary-500 bg-primary-500/10 rounded-lg hover:bg-primary-500/20 transition-colors"
                           >
                             View Details

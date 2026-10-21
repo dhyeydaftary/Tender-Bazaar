@@ -1,4 +1,5 @@
-# Lightweight init container — pushes Prisma schema & seeds the database
+# Lightweight init container — applies Prisma migrations (and, only when
+# DB_INIT_SEED=true, the development seed). See docker/db-init-entrypoint.sh.
 FROM node:20-alpine
 WORKDIR /app
 
@@ -14,17 +15,34 @@ RUN npm install -g tsx
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY prisma/ prisma/
 
-# Minimal packages stubs so pnpm resolves workspaces
-COPY apps/web/package.json apps/web/
-COPY apps/admin/package.json apps/admin/
-COPY packages/api-server/package.json packages/api-server/
-COPY packages/shared/package.json packages/shared/
-COPY packages/scraper-engine/package.json packages/scraper-engine/
-COPY packages/notification-service/package.json packages/notification-service/
-
-RUN pnpm install --frozen-lockfile
+# Install ONLY the root project's dependencies (prisma, @prisma/client, tsx,
+# bcryptjs for the seed).
+#
+# This previously copied every workspace package.json "so pnpm resolves
+# workspaces", which made pnpm install the dependency tree of EVERY project —
+# 629 packages, including React, Next.js and the whole web/admin toolchain —
+# into an image whose only job is to run `prisma migrate deploy`. `--filter
+# tenderbazaar` selects the root importer alone, so the image builds from a
+# fraction of the packages and carries none of the frontend tooling.
+# A BuildKit cache mount for pnpm's content-addressable store. Packages
+# downloaded by one build are reused by the next, so rebuilds (and CI runs with
+# a warm cache) skip the network entirely instead of re-fetching the whole tree.
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store \
+    pnpm install --frozen-lockfile --filter tenderbazaar --store-dir=/pnpm-store
 
 # Generate Prisma client
 RUN npx prisma generate
 
-CMD ["sh", "-c", "npx prisma db push --skip-generate --accept-data-loss && npx prisma db seed"]
+# Initialization entrypoint + schema-state probe
+COPY docker/db-init-entrypoint.sh docker/db-init-check.js docker/
+RUN chmod +x docker/db-init-entrypoint.sh
+
+# Drop privileges. This image holds DATABASE_URL and runs `prisma migrate
+# deploy` against it, and it was the only image in the stack still running as
+# root — every service image already ends with a USER directive. Nothing here
+# needs root at runtime: the tree is built and `prisma generate` is run during
+# the build, and the entrypoint only reads /app and talks to the database.
+# `node` is the unprivileged user the node:20-alpine image ships.
+USER node
+
+CMD ["sh", "/app/docker/db-init-entrypoint.sh"]

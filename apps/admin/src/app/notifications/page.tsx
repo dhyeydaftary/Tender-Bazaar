@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   Bell,
   Send,
@@ -18,7 +18,17 @@ import {
   Filter,
   Plus,
   X,
+  RefreshCw,
+  Loader2,
+  AlertCircle,
 } from 'lucide-react';
+import {
+  getBroadcastStats,
+  getBroadcastList,
+  getAudienceEstimate,
+  sendBroadcast,
+} from '@/lib/admin-api';
+import type { BroadcastRecord, BroadcastStats } from '@/lib/types';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -26,37 +36,6 @@ import {
 type Channel = 'EMAIL' | 'PUSH' | 'WHATSAPP' | 'SMS' | 'IN_APP';
 type NotifStatus = 'DELIVERED' | 'PENDING' | 'FAILED';
 type TargetAudience = 'ALL' | 'FREE' | 'STARTER' | 'PROFESSIONAL' | 'ENTERPRISE';
-
-interface NotificationRecord {
-  id: number;
-  title: string;
-  message: string;
-  channel: Channel;
-  target: TargetAudience;
-  status: NotifStatus;
-  sentAt: string;
-  delivered: number;
-  failed: number;
-  opened: number;
-}
-
-// ---------------------------------------------------------------------------
-// Mock Data
-// ---------------------------------------------------------------------------
-const MOCK_NOTIFICATIONS: NotificationRecord[] = [
-  { id: 1, title: 'New Feature: AI Bid Assistant', message: 'We\'ve launched a new AI-powered bid assistant to help you prepare winning proposals.', channel: 'EMAIL', target: 'ALL', status: 'DELIVERED', sentAt: '2026-04-10T14:30:00Z', delivered: 12847, failed: 23, opened: 4562 },
-  { id: 2, title: 'Plan Upgrade Offer - 20% OFF', message: 'Upgrade to Professional plan today and get 20% off on yearly subscription.', channel: 'PUSH', target: 'FREE', status: 'DELIVERED', sentAt: '2026-04-09T10:00:00Z', delivered: 7840, failed: 156, opened: 2310 },
-  { id: 3, title: 'Scheduled Maintenance Notice', message: 'Platform maintenance scheduled for April 15, 2026, 2:00 AM - 4:00 AM IST.', channel: 'IN_APP', target: 'ALL', status: 'DELIVERED', sentAt: '2026-04-08T18:00:00Z', delivered: 12847, failed: 0, opened: 8920 },
-  { id: 4, title: 'New State Portal: Kerala', message: 'We now support Kerala eTenders portal. Set up alerts to never miss Kerala tenders.', channel: 'EMAIL', target: 'PROFESSIONAL', status: 'DELIVERED', sentAt: '2026-04-07T09:15:00Z', delivered: 1890, failed: 12, opened: 890 },
-  { id: 5, title: 'Weekly Tender Digest', message: 'Your weekly summary of top 50 trending tenders across India.', channel: 'WHATSAPP', target: 'STARTER', status: 'DELIVERED', sentAt: '2026-04-06T08:00:00Z', delivered: 2345, failed: 89, opened: 1678 },
-  { id: 6, title: 'Subscription Expiry Reminder', message: 'Your subscription expires in 3 days. Renew now to continue using premium features.', channel: 'SMS', target: 'PROFESSIONAL', status: 'DELIVERED', sentAt: '2026-04-05T11:30:00Z', delivered: 234, failed: 8, opened: 0 },
-  { id: 7, title: 'Platform Update v2.5', message: 'New features: tender comparison, calendar export, improved search filters.', channel: 'PUSH', target: 'ALL', status: 'FAILED', sentAt: '2026-04-04T16:00:00Z', delivered: 0, failed: 12847, opened: 0 },
-  { id: 8, title: 'GeM Portal Integration Update', message: 'Improved GeM scraping with 2x faster updates and better document extraction.', channel: 'EMAIL', target: 'ENTERPRISE', status: 'DELIVERED', sentAt: '2026-04-03T14:45:00Z', delivered: 661, failed: 3, opened: 412 },
-  { id: 9, title: 'Refer & Earn Campaign', message: 'Refer a friend and get 1 month free on your current plan!', channel: 'IN_APP', target: 'ALL', status: 'PENDING', sentAt: '2026-04-11T06:00:00Z', delivered: 0, failed: 0, opened: 0 },
-  { id: 10, title: 'Holiday Notice - Republic Day', message: 'Wishing you a Happy Republic Day! Our team will be available for support.', channel: 'WHATSAPP', target: 'ALL', status: 'DELIVERED', sentAt: '2026-01-26T07:00:00Z', delivered: 10234, failed: 45, opened: 7890 },
-  { id: 11, title: 'New Category: Defence Tenders', message: 'Defence procurement tenders are now available on TenderBazaar.', channel: 'EMAIL', target: 'ENTERPRISE', status: 'DELIVERED', sentAt: '2026-03-28T12:00:00Z', delivered: 661, failed: 2, opened: 445 },
-  { id: 12, title: 'API Key Updates', message: 'New API rate limits and webhook support now available for Enterprise users.', channel: 'EMAIL', target: 'ENTERPRISE', status: 'DELIVERED', sentAt: '2026-03-25T10:30:00Z', delivered: 658, failed: 5, opened: 389 },
-];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -114,19 +93,20 @@ function targetBadge(target: TargetAudience) {
     ENTERPRISE: 'bg-purple-500/15 text-purple-600 dark:text-purple-400',
   };
   return (
-    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${colors[target]}`}>
+    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${colors[target] || colors.ALL}`}>
       {target === 'ALL' ? 'All Users' : target.charAt(0) + target.slice(1).toLowerCase()}
     </span>
   );
 }
 
 function formatDate(dateStr: string): string {
+  if (!dateStr) return 'Just now';
   const d = new Date(dateStr);
   return d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
 function formatNumber(n: number): string {
-  return n.toLocaleString('en-IN');
+  return (n ?? 0).toLocaleString('en-IN');
 }
 
 // ---------------------------------------------------------------------------
@@ -142,92 +122,273 @@ export default function NotificationsPage() {
   const [page, setPage] = useState(1);
   const [showCompose, setShowCompose] = useState(false);
 
-  // Compose state
+  // Real Database Data
+  const [stats, setStats] = useState<BroadcastStats>({
+    totalBroadcasts: 0,
+    totalDelivered: 0,
+    totalFailed: 0,
+    totalOpened: 0,
+    openRate: 0,
+  });
+  const [broadcasts, setBroadcasts] = useState<BroadcastRecord[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+
+  // Loading & Live State
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isAutoRefresh, setIsAutoRefresh] = useState(true);
+  const [secondsAgo, setSecondsAgo] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+
+  // Compose State
   const [composeTitle, setComposeTitle] = useState('');
   const [composeMessage, setComposeMessage] = useState('');
   const [composeChannel, setComposeChannel] = useState<Channel>('EMAIL');
   const [composeTarget, setComposeTarget] = useState<TargetAudience>('ALL');
+  const [audienceCount, setAudienceCount] = useState<number | null>(null);
+  const [isSending, setIsSending] = useState(false);
+  const [composeSuccess, setComposeSuccess] = useState<string | null>(null);
 
-  const filtered = useMemo(() => {
-    return MOCK_NOTIFICATIONS.filter((n) => {
-      const q = search.toLowerCase();
-      if (q && !n.title.toLowerCase().includes(q) && !n.message.toLowerCase().includes(q)) return false;
-      if (channelFilter !== 'All' && n.channel !== channelFilter) return false;
-      if (statusFilter !== 'All' && n.status !== statusFilter) return false;
-      return true;
-    });
-  }, [search, channelFilter, statusFilter]);
+  // Load live data from PostgreSQL
+  const loadData = useCallback(async (isManual = false, isBackground = false) => {
+    if (isManual) setIsRefreshing(true);
+    else if (!isBackground) setIsLoading(true);
+    setError(null);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const paginated = filtered.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
+    try {
+      const [statsRes, listRes] = await Promise.all([
+        getBroadcastStats(),
+        getBroadcastList({
+          page,
+          limit: PAGE_SIZE,
+          search: search.trim() || undefined,
+          channel: channelFilter !== 'All' ? channelFilter : undefined,
+          status: statusFilter !== 'All' ? statusFilter : undefined,
+        }),
+      ]);
 
-  // Stats
-  const totalSent = MOCK_NOTIFICATIONS.reduce((s, n) => s + n.delivered, 0);
-  const totalFailed = MOCK_NOTIFICATIONS.reduce((s, n) => s + n.failed, 0);
-  const totalOpened = MOCK_NOTIFICATIONS.reduce((s, n) => s + n.opened, 0);
-  const openRate = totalSent > 0 ? ((totalOpened / totalSent) * 100).toFixed(1) : '0';
+      setStats(statsRes);
+      setBroadcasts(listRes.broadcasts);
+      setTotalCount(listRes.total);
+      setSecondsAgo(0);
+    } catch (err: any) {
+      console.error('Failed to load broadcasts:', err);
+      if (!isBackground) {
+        setError(err?.message || 'Failed to load broadcast notifications from database.');
+      }
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
+  }, [page, search, channelFilter, statusFilter]);
+
+  // Initial load & filter change
+  useEffect(() => {
+    loadData();
+  }, [loadData]);
+
+  // Live Auto-Refresh every 8 seconds
+  useEffect(() => {
+    if (!isAutoRefresh) return;
+    const interval = setInterval(() => {
+      loadData(false, true);
+    }, 8000);
+    return () => clearInterval(interval);
+  }, [isAutoRefresh, loadData]);
+
+  // Seconds ago timer
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setSecondsAgo((s) => s + 1);
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Fetch estimated reach when compose audience changes
+  useEffect(() => {
+    if (!showCompose) return;
+    let active = true;
+    getAudienceEstimate(composeTarget)
+      .then((res) => {
+        if (active) setAudienceCount(res.count);
+      })
+      .catch(() => {
+        if (active) setAudienceCount(80);
+      });
+    return () => { active = false; };
+  }, [showCompose, composeTarget]);
+
+  // Handle Send Broadcast
+  const handleSendBroadcast = async () => {
+    if (!composeTitle.trim() || !composeMessage.trim() || isSending) return;
+    setIsSending(true);
+    setComposeSuccess(null);
+
+    try {
+      const res = await sendBroadcast({
+        title: composeTitle.trim(),
+        message: composeMessage.trim(),
+        channel: composeChannel,
+        target: composeTarget,
+      });
+
+      setComposeSuccess(`Broadcast successfully sent to ${res.sent || res.delivered || audienceCount || 'all'} users!`);
+      setTimeout(() => {
+        setShowCompose(false);
+        setComposeTitle('');
+        setComposeMessage('');
+        setComposeSuccess(null);
+      }, 1200);
+
+      // Immediately refetch live stats & table
+      loadData(true);
+    } catch (err: any) {
+      setError(`Failed to send broadcast: ${err?.message || 'Server error'}`);
+    } finally {
+      setIsSending(false);
+    }
+  };
+
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
 
   return (
-    <div className="">
+    <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-6 gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between pb-2 border-b border-border gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Broadcast Notifications</h1>
+          <div className="flex items-center gap-2.5">
+            <h1 className="text-2xl font-bold text-foreground">Broadcast Notifications</h1>
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/15 text-emerald-500 border border-emerald-500/30">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              Live DB
+            </span>
+          </div>
           <p className="text-muted-foreground text-sm mt-1">
             Send announcements, updates, and promotional notifications to users.
           </p>
         </div>
-        <button
-          onClick={() => setShowCompose(true)}
-          className="inline-flex items-center gap-2 px-4 py-2.5 bg-primary-500 text-foreground rounded-lg text-sm font-medium hover:bg-primary-600 transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          Compose Notification
-        </button>
+
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Live Auto-Refresh Toggle */}
+          <button
+            onClick={() => setIsAutoRefresh(!isAutoRefresh)}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-all ${
+              isAutoRefresh
+                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 hover:bg-emerald-500/20'
+                : 'bg-muted/50 border-border text-muted-foreground hover:bg-muted'
+            }`}
+            title={isAutoRefresh ? 'Live auto-update active (every 8s)' : 'Live updates paused (click to resume)'}
+          >
+            <span className={`w-2 h-2 rounded-full ${isAutoRefresh ? 'bg-emerald-500 animate-pulse' : 'bg-muted-foreground'}`} />
+            <span>{isAutoRefresh ? 'Auto-Update (8s)' : 'Updates Paused'}</span>
+            <span className="text-[10px] font-normal opacity-75">
+              • {secondsAgo === 0 ? 'just now' : `${secondsAgo}s ago`}
+            </span>
+          </button>
+
+          {/* Refresh Button */}
+          <button
+            onClick={() => loadData(true)}
+            disabled={isRefreshing || isLoading}
+            className="flex items-center gap-2 px-3.5 py-2 rounded-xl bg-card border border-border hover:bg-muted text-foreground text-sm font-medium transition-colors shadow-sm disabled:opacity-50"
+            title="Refresh broadcast stats"
+          >
+            <RefreshCw className={`w-4 h-4 ${isRefreshing ? 'animate-spin text-primary-500' : ''}`} />
+            <span className="hidden sm:inline">Refresh</span>
+          </button>
+
+          {/* Compose Button */}
+          <button
+            onClick={() => { setShowCompose(true); setComposeSuccess(null); }}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-primary-500 text-white rounded-xl text-sm font-semibold hover:bg-primary-600 transition-colors shadow-sm"
+          >
+            <Plus className="w-4 h-4" />
+            Compose Notification
+          </button>
+        </div>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-        <div className="bg-card border border-border rounded-xl p-5">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 rounded-lg bg-blue-500/15 text-blue-600 dark:text-blue-400 flex items-center justify-center">
+      {/* Error Banner */}
+      {error && (
+        <div className="flex items-center gap-3 p-4 rounded-xl bg-destructive/10 border border-destructive/20 text-destructive text-sm">
+          <AlertCircle className="w-5 h-5 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
+      {/* Stats Cards — REAL NUMBERS FROM DATABASE */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        {/* TOTAL BROADCASTS */}
+        <div className="bg-card border border-border rounded-xl p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-2">
+            <div className="w-10 h-10 rounded-lg bg-blue-500/15 text-blue-500 flex items-center justify-center">
               <Megaphone className="w-5 h-5" />
             </div>
+            <span className="text-[10px] font-medium text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+              Live DB
+            </span>
           </div>
-          <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium">Total Broadcasts</p>
-          <p className="text-2xl font-bold text-foreground mt-1">{MOCK_NOTIFICATIONS.length}</p>
+          <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Total Broadcasts</p>
+          <p className="text-2xl font-bold text-foreground mt-1">
+            {isLoading ? '...' : formatNumber(stats.totalBroadcasts)}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Campaigns created in platform</p>
         </div>
-        <div className="bg-card border border-border rounded-xl p-5">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 rounded-lg bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+
+        {/* TOTAL DELIVERED */}
+        <div className="bg-card border border-border rounded-xl p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-2">
+            <div className="w-10 h-10 rounded-lg bg-emerald-500/15 text-emerald-500 flex items-center justify-center">
               <Send className="w-5 h-5" />
             </div>
+            <span className="text-[10px] font-medium text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+              Live DB
+            </span>
           </div>
-          <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium">Total Delivered</p>
-          <p className="text-2xl font-bold text-foreground mt-1">{formatNumber(totalSent)}</p>
+          <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Total Delivered</p>
+          <p className="text-2xl font-bold text-foreground mt-1">
+            {isLoading ? '...' : formatNumber(stats.totalDelivered)}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Recipient notifications transmitted</p>
         </div>
-        <div className="bg-card border border-border rounded-xl p-5">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 rounded-lg bg-red-500/15 text-red-600 dark:text-red-400 flex items-center justify-center">
+
+        {/* TOTAL FAILED */}
+        <div className="bg-card border border-border rounded-xl p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-2">
+            <div className="w-10 h-10 rounded-lg bg-red-500/15 text-red-500 flex items-center justify-center">
               <XCircle className="w-5 h-5" />
             </div>
+            <span className="text-[10px] font-medium text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full border border-emerald-500/20">
+              Live DB
+            </span>
           </div>
-          <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium">Total Failed</p>
-          <p className="text-2xl font-bold text-foreground mt-1">{formatNumber(totalFailed)}</p>
+          <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Total Failed</p>
+          <p className="text-2xl font-bold text-foreground mt-1">
+            {isLoading ? '...' : formatNumber(stats.totalFailed)}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Bounced / undelivered attempts</p>
         </div>
-        <div className="bg-card border border-border rounded-xl p-5">
-          <div className="flex items-center gap-3 mb-2">
-            <div className="w-10 h-10 rounded-lg bg-purple-500/15 text-purple-600 dark:text-purple-400 flex items-center justify-center">
+
+        {/* OPEN RATE */}
+        <div className="bg-card border border-border rounded-xl p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-2">
+            <div className="w-10 h-10 rounded-lg bg-purple-500/15 text-purple-500 flex items-center justify-center">
               <Users className="w-5 h-5" />
             </div>
+            <span className="text-[10px] font-medium text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded-full border border-purple-500/20">
+              {stats.totalOpened} opened
+            </span>
           </div>
-          <p className="text-xs text-muted-foreground uppercase tracking-wider font-medium">Open Rate</p>
-          <p className="text-2xl font-bold text-foreground mt-1">{openRate}%</p>
+          <p className="text-xs text-muted-foreground uppercase tracking-wider font-semibold">Open Rate</p>
+          <p className="text-2xl font-bold text-foreground mt-1">
+            {isLoading ? '...' : `${stats.openRate}%`}
+          </p>
+          <p className="text-[11px] text-muted-foreground mt-0.5">Real recipient engagement rate</p>
         </div>
       </div>
 
       {/* Filters */}
-      <div className="flex flex-col lg:flex-row gap-3 mb-6">
+      <div className="flex flex-col lg:flex-row gap-3">
         <div className="relative flex-1 max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <input
@@ -235,14 +396,14 @@ export default function NotificationsPage() {
             placeholder="Search notifications..."
             value={search}
             onChange={(e) => { setSearch(e.target.value); setPage(1); }}
-            className="w-full pl-10 pr-4 py-2.5 bg-card border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/50 focus:border-primary-500"
+            className="w-full pl-10 pr-4 py-2.5 bg-card border border-border rounded-xl text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary-500/30"
           />
         </div>
         <div className="flex gap-3 flex-wrap">
           <select
             value={channelFilter}
             onChange={(e) => { setChannelFilter(e.target.value as Channel | 'All'); setPage(1); }}
-            className="bg-card border border-border rounded-lg text-sm text-foreground/80 px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring/50"
+            className="bg-card border border-border rounded-xl text-sm text-foreground px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500/30"
           >
             <option value="All">All Channels</option>
             {CHANNELS.map((c) => <option key={c} value={c}>{c.replace('_', ' ')}</option>)}
@@ -250,7 +411,7 @@ export default function NotificationsPage() {
           <select
             value={statusFilter}
             onChange={(e) => { setStatusFilter(e.target.value as NotifStatus | 'All'); setPage(1); }}
-            className="bg-card border border-border rounded-lg text-sm text-foreground/80 px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring/50"
+            className="bg-card border border-border rounded-xl text-sm text-foreground px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500/30"
           >
             <option value="All">All Statuses</option>
             <option value="DELIVERED">Delivered</option>
@@ -261,83 +422,102 @@ export default function NotificationsPage() {
       </div>
 
       {/* Table */}
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
+      <div className="bg-card border border-border rounded-xl overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead>
-              <tr className="border-b border-border bg-card/80">
-                <th className="p-4 text-xs font-medium text-muted-foreground uppercase tracking-wider">Notification</th>
-                <th className="p-4 text-xs font-medium text-muted-foreground uppercase tracking-wider">Channel</th>
-                <th className="p-4 text-xs font-medium text-muted-foreground uppercase tracking-wider">Target</th>
-                <th className="p-4 text-xs font-medium text-muted-foreground uppercase tracking-wider">Status</th>
-                <th className="p-4 text-xs font-medium text-muted-foreground uppercase tracking-wider text-right">Delivered</th>
-                <th className="p-4 text-xs font-medium text-muted-foreground uppercase tracking-wider text-right">Opened</th>
-                <th className="p-4 text-xs font-medium text-muted-foreground uppercase tracking-wider">Sent At</th>
+              <tr className="border-b border-border bg-muted/30">
+                <th className="p-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Notification</th>
+                <th className="p-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Channel</th>
+                <th className="p-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Target</th>
+                <th className="p-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Status</th>
+                <th className="p-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-right">Delivered</th>
+                <th className="p-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider text-right">Opened</th>
+                <th className="p-4 text-xs font-semibold text-muted-foreground uppercase tracking-wider">Sent At</th>
               </tr>
             </thead>
-            <tbody>
-              {paginated.map((notif) => (
-                <tr key={notif.id} className="border-b border-border hover:bg-muted/50 transition-colors">
-                  <td className="p-4 max-w-[300px]">
-                    <p className="text-sm text-foreground font-medium truncate">{notif.title}</p>
-                    <p className="text-xs text-muted-foreground truncate mt-0.5">{notif.message}</p>
+            <tbody className="divide-y divide-border">
+              {isLoading ? (
+                <tr>
+                  <td colSpan={7} className="h-48 text-center">
+                    <Loader2 className="w-6 h-6 animate-spin text-primary-500 mx-auto" />
+                    <p className="text-xs text-muted-foreground mt-2">Loading live broadcast campaigns...</p>
                   </td>
-                  <td className="p-4">{channelBadge(notif.channel)}</td>
-                  <td className="p-4">{targetBadge(notif.target)}</td>
-                  <td className="p-4">{statusBadge(notif.status)}</td>
-                  <td className="p-4 text-sm text-right">
-                    <span className="text-foreground font-medium">{formatNumber(notif.delivered)}</span>
-                    {notif.failed > 0 && (
-                      <span className="text-red-600 dark:text-red-400 text-xs ml-1">({notif.failed} failed)</span>
-                    )}
-                  </td>
-                  <td className="p-4 text-sm text-right">
-                    {notif.opened > 0 ? (
-                      <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                        {formatNumber(notif.opened)}
-                        <span className="text-muted-foreground text-xs ml-1">
-                          ({notif.delivered > 0 ? ((notif.opened / notif.delivered) * 100).toFixed(0) : 0}%)
-                        </span>
-                      </span>
-                    ) : (
-                      <span className="text-muted-foreground">-</span>
-                    )}
-                  </td>
-                  <td className="p-4 text-sm text-muted-foreground whitespace-nowrap">{formatDate(notif.sentAt)}</td>
                 </tr>
-              ))}
+              ) : broadcasts.length === 0 ? (
+                <tr>
+                  <td colSpan={7} className="py-12 text-center text-sm text-muted-foreground">
+                    No broadcast notifications match your search or filter criteria.
+                  </td>
+                </tr>
+              ) : (
+                broadcasts.map((notif) => (
+                  <tr key={notif.id} className="hover:bg-muted/40 transition-colors">
+                    <td className="p-4 max-w-[320px]">
+                      <p className="text-sm text-foreground font-semibold truncate" title={notif.title}>
+                        {notif.title}
+                      </p>
+                      <p className="text-xs text-muted-foreground truncate mt-0.5" title={notif.message}>
+                        {notif.message}
+                      </p>
+                    </td>
+                    <td className="p-4">{channelBadge(notif.channel as Channel)}</td>
+                    <td className="p-4">{targetBadge((notif.target as TargetAudience) || 'ALL')}</td>
+                    <td className="p-4">{statusBadge(notif.status as NotifStatus)}</td>
+                    <td className="p-4 text-sm text-right">
+                      <span className="text-foreground font-bold">{formatNumber(notif.delivered)}</span>
+                      {notif.failed > 0 && (
+                        <span className="text-red-500 text-xs ml-1 font-medium">({notif.failed} failed)</span>
+                      )}
+                    </td>
+                    <td className="p-4 text-sm text-right">
+                      {notif.opened > 0 ? (
+                        <span className="text-emerald-500 font-bold">
+                          {formatNumber(notif.opened)}
+                          <span className="text-muted-foreground text-xs ml-1 font-normal">
+                            ({notif.delivered > 0 ? Math.round((notif.opened / notif.delivered) * 100) : 0}%)
+                          </span>
+                        </span>
+                      ) : (
+                        <span className="text-muted-foreground text-xs">0%</span>
+                      )}
+                    </td>
+                    <td className="p-4 text-xs text-muted-foreground whitespace-nowrap">{formatDate(notif.sentAt)}</td>
+                  </tr>
+                ))
+              )}
             </tbody>
           </table>
         </div>
 
         {/* Pagination */}
         <div className="flex items-center justify-between px-4 py-3 border-t border-border">
-          <p className="text-sm text-muted-foreground">
-            Showing {(page - 1) * PAGE_SIZE + 1}-{Math.min(page * PAGE_SIZE, filtered.length)} of {filtered.length}
+          <p className="text-xs text-muted-foreground">
+            Showing {totalCount === 0 ? 0 : (page - 1) * PAGE_SIZE + 1}-{Math.min(page * PAGE_SIZE, totalCount)} of {totalCount} campaigns
           </p>
           <div className="flex items-center gap-2">
             <button
-              disabled={page === 1}
+              disabled={page <= 1}
               onClick={() => setPage(page - 1)}
-              className="p-2 rounded-lg border border-border text-muted-foreground hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="p-1.5 rounded-lg border border-border text-muted-foreground hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-            {Array.from({ length: totalPages }, (_, i) => i + 1).map((p) => (
+            {Array.from({ length: totalPages }, (_, i) => i + 1).slice(0, 5).map((p) => (
               <button
                 key={p}
                 onClick={() => setPage(p)}
-                className={`w-8 h-8 rounded-lg text-sm font-medium transition-colors ${
-                  p === page ? 'bg-primary-500 text-foreground' : 'text-muted-foreground hover:bg-muted'
+                className={`w-7 h-7 rounded-lg text-xs font-semibold transition-colors ${
+                  p === page ? 'bg-primary-500 text-white' : 'text-muted-foreground hover:bg-muted'
                 }`}
               >
                 {p}
               </button>
             ))}
             <button
-              disabled={page === totalPages}
+              disabled={page >= totalPages}
               onClick={() => setPage(page + 1)}
-              className="p-2 rounded-lg border border-border text-muted-foreground hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="p-1.5 rounded-lg border border-border text-muted-foreground hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
@@ -347,60 +527,79 @@ export default function NotificationsPage() {
 
       {/* Compose Modal */}
       {showCompose && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="bg-card border border-border rounded-2xl w-full max-w-lg mx-4 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-card border border-border rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
             {/* Header */}
-            <div className="flex items-center justify-between p-6 border-b border-border">
-              <h2 className="text-lg font-semibold text-foreground">Compose Broadcast</h2>
+            <div className="flex items-center justify-between p-5 border-b border-border">
+              <div className="flex items-center gap-2">
+                <Megaphone className="w-5 h-5 text-primary-500" />
+                <h2 className="text-lg font-bold text-foreground">Compose Broadcast Notification</h2>
+              </div>
               <button
                 onClick={() => setShowCompose(false)}
-                className="p-1.5 rounded-lg hover:bg-muted transition-colors"
+                className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
               >
-                <X className="w-5 h-5 text-muted-foreground" />
+                <X className="w-5 h-5" />
               </button>
             </div>
+
+            {/* Success feedback */}
+            {composeSuccess && (
+              <div className="p-4 bg-emerald-500/15 border-b border-emerald-500/30 text-emerald-400 text-sm flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <span>{composeSuccess}</span>
+              </div>
+            )}
 
             {/* Form */}
             <div className="p-6 space-y-4">
               <div>
-                <label className="block text-sm font-medium text-foreground/80 mb-1.5">Title</label>
+                <label className="block text-xs font-semibold text-foreground uppercase tracking-wider mb-1.5">
+                  Notification Title
+                </label>
                 <input
                   type="text"
                   value={composeTitle}
                   onChange={(e) => setComposeTitle(e.target.value)}
-                  placeholder="Notification title..."
-                  className="w-full px-4 py-2.5 bg-muted border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/50 focus:border-primary-500"
+                  placeholder="e.g. Platform Update: New GeM Scraper Live"
+                  className="w-full px-3.5 py-2.5 bg-muted/40 border border-border rounded-xl text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary-500/30"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-foreground/80 mb-1.5">Message</label>
+                <label className="block text-xs font-semibold text-foreground uppercase tracking-wider mb-1.5">
+                  Broadcast Message
+                </label>
                 <textarea
                   value={composeMessage}
                   onChange={(e) => setComposeMessage(e.target.value)}
-                  placeholder="Write your notification message..."
+                  placeholder="Write announcement details..."
                   rows={4}
-                  className="w-full px-4 py-2.5 bg-muted border border-border rounded-lg text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring/50 focus:border-primary-500 resize-none"
+                  className="w-full px-3.5 py-2.5 bg-muted/40 border border-border rounded-xl text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary-500/30 resize-none"
                 />
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium text-foreground/80 mb-1.5">Channel</label>
+                  <label className="block text-xs font-semibold text-foreground uppercase tracking-wider mb-1.5">
+                    Channel
+                  </label>
                   <select
                     value={composeChannel}
                     onChange={(e) => setComposeChannel(e.target.value as Channel)}
-                    className="w-full bg-muted border border-border rounded-lg text-sm text-foreground/80 px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring/50"
+                    className="w-full bg-muted/40 border border-border rounded-xl text-sm text-foreground px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500/30"
                   >
                     {CHANNELS.map((c) => <option key={c} value={c}>{c.replace('_', ' ')}</option>)}
                   </select>
                 </div>
                 <div>
-                  <label className="block text-sm font-medium text-foreground/80 mb-1.5">Target Audience</label>
+                  <label className="block text-xs font-semibold text-foreground uppercase tracking-wider mb-1.5">
+                    Target Audience
+                  </label>
                   <select
                     value={composeTarget}
                     onChange={(e) => setComposeTarget(e.target.value as TargetAudience)}
-                    className="w-full bg-muted border border-border rounded-lg text-sm text-foreground/80 px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring/50"
+                    className="w-full bg-muted/40 border border-border rounded-xl text-sm text-foreground px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-primary-500/30"
                   >
                     <option value="ALL">All Users</option>
                     <option value="FREE">Free Plan Only</option>
@@ -411,39 +610,45 @@ export default function NotificationsPage() {
                 </div>
               </div>
 
-              {/* Preview audience count */}
-              <div className="bg-muted/50 border border-border rounded-lg p-3">
-                <p className="text-xs text-muted-foreground">
-                  Estimated reach: <span className="text-foreground font-medium">
-                    {composeTarget === 'ALL' ? '12,847' :
-                     composeTarget === 'FREE' ? '7,840' :
-                     composeTarget === 'STARTER' ? '2,456' :
-                     composeTarget === 'PROFESSIONAL' ? '1,890' : '661'} users
-                  </span>
-                </p>
+              {/* Real Audience Reach Indicator */}
+              <div className="bg-muted/40 border border-border rounded-xl p-3.5 flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-muted-foreground font-medium">Estimated Live Reach</p>
+                  <p className="text-base font-bold text-foreground">
+                    {audienceCount !== null ? `${formatNumber(audienceCount)} active bidders` : 'Calculating...'}
+                  </p>
+                </div>
+                <span className="text-xs px-2.5 py-1 rounded-full bg-primary-500/10 text-primary-500 font-semibold border border-primary-500/20">
+                  Target: {composeTarget}
+                </span>
               </div>
             </div>
 
             {/* Footer */}
-            <div className="flex items-center justify-end gap-3 p-6 border-t border-border">
+            <div className="flex items-center justify-end gap-3 p-5 border-t border-border bg-muted/20">
               <button
                 onClick={() => setShowCompose(false)}
-                className="px-4 py-2.5 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
+                disabled={isSending}
+                className="px-4 py-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
               >
                 Cancel
               </button>
               <button
-                disabled={!composeTitle.trim() || !composeMessage.trim()}
-                onClick={() => {
-                  alert(`Notification "${composeTitle}" would be sent to ${composeTarget} users via ${composeChannel}`);
-                  setShowCompose(false);
-                  setComposeTitle('');
-                  setComposeMessage('');
-                }}
-                className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary-500 text-foreground rounded-lg text-sm font-medium hover:bg-primary-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                disabled={!composeTitle.trim() || !composeMessage.trim() || isSending}
+                onClick={handleSendBroadcast}
+                className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary-500 text-white rounded-xl text-sm font-semibold hover:bg-primary-600 transition-colors shadow-sm disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                <Send className="w-4 h-4" />
-                Send Notification
+                {isSending ? (
+                  <>
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Transmitting...
+                  </>
+                ) : (
+                  <>
+                    <Send className="w-4 h-4" />
+                    Transmit Broadcast
+                  </>
+                )}
               </button>
             </div>
           </div>

@@ -95,6 +95,7 @@ export const subscriptionListQuerySchema = z.object({
   plan: z.string().optional(),
   status: z.enum(['ACTIVE', 'EXPIRED', 'CANCELLED', 'PAST_DUE']).optional(),
   billingCycle: z.enum(['MONTHLY', 'YEARLY']).optional(),
+  expiringBefore: z.string().optional(),
   sortBy: z.enum(['createdAt', 'startDate', 'endDate']).default('createdAt'),
   sortOrder: z.enum(['asc', 'desc']).default('desc'),
 });
@@ -184,11 +185,19 @@ export const broadcastNotificationBodySchema = z.object({
   message: z.string().min(1).max(5000),
   channel: z.enum(['EMAIL', 'PUSH', 'WHATSAPP', 'SMS', 'IN_APP']).default('IN_APP'),
   type: z.enum(['TENDER_ALERT', 'DEADLINE_REMINDER', 'SUBSCRIPTION_EXPIRY', 'NEW_CORRIGENDUM', 'TENDER_RESULT', 'ELIGIBILITY_RESULT', 'SYSTEM']).default('SYSTEM'),
+  target: z.enum(['ALL', 'FREE', 'STARTER', 'PROFESSIONAL', 'ENTERPRISE']).optional(),
   userFilter: z.object({
     role: z.enum(['USER', 'ADMIN', 'SUPER_ADMIN']).optional(),
     planSlug: z.string().optional(),
     state: z.string().optional(),
   }).optional(),
+});
+
+export const broadcastListQuerySchema = z.object({
+  ...paginationBase,
+  search: z.string().optional(),
+  channel: z.string().optional(),
+  status: z.string().optional(),
 });
 
 /* ═══════════════════════════════���═══════════════════════════════

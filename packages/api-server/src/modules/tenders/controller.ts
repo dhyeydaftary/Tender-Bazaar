@@ -1,12 +1,36 @@
 import { Request, Response, NextFunction } from 'express';
 import { tenderService } from './service';
 import { searchTendersSchema } from './validation';
+import { prisma } from '../../config/database';
 
 export const tenderController = {
   async searchTenders(req: Request, res: Response, next: NextFunction) {
     try {
       const filters = searchTendersSchema.parse(req.query);
       const result = await tenderService.searchTenders(filters);
+
+      // Persist the search for the signed-in user. Nothing wrote to
+      // SearchHistory before, so "recent searches" on the dashboard and the
+      // admin search analytics both read a permanently empty table.
+      //
+      // Deliberately fire-and-forget: a logging failure must never turn a
+      // working search into an error response, and the caller should not wait
+      // on the write.
+      const userId = (req as any).user?.id;
+      if (userId && filters.query?.trim()) {
+        const { query, ...rest } = filters;
+        prisma.searchHistory
+          .create({
+            data: {
+              userId,
+              query: query.trim(),
+              filters: rest as any,
+              resultCount: result.total ?? null,
+            },
+          })
+          .catch((error) => console.error('Failed to record search history:', error));
+      }
+
       res.json({ success: true, data: result });
     } catch (error) {
       next(error);
@@ -40,9 +64,10 @@ export const tenderController = {
     }
   },
 
-  async getTenderStats(_req: Request, res: Response, next: NextFunction) {
+  async getTenderStats(req: Request, res: Response, next: NextFunction) {
     try {
-      const stats = await tenderService.getTenderStats();
+      const state = req.query.state as string | undefined;
+      const stats = await tenderService.getTenderStats(state);
       res.json({ success: true, data: stats });
     } catch (error) {
       next(error);

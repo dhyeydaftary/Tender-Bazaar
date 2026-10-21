@@ -1,4 +1,5 @@
 import { prisma } from '../../../config/database';
+import redis from '../../../config/redis';
 import { AppError } from '../../../shared/middleware/error-handler';
 
 /* ═══════════════════════════════════════════════════════════════
@@ -72,6 +73,44 @@ interface CreateBannerData {
 export const contentService = {
   // ── Blog Posts ─────────────────────────────────────────
 
+  async getContentStats() {
+    const [totalPosts, publishedPosts, draftPosts, activeAnnouncements, totalAnnouncements, activeBanners, totalBanners, publishedList] = await Promise.all([
+      prisma.blogPost.count(),
+      prisma.blogPost.count({ where: { status: 'PUBLISHED' } }),
+      prisma.blogPost.count({ where: { status: 'DRAFT' } }),
+      prisma.announcement.count({ where: { status: 'PUBLISHED' } }),
+      prisma.announcement.count(),
+      prisma.banner.count({ where: { status: 'PUBLISHED' } }),
+      prisma.banner.count(),
+      prisma.blogPost.findMany({ where: { status: 'PUBLISHED' }, select: { id: true } }),
+    ]);
+
+    let totalViews = 0;
+    let totalLikes = 0;
+    for (const p of publishedList) {
+      try {
+        const v = await redis.get(`blog:views:${p.id}`);
+        const l = await redis.get(`blog:likes:${p.id}`);
+        totalViews += v ? Number(v) : 0;
+        totalLikes += l ? Number(l) : 0;
+      } catch {
+        // no-op
+      }
+    }
+
+    return {
+      totalPosts,
+      publishedPosts,
+      draftPosts,
+      activeAnnouncements,
+      totalAnnouncements,
+      activeBanners,
+      totalBanners,
+      totalViews,
+      totalLikes,
+    };
+  },
+
   async getPostList(filters: PostListFilters) {
     const { page, limit, search, status, sortBy, sortOrder } = filters;
     const skip = (page - 1) * limit;
@@ -93,7 +132,28 @@ export const contentService = {
       prisma.blogPost.count({ where }),
     ]);
 
-    return { posts, total, page, limit };
+    const enriched = await Promise.all(
+      posts.map(async (p) => {
+        let views = 0;
+        let likes = 0;
+        try {
+          const v = await redis.get(`blog:views:${p.id}`);
+          const l = await redis.get(`blog:likes:${p.id}`);
+          views = v ? Number(v) : 0;
+          likes = l ? Number(l) : 0;
+        } catch {
+          views = 0;
+          likes = 0;
+        }
+        return {
+          ...p,
+          views,
+          likes,
+        };
+      })
+    );
+
+    return { posts: enriched, total, page, limit };
   },
 
   async getPostDetail(postId: string) {
@@ -245,7 +305,28 @@ export const contentService = {
       prisma.banner.count({ where }),
     ]);
 
-    return { banners, total, page, limit };
+    const enriched = await Promise.all(
+      banners.map(async (b) => {
+        let impressions = 0;
+        let clicks = 0;
+        try {
+          const imp = await redis.get(`banner:impressions:${b.id}`);
+          const clk = await redis.get(`banner:clicks:${b.id}`);
+          impressions = imp ? Number(imp) : 0;
+          clicks = clk ? Number(clk) : 0;
+        } catch {
+          impressions = 0;
+          clicks = 0;
+        }
+        return {
+          ...b,
+          impressions,
+          clicks,
+        };
+      })
+    );
+
+    return { banners: enriched, total, page, limit };
   },
 
   async createBanner(data: CreateBannerData, authorId: string) {

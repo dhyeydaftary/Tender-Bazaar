@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { Menu, X, ArrowRight, Twitter, Linkedin, Youtube, MessageCircle } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -60,7 +61,7 @@ function Navbar() {
             const isActive = pathname === l.href || (l.href !== '/' && pathname.startsWith(l.href));
             return (
               <Link
-                key={l.href}
+                key={l.label}
                 href={l.href}
                 className={cn(
                   'px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200',
@@ -108,7 +109,7 @@ function Navbar() {
           <nav className="flex flex-col px-6 py-8 gap-1">
             {NAV_LINKS.map((l) => (
               <Link
-                key={l.href}
+                key={l.label}
                 href={l.href}
                 onClick={() => setMobileOpen(false)}
                 className="text-muted-foreground hover:text-foreground text-lg font-medium py-3 px-4 rounded-lg hover:bg-muted transition-colors"
@@ -147,7 +148,7 @@ const FOOTER_COLS = [
     title: 'Product',
     links: [
       { label: 'Dashboard', href: '/dashboard' },
-      { label: 'Search Tenders', href: '/tenders' },
+      { label: 'Search Tenders', href: '/explore-tenders' },
       { label: 'AI Eligibility', href: '/eligibility' },
       { label: 'Smart Alerts', href: '/alerts' },
       { label: 'Mobile App', href: '#' },
@@ -212,7 +213,18 @@ function Footer() {
               checking across 50+ government portals.
             </p>
             {/* Newsletter */}
-            <div className="flex gap-2">
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (email.trim()) {
+                  toast.success('Thank you for subscribing to TenderBazaar updates!');
+                  setEmail('');
+                } else {
+                  toast.error('Please enter a valid email address');
+                }
+              }}
+              className="flex gap-2"
+            >
               <input
                 type="email"
                 value={email}
@@ -220,10 +232,13 @@ function Footer() {
                 placeholder="Your email"
                 className="flex-1 bg-muted border border-border text-foreground text-sm rounded-lg px-3 py-2.5 placeholder:text-muted-foreground focus:ring-2 focus:ring-primary-500 focus:border-primary-500 outline-none transition-all max-w-[200px]"
               />
-              <button className="bg-primary-500 hover:bg-primary-600 text-foreground px-4 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap">
+              <button
+                type="submit"
+                className="bg-primary-500 hover:bg-primary-600 text-foreground px-4 py-2.5 rounded-lg text-sm font-medium transition-colors whitespace-nowrap cursor-pointer"
+              >
                 Subscribe
               </button>
-            </div>
+            </form>
           </div>
 
           {/* Link columns */}
