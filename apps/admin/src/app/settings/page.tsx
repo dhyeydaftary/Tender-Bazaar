@@ -31,8 +31,10 @@ import {
   getAdminSettings,
   updateAdminSettings,
   triggerScraper,
-  type SystemHealthResponse,
+  getScraperHealth,
+  getScraperEngineStatus,
 } from '@/lib/admin-api';
+import { serviceRows, type HealthState, type ServiceRowStatus } from '@/lib/service-health';
 import { applyAppearanceSettings } from '@/lib/appearance';
 
 // ---------------------------------------------------------------------------
@@ -46,13 +48,6 @@ type SettingsTab =
   | 'security'
   | 'api'
   | 'appearance';
-
-interface ServiceStatus {
-  name: string;
-  status: 'connected' | 'disconnected' | 'degraded';
-  latency?: string;
-  version?: string;
-}
 
 const TABS: { key: SettingsTab; label: string; icon: React.ElementType }[] = [
   { key: 'general', label: 'General', icon: Globe },
@@ -129,7 +124,7 @@ const DEFAULT_STATE: Record<SettingsTab, Record<string, any>> = {
     font: 'plus-jakarta-sans',
     logoUrl: '/logo.svg',
     faviconUrl: '/favicon.ico',
-    darkMode: true,
+    darkMode: false,
     compactLayout: false,
   },
 };
@@ -138,11 +133,13 @@ const DEFAULT_STATE: Record<SettingsTab, Record<string, any>> = {
 // Helpers & UI Components
 // ---------------------------------------------------------------------------
 
-function statusDot(status: ServiceStatus['status']) {
-  const colors = {
+function statusDot(status: ServiceRowStatus) {
+  const colors: Record<ServiceRowStatus, string> = {
     connected: 'bg-emerald-400',
     disconnected: 'bg-red-400',
     degraded: 'bg-amber-400',
+    checking: 'bg-muted-foreground/40 animate-pulse',
+    unknown: 'bg-muted-foreground/40',
   };
   return <span className={`w-2 h-2 rounded-full ${colors[status]} inline-block`} />;
 }
@@ -333,47 +330,24 @@ function GeneralSettings({
   onReset: () => void;
   saving: boolean;
 }) {
-  const [healthData, setHealthData] = useState<SystemHealthResponse | null>(null);
-  const [healthLoading, setHealthLoading] = useState(true);
+  const [health, setHealth] = useState<HealthState>({ phase: 'loading' });
+  const healthLoading = health.phase === 'loading';
 
   const fetchHealth = useCallback(() => {
-    setHealthLoading(true);
+    setHealth({ phase: 'loading' });
     getSystemHealth()
-      .then((res) => setHealthData(res))
-      .catch((err) => console.error('Failed to load system health:', err))
-      .finally(() => setHealthLoading(false));
+      .then(({ report, latencyMs }) => setHealth({ phase: 'ready', report, latencyMs }))
+      .catch((err) => {
+        console.error('Failed to load system health:', err);
+        setHealth({ phase: 'error' });
+      });
   }, []);
 
   useEffect(() => {
     fetchHealth();
   }, [fetchHealth]);
 
-  const services: ServiceStatus[] = [
-    {
-      name: 'PostgreSQL Database',
-      status: healthData?.services?.database === 'healthy' ? 'connected' : healthLoading ? 'connected' : 'disconnected',
-      latency: healthData?.services?.database === 'healthy' ? '< 2ms' : 'offline',
-      version: '16-alpine',
-    },
-    {
-      name: 'Redis Cache',
-      status: healthData?.services?.redis === 'healthy' ? 'connected' : healthLoading ? 'connected' : 'disconnected',
-      latency: healthData?.services?.redis === 'healthy' ? '< 1ms' : 'offline',
-      version: '7-alpine',
-    },
-    {
-      name: 'Elasticsearch Engine',
-      status: healthData?.services?.elasticsearch === 'healthy' ? 'connected' : healthLoading ? 'connected' : 'disconnected',
-      latency: healthData?.services?.elasticsearch === 'healthy' ? '< 5ms' : 'offline',
-      version: '8.12.0',
-    },
-    {
-      name: 'TenderBazaar API Server',
-      status: healthData?.status === 'ok' ? 'connected' : healthData?.status === 'degraded' ? 'degraded' : 'disconnected',
-      latency: healthData ? '< 10ms' : 'offline',
-      version: '0.1.0',
-    },
-  ];
+  const services = serviceRows(health);
 
   const maintenanceMode = Boolean(values.maintenanceMode);
   const registrationOpen = values.registrationOpen !== false;
@@ -488,7 +462,7 @@ function GeneralSettings({
                   Status
                 </th>
                 <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                  Latency
+                  Details
                 </th>
                 <th className="pb-3 text-xs font-medium text-muted-foreground uppercase tracking-wider">
                   Version
@@ -516,15 +490,17 @@ function GeneralSettings({
                             ? 'text-emerald-600 dark:text-emerald-400'
                             : svc.status === 'degraded'
                             ? 'text-amber-600 dark:text-amber-400'
-                            : 'text-red-600 dark:text-red-400'
+                            : svc.status === 'disconnected'
+                            ? 'text-red-600 dark:text-red-400'
+                            : 'text-muted-foreground'
                         }
                       >
                         {svc.status}
                       </span>
                     </span>
                   </td>
-                  <td className="py-3 text-sm text-muted-foreground">{svc.latency ?? '-'}</td>
-                  <td className="py-3 text-sm text-muted-foreground">{svc.version ?? '-'}</td>
+                  <td className="py-3 text-sm text-muted-foreground">{svc.detail}</td>
+                  <td className="py-3 text-sm text-muted-foreground">{svc.version}</td>
                 </tr>
               ))}
             </tbody>
@@ -562,15 +538,19 @@ function ScrapingSettings({
   const [testingEngine, setTestingEngine] = useState(false);
   const [triggeringScrape, setTriggeringScrape] = useState(false);
 
-  // Test scraper engine connectivity
+  // Test scraper engine connectivity. Asks the engine itself (via the API
+  // server) rather than inferring it from Redis, and says when it is the demo
+  // engine, which only simulates runs.
   async function handleTestEngine() {
     setTestingEngine(true);
     try {
-      const health = await getSystemHealth();
-      if (health.services.redis === 'healthy') {
-        onNotify('Scraper engine is operational (Redis & Queue active)', 'success');
+      const engine = await getScraperEngineStatus();
+      if (!engine.reachable) {
+        onNotify('Scraper engine is not reachable from the API server', 'error');
+      } else if (engine.simulated) {
+        onNotify('Demo scraper is running: runs are simulated and no external portal is contacted', 'success');
       } else {
-        onNotify('Scraper engine check: Redis degraded or offline', 'error');
+        onNotify('Scraper engine is reachable and running in live mode', 'success');
       }
     } catch (err: any) {
       onNotify('Failed to communicate with scraper engine', 'error');
@@ -579,12 +559,27 @@ function ScrapingSettings({
     }
   }
 
-  // Trigger test scraping run on GeM
+  // Trigger a test run on the first enabled registered portal (GeM by
+  // preference). The portal list comes from the API, so this works for the
+  // real engine and the demo engine, and the message reports what happened.
   async function handleTriggerTestScrape() {
     setTriggeringScrape(true);
     try {
-      await triggerScraper('GeM');
-      onNotify('Test scraping run queued successfully for GeM portal', 'success');
+      const portals = (await getScraperHealth()).filter((p) => p.enabled);
+      const target = portals.find((p) => /^gem(-demo)?$/i.test(p.portalName)) ?? portals[0];
+      if (!target) {
+        onNotify('No enabled scraper portal is registered', 'error');
+        return;
+      }
+      const result = await triggerScraper(target.portalName);
+      onNotify(
+        result.simulated
+          ? `Simulated test run started for ${target.portalName} (no external portal contacted)`
+          : result.dispatch === 'queue'
+          ? `Test run for ${target.portalName} queued; it starts when the scraper engine picks it up`
+          : `Test scraping run started for ${target.portalName}`,
+        'success',
+      );
     } catch (err: any) {
       onNotify(err?.response?.data?.error?.message || 'Failed to trigger test scrape', 'error');
     } finally {
@@ -623,7 +618,7 @@ function ScrapingSettings({
               ) : (
                 <Play className="w-3.5 h-3.5" />
               )}
-              Run GeM Test
+              Run Test Scrape
             </button>
           </div>
         }
@@ -1775,10 +1770,15 @@ export default function SettingsPage() {
             next[tab][item.key] = item.value;
           }
         }
-        // Sync appearance settings to DOM immediately
+        // Keep appearance.darkMode in sync with the user's currently active theme
+        if (typeof window !== 'undefined' && next.appearance) {
+          const savedTheme = localStorage.getItem('tb_admin_theme');
+          const isDarkActive = savedTheme ? savedTheme === 'dark' : document.documentElement.classList.contains('dark');
+          next.appearance.darkMode = isDarkActive;
+        }
+        // Sync appearance settings to DOM immediately (excluding isDark so we don't override the user's active theme)
         if (next.appearance) {
           applyAppearanceSettings({
-            isDark: next.appearance.darkMode !== false,
             isCompact: Boolean(next.appearance.compactLayout),
             font: next.appearance.font,
             primaryColor: next.appearance.primaryColor,

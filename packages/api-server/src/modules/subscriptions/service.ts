@@ -38,7 +38,7 @@ export const subscriptionService = {
           advancedFilters: false,
           maxAlerts: 0,
           maxAiChecks: 1,
-          aiChecksResetMonthly: false,
+          aiChecksResetMonthly: true,
           maxSavedTenders: 0,
           documentDownload: false,
         },

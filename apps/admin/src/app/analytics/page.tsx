@@ -35,6 +35,7 @@ import type {
   TenderAnalyticsData,
   Period,
 } from '@/lib/types';
+import { useAppearance } from '@/lib/appearance';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -62,6 +63,7 @@ function getHeatColor(val: number): string {
 }
 
 function ChartTooltip({ active, payload, label, unit = 'Count' }: any) {
+  const { accentColor } = useAppearance();
   if (!active || !payload || !payload.length) return null;
   const item = payload[0];
   const value = item.value ?? 0;
@@ -74,10 +76,10 @@ function ChartTooltip({ active, payload, label, unit = 'Count' }: any) {
     item.name ||
     '';
   const metricName = item.name === 'value' || item.name === 'count' ? unit : (item.name || unit);
-  const color = item.color || item.payload?.fill || '#00D4AA';
+  const color = item.color || item.payload?.fill || accentColor;
 
   return (
-    <div className="bg-slate-900/95 text-white border border-slate-700/80 rounded-xl px-3.5 py-2.5 shadow-xl backdrop-blur-md min-w-[140px]">
+    <div className="bg-secondary-900/95 text-white border border-slate-700/80 rounded-xl px-3.5 py-2.5 shadow-xl backdrop-blur-md min-w-[140px]">
       {title && <p className="text-xs font-semibold text-white mb-1.5 truncate max-w-[240px]">{title}</p>}
       <div className="flex items-center gap-2 text-xs">
         <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: color }} />

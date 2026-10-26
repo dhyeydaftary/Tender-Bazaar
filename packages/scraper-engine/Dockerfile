@@ -1,5 +1,8 @@
 # Single-stage build — Playwright base image with Node.js
-FROM mcr.microsoft.com/playwright:v1.44.0-jammy
+# Must match the `playwright` version in pnpm-lock.yaml: each Playwright release
+# expects its own browser build, which only the same-version image ships.
+# Enforced by src/tests/playwright-image-version.test.ts.
+FROM mcr.microsoft.com/playwright:v1.64.1-jammy
 WORKDIR /app
 
 # Install Node.js 20 + pnpm

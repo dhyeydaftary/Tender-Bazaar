@@ -105,12 +105,33 @@ function mockModeFor(nodeEnv: string, configured: boolean): boolean {
     'no call site may use the old eager client binding',
   );
   assert.equal(
-    (SERVICE_SRC.match(/getRazorpayClient\(\)\.orders\.create\(/g) ?? []).length,
+    (SERVICE_SRC.match(/const gateway = getRazorpayClient\(\);/g) ?? []).length,
     2,
     'both order-creation call sites must go through the lazy accessor',
   );
+  assert.equal(
+    (SERVICE_SRC.match(/gateway\.orders\.create\(/g) ?? []).length,
+    2,
+    'both order-creation call sites must use the client obtained from the accessor',
+  );
 
   console.log('✓ Payments service imports no eagerly-built client; both call sites are lazy');
+}
+
+// 5. A failed or unconfigured gateway is an error, never a locally minted
+//    order (which previously made the browser fake a "successful" payment).
+{
+  assert.ok(
+    !/falling back to mock order/.test(SERVICE_SRC),
+    'order creation must not fall back to a mock order',
+  );
+  assert.equal(
+    (SERVICE_SRC.match(/throw gatewayOrderError\(err\)/g) ?? []).length,
+    2,
+    'both order-creation call sites must surface gateway failures',
+  );
+
+  console.log('✓ Gateway failures surface as errors; no fallback mock orders');
 }
 
 console.log('--- All Payment Mock-Mode Containment Tests Passed ---');

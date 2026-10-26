@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import bcrypt from 'bcryptjs';
+import { resolveSeedAdmins } from './seed-admins';
 
 const prisma = new PrismaClient();
 
@@ -13,15 +14,9 @@ const isProduction = process.env.NODE_ENV === 'production';
 const seedDemoData =
   (process.env.SEED_DEMO_DATA ?? (isProduction ? 'false' : 'true')) === 'true';
 
-type SeedAdmin = {
-  name: string;
-  email: string;
-  password: string;
-  role: 'SUPER_ADMIN' | 'ADMIN';
-};
-
 /**
- * Administrator accounts to create when they are missing.
+ * Administrator accounts to create when they are missing (resolveSeedAdmins in
+ * ./seed-admins.ts).
  *
  * This block previously ran `user.upsert` with `update: { passwordHash }`, and
  * db-init ran the seed on every `docker compose up`, so each deploy or restart
@@ -32,49 +27,17 @@ type SeedAdmin = {
  * Now:
  *   - existing accounts are never touched (no password, no role rewrite);
  *   - accounts are only ever created when absent;
- *   - outside development nothing is created unless the operator supplies
- *     SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD explicitly, so no credential
- *     from this file can ever reach production.
+ *   - the development fixture accounts are created in development only
+ *     (alongside SEED_ADMIN_* when set); in production nothing is created
+ *     unless the operator supplies SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD,
+ *     so no credential from this repository can ever reach production;
+ *   - an incomplete or too-short SEED_ADMIN_* fails before any database write.
  */
-function resolveSeedAdmins(): SeedAdmin[] {
-  const email = process.env.SEED_ADMIN_EMAIL?.trim();
-  const password = process.env.SEED_ADMIN_PASSWORD;
-
-  if (email && password) {
-    if (password.length < 12) {
-      throw new Error('SEED_ADMIN_PASSWORD must be at least 12 characters long.');
-    }
-    return [
-      {
-        name: process.env.SEED_ADMIN_NAME?.trim() || 'Administrator',
-        email,
-        password,
-        role: 'SUPER_ADMIN',
-      },
-    ];
-  }
-
-  if (isProduction) return [];
-
-  // Development fixtures only - never applied to an existing account, and
-  // unreachable when NODE_ENV=production.
-  return [
-    {
-      name: 'Parth Savajadiya',
-      email: 'superadmin@tenderbazaar.com',
-      password: 'SuperAdmin@123',
-      role: 'SUPER_ADMIN',
-    },
-    {
-      name: 'Karthik Iyer',
-      email: 'admin@tenderbazaar.com',
-      password: 'Admin@123',
-      role: 'ADMIN',
-    },
-  ];
-}
 
 async function main() {
+  // Validate admin configuration before touching the database.
+  const adminUsers = resolveSeedAdmins(process.env);
+
   console.log('Seeding database...');
   console.log(
     `  mode: ${isProduction ? 'production' : 'development'}; demo data: ${
@@ -83,8 +46,6 @@ async function main() {
   );
 
   // Admin users - created only when missing, never overwritten.
-  const adminUsers = resolveSeedAdmins();
-
   if (adminUsers.length === 0) {
     console.log(
       '  Skipped: no administrator seeded (set SEED_ADMIN_EMAIL and SEED_ADMIN_PASSWORD to create one).',
@@ -147,8 +108,8 @@ async function main() {
       whatsappAlerts: false,
       corrigendumAlerts: false,
       // AI features
-      maxAiChecks: 1,           // 1 lifetime check
-      aiChecksResetMonthly: false,
+      maxAiChecks: 1,           // 1 check per month
+      aiChecksResetMonthly: true,
       aiTenderSummary: false,
       aiBidAssistant: 'none',
       tenderComparison: false,

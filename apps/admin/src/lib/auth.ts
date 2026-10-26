@@ -79,8 +79,15 @@ export const useAuthStore = create<AuthState>()(
         } catch (err: unknown) {
           set({ isLoading: false });
           if (axios.isAxiosError(err)) {
+            // No response at all (API down, wrong URL, CORS): say so, rather
+            // than reporting a connectivity failure as bad credentials.
+            if (!err.response) {
+              throw new Error(
+                `Cannot reach the TenderBazaar API at ${API_BASE_URL}. Please try again shortly.`
+              );
+            }
             throw new Error(
-              err.response?.data?.error?.message ||
+              err.response.data?.error?.message ||
                 "Invalid email or password"
             );
           }

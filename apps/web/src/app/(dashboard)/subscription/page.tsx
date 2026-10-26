@@ -336,6 +336,76 @@ function CancelModal({
   );
 }
 
+function DemoPaymentModal({
+  planName,
+  cycle,
+  amountInPaise,
+  onClose,
+  onConfirm,
+  isLoading,
+}: {
+  planName: string;
+  cycle: 'MONTHLY' | 'YEARLY';
+  amountInPaise: number;
+  onClose: () => void;
+  onConfirm: () => void;
+  isLoading: boolean;
+}) {
+  const amount = (amountInPaise / 100).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={isLoading ? undefined : onClose} />
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="demo-payment-title"
+        className="relative bg-card border border-border rounded-2xl p-6 w-full max-w-md shadow-xl animate-scale-in"
+      >
+        <div className="flex items-center gap-3 mb-4">
+          <div className="p-2 rounded-full bg-amber-100 dark:bg-amber-500/20">
+            <Shield className="h-5 w-5 text-amber-600 dark:text-amber-400" />
+          </div>
+          <h3 id="demo-payment-title" className="text-heading-sm font-display text-foreground">
+            Demo checkout
+          </h3>
+        </div>
+
+        <p className="text-body-sm text-muted-foreground mb-3">
+          This is a demonstration environment. Confirming activates the{' '}
+          <span className="font-medium text-foreground">{planName}</span> plan (
+          {cycle === 'YEARLY' ? 'yearly' : 'monthly'}) as a <strong>simulated transaction</strong>.
+        </p>
+        <p className="text-body-sm text-muted-foreground mb-6">
+          Displayed price: ₹{amount} (incl. GST). <strong>No real payment is made</strong> and no
+          payment details are requested.
+        </p>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={onClose}
+            disabled={isLoading}
+            className="flex-1 rounded-lg border border-border px-4 py-2.5 text-body-sm font-medium text-foreground hover:bg-muted transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={isLoading}
+            className="flex-1 rounded-lg bg-primary-500 px-4 py-2.5 text-body-sm font-semibold text-white hover:bg-primary-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {isLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+            Confirm demo purchase
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ------------------------------------------------------------------ */
 /* Page                                                               */
 /* ------------------------------------------------------------------ */
@@ -365,6 +435,15 @@ export default function SubscriptionPage() {
   const [billingCycle, setBillingCycle] = useState<'MONTHLY' | 'YEARLY'>('MONTHLY');
   const [invoicePage, setInvoicePage] = useState(1);
   const invoicesPerPage = 10;
+
+  // Demo checkout state (server-reported paymentMode === 'demo')
+  const [demoOrder, setDemoOrder] = useState<{
+    orderId: string;
+    amount: number;
+    planName: string;
+    cycle: 'MONTHLY' | 'YEARLY';
+  } | null>(null);
+  const [isDemoConfirming, setIsDemoConfirming] = useState(false);
 
   // Upgrade modal state
   const [upgradeTarget, setUpgradeTarget] = useState<{
@@ -405,10 +484,17 @@ export default function SubscriptionPage() {
         billingCycle: cycle,
       });
 
-      const { orderId, amount, currency, keyId } = res.data.data;
+      const { orderId, amount, currency, keyId, paymentMode, planName } = res.data.data;
+
+      if (paymentMode === 'demo') {
+        // Simulated checkout: the user confirms explicitly; nothing reaches Razorpay.
+        setDemoOrder({ orderId, amount, planName: planName || planSlug, cycle });
+        return;
+      }
 
       await openRazorpayCheckout({
         orderId,
+        paymentMode,
         amount,
         currency,
         keyId,
@@ -438,6 +524,22 @@ export default function SubscriptionPage() {
       );
     } finally {
       setIsCheckoutLoading(null);
+    }
+  };
+
+  // Complete a simulated (demo) checkout
+  const handleDemoConfirm = async () => {
+    if (!demoOrder) return;
+    setIsDemoConfirming(true);
+    try {
+      await api.post('/subscription/demo/confirm', { orderId: demoOrder.orderId });
+      toast.success('Demo subscription activated. No payment was taken.');
+      setDemoOrder(null);
+      fetchAll();
+    } catch (err: any) {
+      toast.error(err.response?.data?.error?.message || 'Demo checkout could not be completed.');
+    } finally {
+      setIsDemoConfirming(false);
     }
   };
 
@@ -1024,6 +1126,18 @@ export default function SubscriptionPage() {
           billingCycle={upgradeTarget.cycle}
           onClose={() => setUpgradeTarget(null)}
           onCheckout={handleCheckout}
+        />
+      )}
+
+      {/* Simulated checkout (demo deployment only) */}
+      {demoOrder && (
+        <DemoPaymentModal
+          planName={demoOrder.planName}
+          cycle={demoOrder.cycle}
+          amountInPaise={demoOrder.amount}
+          onClose={() => setDemoOrder(null)}
+          onConfirm={handleDemoConfirm}
+          isLoading={isDemoConfirming}
         />
       )}
     </div>

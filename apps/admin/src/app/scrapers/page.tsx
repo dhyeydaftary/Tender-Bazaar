@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useCallback, useEffect, useMemo, useRef } from 'react';
-import { triggerScraper, getScraperHealth, getScraperRuns } from '@/lib/admin-api';
-import type { ScraperHealthEntry, ScraperRun } from '@/lib/types';
+import { triggerScraper, getScraperHealth, getScraperRuns, getScraperEngineStatus } from '@/lib/admin-api';
+import type { ScraperEngineStatus, ScraperHealthEntry, ScraperRun } from '@/lib/types';
+import { computeScraperKpis, portalSuccessShares } from '@/lib/scraper-kpis';
 import {
   Bot,
   Play,
@@ -63,6 +64,8 @@ interface Portal {
   totalRuns: number;
   totalSuccessRuns: number;
   totalFailedRuns: number;
+  /** The API entry this row was built from; the KPI cards are computed from it. */
+  entry: ScraperHealthEntry;
 }
 
 interface ActivityEntry {
@@ -164,10 +167,10 @@ function deriveStatus(entry: ScraperHealthEntry): ScraperStatus {
 
 function toPortal(entry: ScraperHealthEntry): Portal {
   const run = entry.latestRun;
-  const totalFound =
-    run && run.totalFound !== undefined && run.totalFound !== null
-      ? (run.totalFound > 0 ? run.totalFound : (entry.totalTendersFound ?? 0))
-      : (entry.totalTendersFound ?? 0);
+  // The latest run's own figure. It used to fall back to totalTendersFound
+  // (the API's count of tenders in the database) when a run found 0, mixing
+  // two different quantities in the "Found" column and the KPI card.
+  const totalFound = run?.totalFound ?? 0;
   const newTenders = run?.newTenders ?? 0;
   const duplicates = run?.duplicates ?? 0;
   const errors = run?.errors ?? 0;
@@ -188,6 +191,7 @@ function toPortal(entry: ScraperHealthEntry): Portal {
     totalRuns: entry.totalRuns,
     totalSuccessRuns: entry.totalSuccessRuns,
     totalFailedRuns: entry.totalFailedRuns,
+    entry,
   };
 }
 
@@ -326,6 +330,9 @@ export default function ScrapersPage() {
   const [showLogsPortal, setShowLogsPortal] = useState<string | null>(null);
   const [modalRuns, setModalRuns] = useState<ScraperRun[]>([]);
   const [modalLoading, setModalLoading] = useState(false);
+  // Which engine answers the API server; drives the demo-mode notice. Null
+  // until known, and a failed lookup simply shows no notice.
+  const [engine, setEngine] = useState<ScraperEngineStatus | null>(null);
 
   useEffect(() => {
     if (!showLogsPortal) {
@@ -365,6 +372,10 @@ export default function ScrapersPage() {
    * portal cannot blank the whole feed.
    */
   const loadData = useCallback(async () => {
+    getScraperEngineStatus()
+      .then(setEngine)
+      .catch(() => setEngine(null));
+
     const health = await getScraperHealth();
     setPortals(health.map(toPortal));
 
@@ -417,36 +428,20 @@ export default function ScrapersPage() {
 
   // ── Derived values (all from real API data) ───────────────────────────
 
-  const activeScrapers = portals.filter((p) => p.enabled).length;
+  // KPIs come from the run records (see lib/scraper-kpis.ts), not the drifting
+  // ScraperHealth counters.
+  const kpis = useMemo(() => computeScraperKpis(portals.map((p) => p.entry)), [portals]);
+  const activeScrapers = kpis.enabled;
+  const tendersInLatestRuns = kpis.tendersFoundLatest;
+  const successRate = kpis.successRate;
 
-  /**
-   * Tenders reported by each portal's most recent run. Deliberately NOT
-   * labelled "today" or "all-time": the API exposes only the latest run per
-   * portal, and ScraperHealth.totalTendersFound is 0 for most portals, so
-   * neither claim would be true.
-   */
-  const tendersInLatestRuns = portals.reduce((s, p) => s + p.tendersFound, 0);
-
-  const { successRate, totalRunsAllPortals } = useMemo(() => {
-    const runs = portals.reduce((s, p) => s + p.totalRuns, 0);
-    const ok = portals.reduce((s, p) => s + p.totalSuccessRuns, 0);
-    return {
-      successRate: runs > 0 ? Math.round((ok / runs) * 100) : 0,
-      totalRunsAllPortals: runs,
-    };
-  }, [portals]);
-
-  /** Per-portal success rate from real run tallies; portals with no runs are omitted. */
+  /** Per-portal share of finished runs that completed; portals with none are omitted. */
   const portalRates = useMemo(
     () =>
       portals
-        .filter((p) => p.totalRuns > 0)
-        .map((p) => ({
-          name: p.name,
-          success: Math.round((p.totalSuccessRuns / p.totalRuns) * 100),
-          failure: Math.round((p.totalFailedRuns / p.totalRuns) * 100),
-          totalRuns: p.totalRuns,
-        })),
+        .map((p) => ({ name: p.name, ...portalSuccessShares(p.entry) }))
+        .filter((p) => p.finished > 0)
+        .map((p) => ({ name: p.name, success: p.success, failure: p.failure, totalRuns: p.finished })),
     [portals],
   );
 
@@ -831,6 +826,16 @@ export default function ScrapersPage() {
         </button>
       </div>
 
+      {engine?.simulated && (
+        <div className="flex items-start gap-2 rounded-lg border border-blue-500/30 bg-blue-500/10 px-4 py-2.5 text-sm text-blue-400">
+          <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>
+            Demo mode: runs on this page are simulated by the demo scraper. No external tender
+            portal is contacted and no tenders are added.
+          </span>
+        </div>
+      )}
+
       {/* ---------------------------------------------------------------- */}
       {/* 1. Overview Cards */}
       {/* ---------------------------------------------------------------- */}
@@ -855,7 +860,7 @@ export default function ScrapersPage() {
         <div className="bg-card border border-border rounded-xl p-5">
           <div className="flex items-center justify-between mb-3">
             <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-              Active Scrapers
+              Enabled Scrapers
             </span>
             <Activity className="w-4 h-4 text-emerald-400" />
           </div>
@@ -874,17 +879,21 @@ export default function ScrapersPage() {
             <span className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
               Success Rate
             </span>
-            <TrendingUp className="w-4 h-4 text-[#00D4AA]" />
+            <TrendingUp className="w-4 h-4 text-accent-500" />
           </div>
-          <p className="text-2xl font-bold text-foreground">{successRate}%</p>
+          <p className="text-2xl font-bold text-foreground">
+            {successRate === null ? '—' : `${successRate}%`}
+          </p>
           <div className="mt-2 h-1.5 bg-muted rounded-full overflow-hidden">
             <div
-              className="h-full rounded-full bg-[#00D4AA] transition-all"
-              style={{ width: `${successRate}%` }}
+              className="h-full rounded-full bg-accent-500 transition-all"
+              style={{ width: `${successRate ?? 0}%` }}
             />
           </div>
           <p className="text-xs text-muted-foreground mt-1">
-            {totalRunsAllPortals} recorded run{totalRunsAllPortals === 1 ? '' : 's'}
+            {kpis.completedRuns} of {kpis.finishedRuns} finished run{kpis.finishedRuns === 1 ? '' : 's'} completed
+            {kpis.failedRuns > 0 ? ` · ${kpis.failedRuns} failed` : ''}
+            {kpis.completedWithErrors > 0 ? ` · ${kpis.completedWithErrors} with page errors` : ''}
           </p>
         </div>
       </div>
@@ -1319,7 +1328,7 @@ export default function ScrapersPage() {
                 </span>
                 <div className="flex-1 h-4 bg-muted rounded-full overflow-hidden flex">
                   <div
-                    className="h-full bg-[#00D4AA] transition-all"
+                    className="h-full bg-accent-500 transition-all"
                     style={{ width: `${p.success}%` }}
                   />
                   <div

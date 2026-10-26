@@ -27,6 +27,8 @@ pnpm-debug.log*
 # local env files
 .env
 .env*.local
+# Server demo secrets (generated on the VPS only; the .example stays tracked)
+.env.demo.server
 
 # vercel
 .vercel

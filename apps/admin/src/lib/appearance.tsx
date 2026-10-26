@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, useContext, useState, useEffect } from 'react';
+import { ACCENT_VAR, DEFAULT_BRAND_COLORS, SECONDARY_VAR, brandColorProperties } from './theme-colors';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    APPEARANCE & THEME MANAGEMENT
@@ -13,18 +14,23 @@ export interface AppearanceContextType {
   setFont: (font: string) => void;
   primaryColor: string;
   setPrimaryColor: (color: string) => void;
+  /** Live brand colors, for consumers that need a hex value (e.g. charts). */
+  secondaryColor: string;
+  accentColor: string;
   isCompact: boolean;
   toggleCompact: () => void;
   setIsCompact: (compact: boolean) => void;
 }
 
 export const AppearanceContext = createContext<AppearanceContextType>({
-  isDark: true,
+  isDark: false,
   toggleTheme: () => {},
   font: 'plus-jakarta-sans',
   setFont: () => {},
   primaryColor: '#FF6B35',
   setPrimaryColor: () => {},
+  secondaryColor: DEFAULT_BRAND_COLORS.secondary,
+  accentColor: DEFAULT_BRAND_COLORS.accent,
   isCompact: false,
   toggleCompact: () => {},
   setIsCompact: () => {},
@@ -135,11 +141,15 @@ export function applyAppearanceSettings({
   }
 
   if (secondaryColor) {
-    root.style.setProperty('--color-secondary-900', secondaryColor);
+    for (const [name, value] of Object.entries(brandColorProperties(SECONDARY_VAR, secondaryColor))) {
+      root.style.setProperty(name, value);
+    }
   }
 
   if (accentColor) {
-    root.style.setProperty('--color-accent-500', accentColor);
+    for (const [name, value] of Object.entries(brandColorProperties(ACCENT_VAR, accentColor))) {
+      root.style.setProperty(name, value);
+    }
     try {
       root.style.setProperty('--accent', hexToHsl(accentColor));
     } catch (e) {}
@@ -163,15 +173,17 @@ export function applyAppearanceSettings({
 }
 
 export function AppearanceProvider({ children }: { children: React.ReactNode }) {
-  const [isDark, setIsDark] = useState(true);
+  const [isDark, setIsDark] = useState(false);
   const [font, setFontState] = useState('plus-jakarta-sans');
   const [primaryColor, setPrimaryColorState] = useState('#FF6B35');
+  const [secondaryColor, setSecondaryColorState] = useState<string>(DEFAULT_BRAND_COLORS.secondary);
+  const [accentColor, setAccentColorState] = useState<string>(DEFAULT_BRAND_COLORS.accent);
   const [isCompact, setIsCompactState] = useState(false);
 
   useEffect(() => {
     try {
       const savedTheme = localStorage.getItem('tb_admin_theme');
-      const darkVal = savedTheme ? savedTheme !== 'light' : true;
+      const darkVal = savedTheme ? savedTheme === 'dark' : false;
       setIsDark(darkVal);
 
       const savedCompact = localStorage.getItem('tb_admin_compact') === 'true';
@@ -185,6 +197,8 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
       const sColor = savedColors.secondary || '#1B2845';
       const aColor = savedColors.accent || '#00D4AA';
       setPrimaryColorState(pColor);
+      setSecondaryColorState(sColor);
+      setAccentColorState(aColor);
 
       applyAppearanceSettings({
         isDark: darkVal,
@@ -199,13 +213,15 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
     const handleSync = () => {
       try {
         const theme = localStorage.getItem('tb_admin_theme');
-        setIsDark(theme !== 'light');
+        setIsDark(theme === 'dark');
         const compact = localStorage.getItem('tb_admin_compact') === 'true';
         setIsCompactState(compact);
         const f = localStorage.getItem('tb_admin_font');
         if (f) setFontState(f);
         const c = JSON.parse(localStorage.getItem('tb_admin_colors') || '{}');
         if (c.primary) setPrimaryColorState(c.primary);
+        if (c.secondary) setSecondaryColorState(c.secondary);
+        if (c.accent) setAccentColorState(c.accent);
       } catch (e) {}
     };
 
@@ -253,6 +269,8 @@ export function AppearanceProvider({ children }: { children: React.ReactNode }) 
         setFont,
         primaryColor,
         setPrimaryColor,
+        secondaryColor,
+        accentColor,
         isCompact,
         toggleCompact,
         setIsCompact,

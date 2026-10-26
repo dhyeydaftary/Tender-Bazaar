@@ -1,30 +1,9 @@
 import axios from 'axios';
 import { prisma } from '../../config/database';
-import redis from '../../config/redis';
 import { AppError } from '../../shared/middleware/error-handler';
 import { env } from '../../config/env';
+import { planConfigService } from '../subscriptions/plan-config.service';
 import { aiEligibilityResponseSchema } from './validation';
-
-// Plan limits for AI eligibility checks per month
-const PLAN_ELIGIBILITY_LIMITS: Record<string, number> = {
-  free: 1,
-  starter: 5,
-  professional: 50,
-  enterprise: -1, // unlimited
-};
-
-function getMonthKey(userId: string): string {
-  const now = new Date();
-  const yyyy = now.getUTCFullYear();
-  const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
-  return `eligibility:count:${userId}:${yyyy}-${mm}`;
-}
-
-function getMonthTTL(): number {
-  const now = new Date();
-  const endOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
-  return Math.ceil((endOfMonth.getTime() - now.getTime()) / 1000);
-}
 
 async function getUserPlanSlug(userId: string): Promise<string> {
   const subscription = await prisma.subscription.findUnique({
@@ -39,47 +18,26 @@ async function getUserPlanSlug(userId: string): Promise<string> {
   return subscription.plan.slug;
 }
 
-async function checkPlanLimit(userId: string, planSlug: string): Promise<void> {
-  const limit = PLAN_ELIGIBILITY_LIMITS[planSlug] ?? 0;
-
-  // Unlimited
-  if (limit === -1) return;
-
-  if (planSlug === 'free') {
-    // Free plan: limit 1 ever (not per month)
-    const existingCount = await prisma.eligibilityCheck.count({
-      where: { userId },
-    });
-    if (existingCount >= 1) {
-      throw new AppError(
-        'Monthly eligibility check limit reached. Upgrade your plan.',
-        403,
-        'PLAN_LIMIT_EXCEEDED'
-      );
-    }
-    return;
-  }
-
-  // Paid plans: monthly limit via Redis
-  const redisKey = getMonthKey(userId);
-  const currentCount = parseInt((await redis.get(redisKey)) || '0', 10);
-
-  if (currentCount >= limit) {
+/**
+ * Enforce the plan's AI check allowance.
+ *
+ * Limits and usage come from planConfigService — the plan's `maxAiChecks` and
+ * the subscription counters — exactly what the requireAiCheck middleware
+ * enforces and GET /subscription/usage reports to the AI Checks card. This
+ * module used to keep its own hardcoded limits (Starter 5 while the plan said
+ * 10) and a Redis counter nothing else read, so the card always showed 0 used
+ * against a limit that was not the one enforced. Checked here as well as in the
+ * middleware because bulk checks run several checks behind one request.
+ */
+async function checkPlanLimit(userId: string): Promise<void> {
+  const { allowed } = await planConfigService.checkLimit(userId, 'maxAiChecks');
+  if (!allowed) {
     throw new AppError(
-      'Monthly eligibility check limit reached. Upgrade your plan.',
+      'AI eligibility check limit reached for your plan. Upgrade your plan.',
       403,
       'PLAN_LIMIT_EXCEEDED'
     );
   }
-}
-
-async function incrementUsage(userId: string): Promise<void> {
-  const redisKey = getMonthKey(userId);
-  const ttl = getMonthTTL();
-  const pipeline = redis.pipeline();
-  pipeline.incr(redisKey);
-  pipeline.expire(redisKey, ttl);
-  await pipeline.exec();
 }
 
 function basicFallbackCheck(
@@ -276,8 +234,7 @@ export const eligibilityService = {
     }
 
     // Check plan limits
-    const planSlug = await getUserPlanSlug(userId);
-    await checkPlanLimit(userId, planSlug);
+    await checkPlanLimit(userId);
 
     let aiResult: any = null;
 
@@ -408,8 +365,8 @@ export const eligibilityService = {
       },
     });
 
-    // Increment usage counter
-    await incrementUsage(userId);
+    // Count the check against the plan (the counter the usage API reads)
+    await planConfigService.incrementUsage(userId, 'maxAiChecks');
 
     // Provenance, forwarded from the service rather than inferred here.
     //

@@ -256,7 +256,7 @@ const PLANS = [
     features: [
       '5 tender views/day',
       '1 smart alert',
-      '1 AI eligibility check (total)',
+      '1 AI eligibility check/month',
       'Basic search',
       'Email notifications',
     ],
@@ -272,7 +272,7 @@ const PLANS = [
     features: [
       '50 tender views/day',
       '5 smart alerts',
-      '5 AI checks/month',
+      '10 AI checks/month',
       'Advanced search & filters',
       'Email + Push notifications',
       'Document downloads',

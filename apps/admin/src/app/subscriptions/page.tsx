@@ -116,7 +116,7 @@ function PlanTooltip({ active, payload, label }: any) {
   const color = item.payload?.color || '#3B82F6';
   const planName = label || item.payload?.name || 'Plan';
   return (
-    <div className="bg-slate-900/95 text-white border border-slate-700/80 rounded-xl px-3.5 py-2.5 shadow-xl backdrop-blur-md min-w-[130px]">
+    <div className="bg-secondary-900/95 text-white border border-slate-700/80 rounded-xl px-3.5 py-2.5 shadow-xl backdrop-blur-md min-w-[130px]">
       <p className="text-xs font-semibold text-white mb-1.5">{planName}</p>
       <div className="flex items-center gap-2 text-xs">
         <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: color }} />
@@ -134,7 +134,7 @@ function CycleTooltip({ active, payload }: any) {
   const name = item.name || item.payload?.name || 'Cycle';
   const color = item.payload?.color || '#FF6B35';
   return (
-    <div className="bg-slate-900/95 text-white border border-slate-700/80 rounded-xl px-3.5 py-2.5 shadow-xl backdrop-blur-md min-w-[130px]">
+    <div className="bg-secondary-900/95 text-white border border-slate-700/80 rounded-xl px-3.5 py-2.5 shadow-xl backdrop-blur-md min-w-[130px]">
       <p className="text-xs font-semibold text-white mb-1.5">{name}</p>
       <div className="flex items-center gap-2 text-xs">
         <span className="w-2.5 h-2.5 rounded-full shrink-0 shadow-sm" style={{ backgroundColor: color }} />

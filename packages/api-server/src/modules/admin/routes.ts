@@ -62,6 +62,7 @@ router.get('/analytics/search-trends', adminController.getSearchTrends);
    ═══════════════════════════════════════════════════════════════ */
 
 router.get('/scrapers', adminController.getScraperList);
+router.get('/scrapers/engine', adminController.getScraperEngineStatus);
 router.get('/scrapers/:portalName/runs', adminController.getScraperRuns);
 router.post('/scrapers/:portalName/trigger', adminController.triggerScraper);
 router.patch('/scrapers/:portalName', adminController.updateScraper);

@@ -47,12 +47,14 @@ const config: Config = {
           DEFAULT: 'hsl(var(--secondary))',
           foreground: 'hsl(var(--secondary-foreground))',
           800: '#2A3249',
-          900: 'var(--color-secondary-900, #1B2845)',
+          // Channel form so opacity modifiers (e.g. /40) are generated; the
+          // channels are set from the saved brand color (lib/theme-colors.ts).
+          900: 'rgb(var(--color-secondary-900-rgb, 27 40 69) / <alpha-value>)',
         },
         accent: {
           DEFAULT: 'hsl(var(--accent))',
           foreground: 'hsl(var(--accent-foreground))',
-          500: 'var(--color-accent-500, #00D4AA)',
+          500: 'rgb(var(--color-accent-500-rgb, 0 212 170) / <alpha-value>)',
         },
         sidebar: {
           DEFAULT: 'hsl(var(--sidebar))',

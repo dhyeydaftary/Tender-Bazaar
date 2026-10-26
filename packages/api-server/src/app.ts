@@ -6,6 +6,7 @@ import compression from 'compression';
 import { errorHandler } from './shared/middleware/error-handler';
 import { sentryErrorHandler } from './shared/middleware/sentry';
 import { apiLimiter } from './shared/middleware/rate-limiter';
+import { buildHealthReport } from './shared/health';
 import { prisma } from './config/database';
 import redis from './config/redis';
 import authRoutes from './modules/auth/routes';
@@ -91,57 +92,32 @@ app.use(express.urlencoded({ extended: true }));
 app.use('/api/', apiLimiter);
 
 // Health check
-app.get('/health', async (_req, res) => {
-  const health = {
-    status: 'ok' as string,
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime(),
-    services: {} as Record<string, string>,
-  };
-
-  // Check DB
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    health.services.database = 'healthy';
-  } catch {
-    health.services.database = 'unhealthy';
-    health.status = 'degraded';
-  }
-
-  // Check Redis
-  try {
-    await redis.ping();
-    health.services.redis = 'healthy';
-  } catch {
-    health.services.redis = 'unhealthy';
-    health.status = 'degraded';
-  }
-
-  // Check Elasticsearch.
-  //
-  // GET /api/v1/tenders reads exclusively from Elasticsearch, so without this
-  // check /health reported "ok" while the primary tender-listing endpoint was
-  // failing — which is exactly how the original index_not_found outage stayed
-  // invisible. Both the cluster and the tenders index are checked, because a
-  // reachable cluster with no index is still a broken search.
-  try {
-    const { esClient } = await import('./config/elasticsearch');
-    const { TENDER_INDEX } = await import('./config/elasticsearch-setup');
-    await esClient.cluster.health({});
-    const indexExists = await esClient.indices.exists({ index: TENDER_INDEX });
-    if (indexExists) {
-      health.services.elasticsearch = 'healthy';
-    } else {
-      health.services.elasticsearch = `index "${TENDER_INDEX}" missing`;
-      health.status = 'degraded';
-    }
-  } catch {
-    health.services.elasticsearch = 'unhealthy';
-    health.status = 'degraded';
-  }
+const healthHandler: express.RequestHandler = async (_req, res) => {
+  const health = await buildHealthReport({
+    database: () => prisma.$queryRaw`SELECT 1`,
+    redis: () => redis.ping(),
+    // GET /api/v1/tenders reads exclusively from Elasticsearch, so without this
+    // check /health reported "ok" while the primary tender-listing endpoint was
+    // failing — which is exactly how the original index_not_found outage stayed
+    // invisible. Both the cluster and the tenders index are checked, because a
+    // reachable cluster with no index is still a broken search.
+    elasticsearch: async () => {
+      const { esClient } = await import('./config/elasticsearch');
+      const { TENDER_INDEX } = await import('./config/elasticsearch-setup');
+      await esClient.cluster.health({});
+      const indexExists = await esClient.indices.exists({ index: TENDER_INDEX });
+      return indexExists ? 'healthy' : `index "${TENDER_INDEX}" missing`;
+    },
+  });
 
   res.status(health.status === 'ok' ? 200 : 503).json(health);
-});
+};
+
+// `/health` for container health checks; `/api/v1/health` for browser clients,
+// which reach the API only under /api/* through the gateway (the admin panel's
+// Service Health card used to request `/health` on its own origin and 404).
+app.get('/health', healthHandler);
+app.get('/api/v1/health', healthHandler);
 
 // API info
 app.get('/api/v1', (_req, res) => {
