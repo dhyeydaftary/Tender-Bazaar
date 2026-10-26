@@ -21,19 +21,14 @@ import { useAuthStore } from '@/lib/auth';
 import { useAppearance } from '@/lib/appearance';
 
 /**
- * Quick-fill accounts. By default the tabs fill the development fixture
- * accounts from prisma/seed.ts. A demo build (docker-compose.demo-local.yml)
- * sets these build-time emails instead: the tabs then fill the demo account's
- * email and the user types its password. NEXT_PUBLIC_* values are inlined at
- * build time, so changing them requires rebuilding the admin image.
+ * Email the role tabs fill in. By default the development fixture accounts from
+ * prisma/seed.ts; a demo build (docker-compose.demo-local.yml) sets these
+ * build-time emails instead. The password is never filled: the user always
+ * types it. NEXT_PUBLIC_* values are inlined at build time, so changing them
+ * requires rebuilding the admin image.
  */
 const DEMO_SUPER_ADMIN_EMAIL = process.env.NEXT_PUBLIC_DEMO_SUPER_ADMIN_EMAIL || '';
 const DEMO_ADMIN_EMAIL = process.env.NEXT_PUBLIC_DEMO_ADMIN_EMAIL || '';
-const DEMO_LOGIN = Boolean(DEMO_SUPER_ADMIN_EMAIL || DEMO_ADMIN_EMAIL);
-
-/** "superadmin@demo.example" → "superadmin@..." (same style as the dev pills). */
-const pillLabel = (demoEmail: string, devLabel: string) =>
-  DEMO_LOGIN ? (demoEmail ? `${demoEmail.split('@')[0]}@...` : 'not configured') : devLabel;
 
 export default function LoginPage() {
   const router = useRouter();
@@ -73,14 +68,14 @@ export default function LoginPage() {
   const selectSuperAdmin = () => {
     setSelectedRole('superadmin');
     setEmail(DEMO_SUPER_ADMIN_EMAIL || 'superadmin@tenderbazaar.com');
-    setPassword('SuperAdmin@123');
+    setPassword('');
     setError('');
   };
 
   const selectAdmin = () => {
     setSelectedRole('admin');
     setEmail(DEMO_ADMIN_EMAIL || 'admin@tenderbazaar.com');
-    setPassword('Admin@123');
+    setPassword('');
     setError('');
   };
 
@@ -264,48 +259,8 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Quick Credential Hint Pills */}
-          <div className="mt-5 pt-4 border-t border-border">
-            <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-2">
-              <span className="font-semibold text-foreground">Quick Access Accounts:</span>
-              <span className="text-[10px] text-primary-500 font-sans">
-                Click to autofill credentials
-              </span>
-            </div>
-            <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
-              <button
-                type="button"
-                onClick={selectSuperAdmin}
-                className="text-left cursor-pointer p-2.5 rounded-lg bg-muted/40 border border-border hover:border-primary-500/40 hover:bg-muted/70 transition-colors"
-              >
-                <div className="text-amber-500 font-sans font-bold text-[10px] uppercase flex items-center justify-between">
-                  <span>Super Admin</span>
-                  <span className="text-[9px] text-amber-500/80 font-normal">Auto-fill</span>
-                </div>
-                <div className="text-foreground font-medium text-xs truncate mt-0.5">
-                  {DEMO_SUPER_ADMIN_EMAIL || 'superadmin@tenderbazaar.com'}
-                </div>
-                <div className="text-[10px] text-muted-foreground">SuperAdmin@123</div>
-              </button>
-              <button
-                type="button"
-                onClick={selectAdmin}
-                className="text-left cursor-pointer p-2.5 rounded-lg bg-muted/40 border border-border hover:border-primary-500/40 hover:bg-muted/70 transition-colors"
-              >
-                <div className="text-primary-500 font-sans font-bold text-[10px] uppercase flex items-center justify-between">
-                  <span>Admin</span>
-                  <span className="text-[9px] text-primary-500/80 font-normal">Auto-fill</span>
-                </div>
-                <div className="text-foreground font-medium text-xs truncate mt-0.5">
-                  {DEMO_ADMIN_EMAIL || 'admin@tenderbazaar.com'}
-                </div>
-                <div className="text-[10px] text-muted-foreground">Admin@123</div>
-              </button>
-            </div>
-          </div>
-
           {/* Footer Security Badge */}
-          <div className="mt-5 flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
+          <div className="mt-6 pt-4 border-t border-border flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
             <Shield className="w-3.5 h-3.5 text-accent-500 shrink-0" />
             <span>256-Bit TLS Encryption • Audit Logged • RBAC Protected</span>
           </div>
