@@ -116,7 +116,6 @@ export interface UserRecord {
   updatedAt: string;
   plan: string | null;
   planSlug: string | null;
-  status: string;
   company: string | null;
 }
 
@@ -225,8 +224,47 @@ export interface ScraperHealthEntry {
   lastError: string | null;
   /** null when the portal has never run. */
   latestRun: ScraperLatestRun | null;
+  /** Outcomes counted from ScrapingRun records (authoritative). */
+  runStats: ScraperRunStats;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Per-portal run outcomes; `completedWithErrors` is a subset of `completed`. */
+export interface ScraperRunStats {
+  total: number;
+  completed: number;
+  completedWithErrors: number;
+  failed: number;
+  cancelled: number;
+  inProgress: number;
+}
+
+/**
+ * GET /admin/scrapers/engine — which scraper engine answers the API server.
+ * `mode: 'demo'` means runs are simulated and no external portal is contacted.
+ */
+export interface ScraperEngineStatus {
+  reachable: boolean;
+  mode: 'demo' | 'live' | 'unknown';
+  simulated: boolean;
+  schedulerRunning: boolean | null;
+  enabledPortals: number | null;
+  notice: string | null;
+  url: string;
+  checkedAt: string;
+}
+
+/** POST /admin/scrapers/:portalName/trigger */
+export interface TriggerScraperResult {
+  message: string;
+  jobId: string | null;
+  registryKey: string;
+  portalName: string;
+  simulated: boolean;
+  dispatch: 'engine' | 'queue';
+  triggeredBy: string;
+  triggeredAt: string;
 }
 
 // ── Plan Config ────────────────────────────────────────────────────────────

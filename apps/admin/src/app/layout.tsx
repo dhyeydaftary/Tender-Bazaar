@@ -112,12 +112,12 @@ function Sidebar() {
       {/* Logo */}
       <div className="flex items-center gap-2.5 px-4 h-16 border-b border-border shrink-0">
         <Link href="/" className="flex items-center gap-2.5 group">
-          <div className="w-9 h-9 rounded-xl bg-primary-500 flex items-center justify-center text-white font-extrabold text-sm shrink-0 group-hover:shadow-glow transition-shadow">
+          <div className="w-9 h-9 rounded-xl bg-primary-500 ring-2 ring-secondary-900/60 flex items-center justify-center text-white font-extrabold text-sm shrink-0 group-hover:shadow-glow transition-shadow">
             TB
           </div>
           {!collapsed && (
             <span className="text-foreground font-bold text-lg whitespace-nowrap">
-              Tender<span className="text-primary-500">Bazaar</span>
+              <span className="text-secondary-900 dark:text-foreground">Tender</span><span className="text-primary-500">Bazaar</span>
             </span>
           )}
         </Link>
@@ -168,7 +168,7 @@ function Sidebar() {
         {/* Admin profile */}
         {user && !collapsed && (
           <div className="flex items-center gap-3 px-3 py-2">
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500/30 to-accent-500/30 flex items-center justify-center shrink-0">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-secondary-900/40 to-accent-500/40 flex items-center justify-center shrink-0">
               <span className="text-xs font-bold text-primary-500">
                 {(user.name || '').split(' ').filter(Boolean).map(n => n[0]).join('') || 'A'}
               </span>
@@ -183,7 +183,7 @@ function Sidebar() {
         )}
         {user && collapsed && (
           <div className="flex justify-center py-2" title={`${user.name} (${user.role})`}>
-            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500/30 to-accent-500/30 flex items-center justify-center">
+            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-secondary-900/40 to-accent-500/40 flex items-center justify-center">
               <span className="text-xs font-bold text-primary-500">
                 {(user.name || '').split(' ').filter(Boolean).map(n => n[0]).join('') || 'A'}
               </span>
@@ -312,11 +312,11 @@ function TopBar() {
           <div className="absolute left-0 top-0 bottom-0 w-[280px] bg-card border-r border-border overflow-y-auto">
             {/* Logo */}
             <div className="flex items-center gap-2.5 px-4 h-16 border-b border-border">
-              <div className="w-9 h-9 rounded-xl bg-primary-500 flex items-center justify-center text-white font-extrabold text-sm">
+              <div className="w-9 h-9 rounded-xl bg-primary-500 ring-2 ring-secondary-900/60 flex items-center justify-center text-white font-extrabold text-sm">
                 TB
               </div>
               <span className="text-foreground font-bold text-lg">
-                Tender<span className="text-primary-500">Bazaar</span>
+                <span className="text-secondary-900 dark:text-foreground">Tender</span><span className="text-primary-500">Bazaar</span>
               </span>
             </div>
             <nav className="py-3 px-2">
@@ -383,9 +383,13 @@ function LoadingScreen() {
 function AuthGuard({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { isAuthenticated, isLoading } = useAuthStore();
+  const { isAuthenticated, isLoading, checkAuth } = useAuthStore();
   const isLoginPage = pathname === '/login';
   const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    checkAuth();
+  }, [checkAuth]);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated && !isLoginPage) {
@@ -454,10 +458,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               (function() {
                 try {
                   var theme = localStorage.getItem('tb_admin_theme');
-                  if (theme === 'light') {
-                    document.documentElement.classList.remove('dark');
-                  } else {
+                  if (theme === 'dark') {
                     document.documentElement.classList.add('dark');
+                  } else {
+                    document.documentElement.classList.remove('dark');
                   }
                   var font = localStorage.getItem('tb_admin_font');
                   var fontMap = {
@@ -470,17 +474,23 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
                     document.documentElement.style.setProperty('--font-family', fontMap[font]);
                   }
                   var colors = localStorage.getItem('tb_admin_colors');
+                  // Same variables as lib/theme-colors.ts, applied before
+                  // hydration so saved brand colors show without a flash.
+                  var setBrand = function(name, hex) {
+                    var m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(String(hex).trim());
+                    if (!m) return;
+                    var d = m[1].length === 3 ? m[1].replace(/(.)/g, '$1$1') : m[1];
+                    var n = parseInt(d, 16);
+                    document.documentElement.style.setProperty(name, hex);
+                    document.documentElement.style.setProperty(name + '-rgb', ((n >> 16) & 255) + ' ' + ((n >> 8) & 255) + ' ' + (n & 255));
+                  };
                   if (colors) {
                     var parsed = JSON.parse(colors);
                     if (parsed.primary) {
                       document.documentElement.style.setProperty('--color-primary-500', parsed.primary);
                     }
-                    if (parsed.secondary) {
-                      document.documentElement.style.setProperty('--color-secondary-900', parsed.secondary);
-                    }
-                    if (parsed.accent) {
-                      document.documentElement.style.setProperty('--color-accent-500', parsed.accent);
-                    }
+                    if (parsed.secondary) setBrand('--color-secondary-900', parsed.secondary);
+                    if (parsed.accent) setBrand('--color-accent-500', parsed.accent);
                   }
                 } catch(e) {}
               })();

@@ -28,6 +28,7 @@ import {
 } from 'lucide-react';
 import { cn, formatCurrency, getDeadlineInfo, getCategoryInfo } from '@/lib/utils';
 import { useLimitGate } from '@/lib/hooks/use-feature-gate';
+import { useSubscriptionStore } from '@/stores/subscription-store';
 import { UpgradeBanner } from '@/components/subscription';
 import api from '@/lib/api';
 
@@ -287,6 +288,14 @@ export default function BidAssistantPage() {
     }
   }, []);
 
+  // The limit banner below needs the plan and its usage loaded.
+  const fetchSubscription = useSubscriptionStore((s) => s.fetchSubscription);
+  const fetchUsage = useSubscriptionStore((s) => s.fetchUsage);
+  useEffect(() => {
+    fetchSubscription();
+    fetchUsage();
+  }, [fetchSubscription, fetchUsage]);
+
   useEffect(() => {
     fetchOverview();
     fetchActiveTenders();
@@ -334,7 +343,7 @@ export default function BidAssistantPage() {
   return (
     <div className="space-y-6">
       {/* Limit banner */}
-      {!aiCheckLimit.hasCapacity && !aiCheckLimit.isUnlimited && (
+      {aiCheckLimit.status === 'ready' && !aiCheckLimit.hasCapacity && !aiCheckLimit.isUnlimited && (
         <UpgradeBanner
           feature="AI Bid Assistant"
           requiredPlan="Professional"

@@ -12,6 +12,11 @@ export const verifyPaymentSchema = z.object({
   razorpaySignature: z.string().min(1, 'Razorpay signature is required'),
 });
 
+// The id is the server-minted demo order (payments/service.ts DEMO_ORDER_PREFIX).
+export const demoConfirmSchema = z.object({
+  orderId: z.string().regex(/^order_demo_[0-9a-f]{16}$/, 'A demo order ID is required'),
+});
+
 export const cancelSchema = z.object({
   reason: z.string().max(1000).optional(),
   cancelImmediately: z.boolean().default(false),

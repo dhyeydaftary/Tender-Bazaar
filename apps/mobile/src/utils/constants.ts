@@ -84,7 +84,7 @@ export const PLAN_FEATURES = {
     whatsappAlerts: false,
     corrigendumAlerts: false,
     maxAiChecks: 1,
-    aiChecksResetMonthly: false,
+    aiChecksResetMonthly: true,
     aiTenderSummary: false,
     aiBidAssistant: 'none' as const,
     tenderComparison: false,

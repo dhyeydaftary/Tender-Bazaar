@@ -2,6 +2,7 @@
 
 import { useMemo } from 'react';
 import { useSubscriptionStore, type SubscriptionPlan } from '@/stores/subscription-store';
+import { computeLimitState } from '@/lib/limit-state';
 
 /* ------------------------------------------------------------------ */
 /* Boolean features                                                   */
@@ -119,6 +120,7 @@ export function useLimitGate(limitName: NumericLimit) {
   const currentPlan = useSubscriptionStore((s) => s.currentPlan);
   const usage = useSubscriptionStore((s) => s.usage);
   const subscriptionStatus = useSubscriptionStore((s) => s.subscriptionStatus);
+  const usageStatus = useSubscriptionStore((s) => s.usageStatus);
   // Used to derive the minimum plan that grants this limit. There is no static
   // map for numeric limits (unlike MIN_PLAN_FOR_FEATURE), and hardcoding one
   // would drift from the real plan data — so it is computed from the plans the
@@ -126,16 +128,14 @@ export function useLimitGate(limitName: NumericLimit) {
   const plans = useSubscriptionStore((s) => s.plans);
 
   return useMemo(() => {
-    const limit = currentPlan ? ((currentPlan as any)[limitName] as number) : 0;
-    const isUnlimited = limit === -1;
-    const usageStat = usage.find((u) => u.feature === limitName);
-    const used = usageStat?.used ?? 0;
-    const hasCapacity = isUnlimited || used < limit;
-    const remaining = isUnlimited ? -1 : Math.max(0, limit - used);
-    const percentage = isUnlimited ? 0 : limit === 0 ? 100 : Math.round((used / limit) * 100);
+    const { status, limit, used, isUnlimited, hasCapacity, remaining, percentage, resetType } =
+      computeLimitState({ limitName, currentPlan, usage, subscriptionStatus, usageStatus });
     const label = FEATURE_LABELS[limitName] || limitName;
 
     return {
+      /** Whether the figures below are known yet ('loading' | 'error' | 'ready'). */
+      status,
+      resetType,
       hasCapacity,
       // Entitlements could not be verified — do not claim the user is out of
       // capacity on their plan when we simply do not know what their plan is.
@@ -162,7 +162,7 @@ export function useLimitGate(limitName: NumericLimit) {
       currentPlan: currentPlan?.name || 'Free',
       currentPlanSlug: currentPlan?.slug || 'free',
     };
-  }, [currentPlan, usage, subscriptionStatus, limitName, plans]);
+  }, [currentPlan, usage, subscriptionStatus, usageStatus, limitName, plans]);
 }
 
 /* ------------------------------------------------------------------ */

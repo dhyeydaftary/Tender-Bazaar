@@ -238,17 +238,29 @@ export default function AIEligibilityCheckPage() {
   const currentPlan = useSubscriptionStore((s) => s.currentPlan);
   const subscription = useSubscriptionStore((s) => s.subscription);
   const fetchSubscription = useSubscriptionStore((s) => s.fetchSubscription);
+  const fetchUsage = useSubscriptionStore((s) => s.fetchUsage);
   const hasPaidSubscription = (!isFreePlan && !!currentPlan && currentPlan.slug !== 'free') || (subscription?.status === 'ACTIVE' && currentPlan?.slug !== 'free');
 
-  useEffect(() => {
+  // The card needs both the plan (allowance) and the usage (checks used). Only
+  // the plan used to be fetched here, so `used` read 0 unless the subscription
+  // page had loaded usage earlier in the session — and never moved after a check.
+  const loadPlanAndUsage = useCallback(() => {
     fetchSubscription();
-  }, [fetchSubscription]);
+    fetchUsage();
+  }, [fetchSubscription, fetchUsage]);
+
+  useEffect(() => {
+    loadPlanAndUsage();
+  }, [loadPlanAndUsage]);
 
   // Plan limit gate for AI checks
   const aiCheckLimit = useLimitGate('maxAiChecks');
   const checksUsed = aiCheckLimit.used;
-  const checksLimit = aiCheckLimit.isUnlimited ? -1 : aiCheckLimit.limit;
-  const checksPercent = aiCheckLimit.isUnlimited ? 0 : checksLimit === 0 ? 100 : (checksUsed / checksLimit) * 100;
+  const checksLimit = aiCheckLimit.limit;
+  const checksPercent = aiCheckLimit.percentage;
+  const checksReady = aiCheckLimit.status === 'ready';
+  const allowancePeriod =
+    aiCheckLimit.resetType === 'monthly' ? ' this month' : aiCheckLimit.resetType === 'lifetime' ? ' (one-time allowance)' : '';
 
   /* ─── Fetch active tenders ─── */
 
@@ -409,6 +421,8 @@ export default function AIEligibilityCheckPage() {
       setShowResults(false);
     } finally {
       setIsAnalyzing(false);
+      // A check (or a limit refusal) changes the count the card shows.
+      fetchUsage();
     }
   }
 
@@ -424,8 +438,8 @@ export default function AIEligibilityCheckPage() {
 
   return (
     <div>
-      {/* Limit banner */}
-      {!aiCheckLimit.hasCapacity && !aiCheckLimit.isUnlimited && (
+      {/* Limit banner — only once the plan and usage are actually known */}
+      {checksReady && !aiCheckLimit.hasCapacity && !aiCheckLimit.isUnlimited && (
         <div className="mb-6">
           <UpgradeBanner
             feature="AI Eligibility Checks"
@@ -446,32 +460,58 @@ export default function AIEligibilityCheckPage() {
         </div>
 
         {/* Usage Stats Bar */}
-        <div className="bg-card border border-border rounded-xl p-4 min-w-[240px]">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-caption text-muted-foreground">
-              {aiCheckLimit.isUnlimited ? 'AI Checks (Unlimited)' : 'AI Checks'}
-            </span>
-            <span className={cn(
-              'text-caption font-mono font-semibold',
-              checksPercent > 80 ? 'text-amber-500' : 'text-foreground',
-            )}>
-              {aiCheckLimit.isUnlimited ? 'Unlimited' : `${checksUsed}/${checksLimit}`}
-            </span>
-          </div>
-          <div className="h-1.5 bg-muted rounded-full overflow-hidden">
-            <div
-              className={cn(
-                'h-full rounded-full transition-all duration-700',
-                checksPercent > 80 ? 'bg-amber-500' : 'bg-primary-500',
-              )}
-              style={{ width: `${aiCheckLimit.isUnlimited ? 100 : checksPercent}%` }}
-            />
-          </div>
-          <p className="text-[11px] text-muted-foreground mt-1.5">
-            {aiCheckLimit.isUnlimited
-              ? `Unlimited checks included with ${currentPlan?.name || 'Enterprise'} plan`
-              : `${Math.max(0, checksLimit - checksUsed)} checks remaining on ${currentPlan?.name || 'Free'} plan`}
-          </p>
+        <div className="bg-card border border-border rounded-xl p-4 min-w-[240px]" aria-live="polite">
+          {aiCheckLimit.status === 'error' ? (
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+              <div>
+                <p className="text-caption font-medium text-foreground">AI Checks</p>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Couldn&apos;t load your plan usage.{' '}
+                  <button type="button" onClick={loadPlanAndUsage} className="text-primary-500 hover:underline">
+                    Retry
+                  </button>
+                </p>
+              </div>
+            </div>
+          ) : !checksReady ? (
+            <div aria-busy="true">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-caption text-muted-foreground">AI Checks</span>
+                <span className="h-3 w-10 rounded bg-muted animate-pulse" />
+              </div>
+              <div className="h-1.5 bg-muted rounded-full" />
+              <p className="text-[11px] text-muted-foreground mt-1.5">Loading your plan…</p>
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-caption text-muted-foreground">
+                  {aiCheckLimit.isUnlimited ? 'AI Checks (Unlimited)' : 'AI Checks'}
+                </span>
+                <span className={cn(
+                  'text-caption font-mono font-semibold',
+                  !aiCheckLimit.isUnlimited && checksPercent > 80 ? 'text-amber-500' : 'text-foreground',
+                )}>
+                  {aiCheckLimit.isUnlimited ? 'Unlimited' : `${checksUsed}/${checksLimit}`}
+                </span>
+              </div>
+              <div className="h-1.5 bg-muted rounded-full overflow-hidden">
+                <div
+                  className={cn(
+                    'h-full rounded-full transition-all duration-700',
+                    !aiCheckLimit.isUnlimited && checksPercent > 80 ? 'bg-amber-500' : 'bg-primary-500',
+                  )}
+                  style={{ width: `${aiCheckLimit.isUnlimited ? 100 : checksPercent}%` }}
+                />
+              </div>
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                {aiCheckLimit.isUnlimited
+                  ? `Unlimited checks included with ${aiCheckLimit.currentPlan} plan`
+                  : `${aiCheckLimit.remaining} ${aiCheckLimit.remaining === 1 ? 'check' : 'checks'} remaining${allowancePeriod} on ${aiCheckLimit.currentPlan} plan`}
+              </p>
+            </>
+          )}
         </div>
       </div>
 

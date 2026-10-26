@@ -32,7 +32,7 @@ export const userListQuerySchema = z.object({
   search: z.string().optional(),
   plan: z.string().optional(),
   role: z.enum(['USER', 'ADMIN', 'SUPER_ADMIN']).optional(),
-  status: z.enum(['active', 'inactive']).optional(),
+  emailVerified: z.enum(['verified', 'unverified']).optional(),
   sortBy: z.enum(['createdAt', 'updatedAt', 'name', 'email']).default('createdAt'),
   sortOrder: z.enum(['asc', 'desc']).default('desc'),
 });
@@ -48,7 +48,7 @@ export const updateUserBodySchema = z.object({
 export const exportUsersQuerySchema = z.object({
   plan: z.string().optional(),
   role: z.enum(['USER', 'ADMIN', 'SUPER_ADMIN']).optional(),
-  status: z.enum(['active', 'inactive']).optional(),
+  emailVerified: z.enum(['verified', 'unverified']).optional(),
 });
 
 /* ════���═══════════════════════════���══════════════════════════════

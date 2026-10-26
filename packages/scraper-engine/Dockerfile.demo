@@ -1,0 +1,44 @@
+# Demo scraper — lightweight stand-in for the real scraper engine.
+#
+# Same package, different entry point (dist/demo/main.js). Unlike ./Dockerfile
+# this image has NO browser: it is node:20-alpine, not the Playwright image, and
+# Playwright's browser download is disabled. The demo entry point never imports
+# Playwright (tests/demo-isolation.test.ts enforces that), so nothing here can
+# drive a browser or scrape a portal.
+#
+# Built only by docker-compose.demo.yml. The real engine's Dockerfile is untouched.
+FROM node:20-alpine
+WORKDIR /app
+
+RUN apk add --no-cache openssl
+RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
+
+# Belt and braces: pnpm does not run Playwright's install script (it is not in
+# onlyBuiltDependencies), and this makes any browser download a no-op anyway.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
+COPY packages/scraper-engine/package.json packages/scraper-engine/
+COPY packages/shared/package.json packages/shared/
+COPY prisma/ prisma/
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store \
+    pnpm install --frozen-lockfile --store-dir=/pnpm-store
+
+COPY packages/scraper-engine/ packages/scraper-engine/
+COPY packages/shared/ packages/shared/
+RUN npx prisma generate
+RUN pnpm --filter @tenderbazaar/scraper-engine run build
+
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 appuser
+USER appuser
+
+ENV NODE_ENV=production
+ENV SCRAPER_API_PORT=4001
+ENV DEMO_SCRAPER_MODE=true
+EXPOSE 4001
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+  CMD wget -qO- http://127.0.0.1:4001/api/ready || exit 1
+
+CMD ["node", "packages/scraper-engine/dist/demo/main.js"]

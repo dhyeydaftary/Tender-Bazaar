@@ -3,6 +3,7 @@
 export {
   checkoutSchema,
   verifyPaymentSchema,
+  demoConfirmSchema,
   cancelSchema,
   upgradeSchema,
   switchBillingCycleSchema,

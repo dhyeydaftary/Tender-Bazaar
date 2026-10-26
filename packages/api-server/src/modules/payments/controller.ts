@@ -4,6 +4,7 @@ import { paymentService } from './service';
 import {
   checkoutSchema,
   verifyPaymentSchema,
+  demoConfirmSchema,
   cancelSchema,
   upgradeSchema,
   switchBillingCycleSchema,
@@ -95,10 +96,27 @@ export const paymentController = {
         verifyPaymentSchema.parse(req.body);
 
       const result = await paymentService.verifyPayment(
+        userId,
         razorpayOrderId,
         razorpayPaymentId,
         razorpaySignature
       );
+
+      res.json({ success: true, data: result });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  // ─── Confirm Demo Payment (PAYMENTS_DEMO_MODE only) ──────────
+
+  async confirmDemoPayment(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = (req as any).user?.id;
+      if (!userId) throw new AppError('Not authenticated', 401, 'NOT_AUTHENTICATED');
+
+      const { orderId } = demoConfirmSchema.parse(req.body);
+      const result = await paymentService.confirmDemoPayment(userId, orderId);
 
       res.json({ success: true, data: result });
     } catch (error) {

@@ -1,6 +1,7 @@
 import { prisma } from '../../../config/database';
 import { AppError } from '../../../shared/middleware/error-handler';
 import { enqueueTenderIndex } from '../../../queue/tender-index-queue';
+import { OPEN_TENDER_STATUSES, CLOSED_TENDER_STATUSES } from '../../tenders/status-groups';
 
 interface TenderListFilters {
   page: number;
@@ -177,8 +178,8 @@ export const tendersService = {
       avgValue,
     ] = await Promise.all([
       prisma.tender.count(),
-      prisma.tender.count({ where: { status: 'ACTIVE' } }),
-      prisma.tender.count({ where: { status: { in: ['CLOSED', 'AWARDED', 'CANCELLED'] } } }),
+      prisma.tender.count({ where: { status: { in: [...OPEN_TENDER_STATUSES] } } }),
+      prisma.tender.count({ where: { status: { in: [...CLOSED_TENDER_STATUSES] } } }),
       prisma.tender.count({ where: { createdAt: { gte: startOfMonth } } }),
       prisma.tender.groupBy({
         by: ['category'],

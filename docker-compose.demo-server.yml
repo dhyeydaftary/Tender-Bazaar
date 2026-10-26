@@ -1,0 +1,175 @@
+# ───────────────────────────────────────────────────────────────────────────
+# Server demo overlay — the VPS deployment of the isolated demo.
+#
+# Layer it LAST, with the server-side env file (generated on the VPS only):
+#
+#   docker compose -p tenderbazaar-demo --env-file .env.demo.server \
+#     -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.demo.yml \
+#     -f docker-compose.demo-local.yml -f docker-compose.demo-server.yml  <command>
+#
+# On top of the files before it, this overlay:
+#   - keeps the network inside the demo project (prod.yml would name it
+#     `tenderbazaar-network`, shared with any real deployment using prod.yml);
+#   - replaces demo-local's 127.0.0.1:3100/3101/4100 with ONE entry point, the
+#     internal gateway (docker/demo-gateway.conf) on 127.0.0.1:8080 (web) and
+#     127.0.0.1:8081 (admin), each routing /api/* to api-server. Nothing is
+#     published on a public interface; access is an SSH tunnel now and a host
+#     HTTPS proxy later;
+#   - builds the frontends with a RELATIVE API URL (/api/v1), so the same images
+#     work through the tunnel and behind HTTPS — the phase is chosen only by
+#     FRONTEND_URL / ADMIN_URL (CORS origins) in the env file, no rebuild;
+#   - requires real secrets and BOTH demo admin pairs (`:?` = refuse to start);
+#   - loads no env_file anywhere, so no provider credentials (email, SMS,
+#     WhatsApp, push, payments, AI) can reach a container;
+#   - tags images tenderbazaar-demo-server/* so building this never overwrites
+#     the local demo's tenderbazaar-demo-* images, and never pulls them.
+#
+# The real scraper stays excluded (docker-compose.demo.yml profile). Verify the
+# merged result with scripts/check-demo-isolation.py and check-demo-compose.py.
+# ───────────────────────────────────────────────────────────────────────────
+
+name: tenderbazaar-demo
+
+networks:
+  default:
+    name: tenderbazaar-demo_default
+
+services:
+  # prod.yml allows 1.5 CPUs; Docker refuses a limit above the host's CPU count
+  # and the demo VPS has 1. Memory and heap stay as the earlier overlays set them.
+  elasticsearch:
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+
+  db-init:
+    image: tenderbazaar-demo-server/db-init:1
+    pull_policy: never
+    env_file: !reset []
+    environment:
+      SEED_ADMIN_EMAIL: ${DEMO_ADMIN_EMAIL:?Set DEMO_ADMIN_EMAIL (SUPER_ADMIN) in .env.demo.server}
+      SEED_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:?Set DEMO_ADMIN_PASSWORD (12+ characters) in .env.demo.server}
+
+  # Same image as db-init (same Dockerfile), so it is built and shipped once.
+  demo-seed:
+    build: !reset null
+    image: tenderbazaar-demo-server/db-init:1
+    pull_policy: never
+    environment:
+      DEMO_STAFF_ADMIN_EMAIL: ${DEMO_STAFF_ADMIN_EMAIL:?Set DEMO_STAFF_ADMIN_EMAIL (client ADMIN) in .env.demo.server}
+      DEMO_STAFF_ADMIN_PASSWORD: ${DEMO_STAFF_ADMIN_PASSWORD:?Set DEMO_STAFF_ADMIN_PASSWORD (12+ characters) in .env.demo.server}
+
+  api-server:
+    image: tenderbazaar-demo-server/api-server:2
+    pull_policy: never
+    env_file: !reset []
+    ports: !reset []
+    environment:
+      FRONTEND_URL: ${FRONTEND_URL:?Set FRONTEND_URL (the web origin) in .env.demo.server}
+      ADMIN_URL: ${ADMIN_URL:?Set ADMIN_URL (the admin origin) in .env.demo.server}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET (64 hex chars) in .env.demo.server}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?Set JWT_REFRESH_SECRET (64 hex chars, different) in .env.demo.server}
+      # No Razorpay in the demo. docker-compose.demo-local.yml sets Razorpay
+      # values; any value counts as configured and the API would call Razorpay.
+      RAZORPAY_KEY_ID: ''
+      RAZORPAY_KEY_SECRET: ''
+      RAZORPAY_WEBHOOK_SECRET: ''
+      # Simulated checkout instead (no money moves). The API refuses to start
+      # with this on unless DEMO_DEPLOYMENT matches, the database is
+      # tenderbazaar_demo and both Razorpay keys above are empty.
+      PAYMENTS_DEMO_MODE: 'true'
+      DEMO_DEPLOYMENT: tenderbazaar-demo
+      # Demo-sized limits per 15 minutes (production defaults are 120/600/20).
+      RATE_LIMIT_ANON_MAX: ${RATE_LIMIT_ANON_MAX:-600}
+      RATE_LIMIT_AUTHED_MAX: ${RATE_LIMIT_AUTHED_MAX:-2000}
+      RATE_LIMIT_AUTH_MAX: ${RATE_LIMIT_AUTH_MAX:-20}
+
+  web:
+    image: tenderbazaar-demo-server/web:2
+    pull_policy: never
+    ports: !reset []
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: /api/v1
+        NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH: 'false'
+        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ''
+    environment:
+      NEXT_PUBLIC_API_URL: /api/v1
+
+  admin:
+    image: tenderbazaar-demo-server/admin:1
+    pull_policy: never
+    ports: !reset []
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: /api/v1
+        # Emails only (not secrets): the login page's Super Admin / Admin tabs.
+        NEXT_PUBLIC_DEMO_SUPER_ADMIN_EMAIL: ${DEMO_ADMIN_EMAIL:?Set DEMO_ADMIN_EMAIL}
+        NEXT_PUBLIC_DEMO_ADMIN_EMAIL: ${DEMO_STAFF_ADMIN_EMAIL:?Set DEMO_STAFF_ADMIN_EMAIL}
+    environment:
+      NEXT_PUBLIC_API_URL: /api/v1
+
+  ai-service:
+    image: tenderbazaar-demo-server/ai-service:1
+    pull_policy: never
+    environment:
+      # No AI provider key: the service answers with its built-in fallbacks.
+      ANTHROPIC_API_KEY: ''
+
+  notification-service:
+    image: tenderbazaar-demo-server/notification-service:1
+    pull_policy: never
+    # No provider credentials: email/SMS/WhatsApp/push are logged, never sent.
+    env_file: !reset []
+
+  demo-scraper:
+    image: tenderbazaar-demo-server/demo-scraper:1
+    pull_policy: never
+    environment:
+      DEMO_SCHEDULE_ENABLED: ${DEMO_SCHEDULE_ENABLED:-true}
+      DEMO_FAILURE_EVERY: ${DEMO_FAILURE_EVERY:-6}
+      DEMO_PAGE_ERRORS_EVERY: ${DEMO_PAGE_ERRORS_EVERY:-3}
+      DEMO_CONCURRENCY: ${DEMO_CONCURRENCY:-2}
+      # Per-portal UTC cron or "off"; empty = built-in 2–6 hour schedule.
+      DEMO_CRON_GEM_DEMO: ${DEMO_CRON_GEM_DEMO:-}
+      DEMO_CRON_CPPP_DEMO: ${DEMO_CRON_CPPP_DEMO:-}
+      DEMO_CRON_EPROCURE_DEMO: ${DEMO_CRON_EPROCURE_DEMO:-}
+      DEMO_CRON_MAHARASHTRA_DEMO: ${DEMO_CRON_MAHARASHTRA_DEMO:-}
+      DEMO_CRON_GUJARAT_DEMO: ${DEMO_CRON_GUJARAT_DEMO:-}
+      DEMO_CRON_RAJASTHAN_DEMO: ${DEMO_CRON_RAJASTHAN_DEMO:-}
+
+  # Real scraper: still profiled out by docker-compose.demo.yml; no credentials either.
+  scraper:
+    env_file: !reset []
+
+  demo-gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    volumes:
+      - ./docker/demo-gateway.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - '127.0.0.1:8080:8080'
+      - '127.0.0.1:8081:8081'
+    depends_on:
+      api-server:
+        condition: service_healthy
+      web:
+        condition: service_healthy
+      admin:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -qO- http://127.0.0.1:8080/gateway-health && wget -qO- http://127.0.0.1:8081/gateway-health']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: '0.25'
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'

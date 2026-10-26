@@ -131,6 +131,18 @@ jobs:
       - name: Scraper engine tests
         run: pnpm --filter @tenderbazaar/scraper-engine test
 
+      # api-server's engine client against the real demo scraper API, in-process.
+      - name: Demo scraper integration test
+        run: pnpm --filter @tenderbazaar/scraper-engine exec tsx ../../scripts/tests/demo-scraper-integration.test.ts
+
+      # Synthetic demo tender dataset + demo-seed guards (no database needed).
+      - name: Demo tender dataset test
+        run: pnpm --filter @tenderbazaar/scraper-engine exec tsx ../../scripts/tests/demo-tenders.test.ts
+
+      # Scraper dashboard KPIs (run-record based success rate, latest-run counts).
+      - name: Scraper KPI test
+        run: pnpm --filter @tenderbazaar/scraper-engine exec tsx ../../scripts/tests/scraper-kpis.test.ts
+
       # This suite existed and passed but was never wired into CI, so nothing
       # guarded the push-delivery and Firebase-credential behaviour it pins.
       - name: Notification service tests
@@ -293,6 +305,24 @@ jobs:
         run: |
           docker compose -f docker-compose.yml -f docker-compose.prod.yml config > /tmp/prod.yml
           python3 scripts/check-prod-ports.py /tmp/prod.yml
+
+      # The demo overlay must replace the real scraper, never run alongside it.
+      - name: Demo file set must exclude the real scraper
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.prod.yml -f docker-compose.demo.yml \
+            config --format json > /tmp/demo.json
+          python3 scripts/check-demo-compose.py /tmp/demo.json
+
+      # The isolated local demo must not share containers, volumes, networks,
+      # databases or ports with any other TenderBazaar stack.
+      - name: Isolated local demo must share nothing
+        run: |
+          printf 'POSTGRES_PASSWORD=ci-throwaway-pg-password\nSCRAPER_API_TOKEN=ci-throwaway-scraper-api-token\n' > /tmp/demo.env
+          docker compose -p tenderbazaar-demo --env-file /tmp/demo.env \
+            -f docker-compose.yml -f docker-compose.demo.yml -f docker-compose.demo-local.yml \
+            config --format json > /tmp/demo-local.json
+          python3 scripts/check-demo-isolation.py /tmp/demo-local.json
+          python3 scripts/check-demo-compose.py /tmp/demo-local.json
 
   ai-service:
     name: AI Service Check

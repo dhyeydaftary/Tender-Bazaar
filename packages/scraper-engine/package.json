@@ -6,9 +6,11 @@
     "dev": "tsx watch src/main.ts",
     "build": "tsc",
     "start": "node dist/main.js",
+    "start:demo": "node dist/demo/main.js",
+    "dev:demo": "tsx watch src/demo/main.ts",
     "start:api": "tsx src/api/server.ts",
     "type-check": "tsc --noEmit",
-    "test": "tsx src/tests/portal-registry.test.ts && tsx src/tests/portal-production-default.test.ts && tsx src/tests/test-portal-gate.test.ts && tsx src/tests/tls-safety.test.ts && tsx src/tests/api-auth.test.ts && tsx src/tests/manual-run-response.test.ts && tsx src/tests/readiness-portal-crons.test.ts && tsx src/tests/retry-backoff-timing.test.ts && tsx src/tests/scheduler-queue.test.ts && tsx src/tests/retry-failed-jobs.test.ts && tsx src/tests/missed-windows.test.ts && tsx src/tests/missed-windows-sweep.test.ts && tsx src/tests/scheduler-admin-control.test.ts && tsx src/tests/stale-run-recovery.test.ts && tsx src/tests/scheduler-shutdown-race.test.ts"
+    "test": "tsx src/tests/portal-registry.test.ts && tsx src/tests/portal-production-default.test.ts && tsx src/tests/test-portal-gate.test.ts && tsx src/tests/tls-safety.test.ts && tsx src/tests/api-auth.test.ts && tsx src/tests/manual-run-response.test.ts && tsx src/tests/readiness-portal-crons.test.ts && tsx src/tests/retry-backoff-timing.test.ts && tsx src/tests/scheduler-queue.test.ts && tsx src/tests/retry-failed-jobs.test.ts && tsx src/tests/missed-windows.test.ts && tsx src/tests/missed-windows-sweep.test.ts && tsx src/tests/scheduler-admin-control.test.ts && tsx src/tests/stale-run-recovery.test.ts && tsx src/tests/scheduler-shutdown-race.test.ts && tsx src/tests/demo-runner.test.ts && tsx src/tests/demo-isolation.test.ts && tsx src/tests/demo-api.test.ts && tsx src/tests/playwright-image-version.test.ts && tsx src/tests/health-counters.test.ts && tsx src/tests/demo-config.test.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",

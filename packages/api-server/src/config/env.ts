@@ -214,6 +214,73 @@ export function validateProductionConnections(input: {
   return problems;
 }
 
+/**
+ * The only deployment allowed to run simulated ("demo") payments: the isolated
+ * client demo (docker-compose.demo*.yml). Both values must match — the marker
+ * is set by the demo overlay, and the database name is the same guard the demo
+ * seed uses (prisma/demo-seed.ts) — so a stray PAYMENTS_DEMO_MODE=true copied
+ * into any other environment cannot switch real billing off.
+ */
+export const DEMO_DEPLOYMENT_ID = 'tenderbazaar-demo';
+export const DEMO_DATABASE_NAME = 'tenderbazaar_demo';
+
+/** The database name of a `scheme://user:pass@host:port/name?params` URL. */
+export function databaseNameOf(url: string | undefined): string | null {
+  const match = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^/?#]*\/([^/?#]+)(?:[?#].*)?$/.exec(
+    (url ?? '').trim(),
+  );
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
+}
+
+/**
+ * PAYMENTS_DEMO_MODE=true replaces Razorpay with a simulated checkout that
+ * activates subscriptions without taking money. It is refused — the server does
+ * not start — unless every condition below holds, whatever NODE_ENV is:
+ *
+ *   - DEMO_DEPLOYMENT is exactly `tenderbazaar-demo`;
+ *   - DATABASE_URL points at the `tenderbazaar_demo` database;
+ *   - no Razorpay key is configured (a deployment holding real credentials is
+ *     a billing deployment, and must never silently simulate payments).
+ *
+ * Exported for unit testing; values never appear in the messages.
+ */
+export function validatePaymentsDemoMode(input: {
+  PAYMENTS_DEMO_MODE?: string;
+  DEMO_DEPLOYMENT?: string;
+  DATABASE_URL?: string;
+  RAZORPAY_KEY_ID?: string;
+  RAZORPAY_KEY_SECRET?: string;
+}): string[] {
+  if (input.PAYMENTS_DEMO_MODE !== 'true') return [];
+
+  const problems: string[] = [];
+
+  if (input.DEMO_DEPLOYMENT !== DEMO_DEPLOYMENT_ID) {
+    problems.push(
+      `PAYMENTS_DEMO_MODE: is only allowed in the isolated demo deployment (DEMO_DEPLOYMENT=${DEMO_DEPLOYMENT_ID}).`,
+    );
+  }
+
+  if (databaseNameOf(input.DATABASE_URL) !== DEMO_DATABASE_NAME) {
+    problems.push(
+      `PAYMENTS_DEMO_MODE: is only allowed against the ${DEMO_DATABASE_NAME} database.`,
+    );
+  }
+
+  if ((input.RAZORPAY_KEY_ID ?? '').trim() !== '' || (input.RAZORPAY_KEY_SECRET ?? '').trim() !== '') {
+    problems.push(
+      'PAYMENTS_DEMO_MODE: must not be combined with Razorpay credentials; unset RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET or turn demo payments off.',
+    );
+  }
+
+  return problems;
+}
+
 export const envSchema = z
   .object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -243,9 +310,28 @@ export const envSchema = z
    */
   SCRAPER_API_URL: z.string().default('http://scraper:4001'),
   SCRAPER_API_TOKEN: z.string().default(''),
-  RAZORPAY_KEY_ID: z.string().default(''),
-  RAZORPAY_KEY_SECRET: z.string().default(''),
-  RAZORPAY_WEBHOOK_SECRET: z.string().default(''),
+  /**
+   * When the engine is unreachable, publish the run onto the durable BullMQ
+   * queue instead (default). The demo configuration sets 'false': it has no
+   * queue consumer, so a queued job would never run.
+   */
+  SCRAPER_QUEUE_FALLBACK: z.enum(['true', 'false']).default('true'),
+  /**
+   * Trimmed, so a whitespace-only value is exactly '' — "not configured" — for
+   * every consumer. Untrimmed, `'  '` read as configured (isRazorpayConfigured,
+   * the webhook check) while being a key anyone can guess, which made the
+   * HMACs it "verifies" forgeable.
+   */
+  RAZORPAY_KEY_ID: z.string().trim().default(''),
+  RAZORPAY_KEY_SECRET: z.string().trim().default(''),
+  RAZORPAY_WEBHOOK_SECRET: z.string().trim().default(''),
+  /**
+   * Simulated checkout for the isolated client demo only. Off by default; when
+   * 'true', validatePaymentsDemoMode() must pass or the server refuses to start.
+   */
+  PAYMENTS_DEMO_MODE: z.enum(['true', 'false']).default('false'),
+  /** Identifies the isolated demo deployment; see validatePaymentsDemoMode. */
+  DEMO_DEPLOYMENT: z.string().default(''),
 
   /**
    * Rate-limit ceilings per 15-minute window. Authenticated callers are
@@ -271,6 +357,7 @@ export const envSchema = z
     for (const problem of [
       ...validateJwtSecrets(value),
       ...validateProductionConnections(value),
+      ...validatePaymentsDemoMode(value),
     ]) {
       const field = problem.slice(0, problem.indexOf(':'));
       ctx.addIssue({

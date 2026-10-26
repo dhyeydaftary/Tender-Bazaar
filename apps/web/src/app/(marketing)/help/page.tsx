@@ -59,7 +59,7 @@ const FAQ_SECTIONS: FaqSection[] = [
       {
         question: 'What plans are available?',
         answer:
-          'TenderBazaar offers four plans: Free (5 tender views/day, 1 alert), Starter at Rs 1,499/month (50 views/day, 5 alerts, 5 AI checks), Professional at Rs 4,999/month (unlimited views, 20 alerts, 50 AI checks), and Enterprise at Rs 14,999/month (unlimited everything plus API access and priority support).',
+          'TenderBazaar offers four plans: Free (5 tender views/day, 1 alert), Starter at Rs 1,499/month (50 views/day, 5 alerts, 10 AI checks/month), Professional at Rs 4,999/month (unlimited views, 20 alerts, 50 AI checks/month), and Enterprise at Rs 14,999/month (unlimited everything plus API access and priority support).',
       },
     ],
   },

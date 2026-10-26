@@ -1,0 +1,144 @@
+# ───────────────────────────────────────────────────────────────────────────
+# Isolated LOCAL demo — runs next to an existing TenderBazaar stack without
+# touching it. Layer it after docker-compose.demo.yml, with its own env file:
+#
+#   docker compose -p tenderbazaar-demo --env-file .env.demo.local \
+#     -f docker-compose.yml -f docker-compose.demo.yml -f docker-compose.demo-local.yml \
+#     up -d --build
+#
+# docker-compose.override.yml is deliberately NOT in that list (it publishes
+# 5432/6379/9200/5050/4001 and loads the developer's .env), and --env-file
+# stops Compose from reading .env for interpolation.
+#
+# Isolation, and how each piece is achieved:
+#   project      `name:` below and -p → every Compose-scoped resource is prefixed
+#                tenderbazaar-demo (network tenderbazaar-demo_default, volumes
+#                tenderbazaar-demo_postgres-data / _redis-data /
+#                _elasticsearch-data, images tenderbazaar-demo-<service>)
+#   containers   the base file pins container_name: tenderbazaar-<service>,
+#                which would collide with (and recreate) the existing stack's
+#                containers. Every one is reset here, so names become
+#                tenderbazaar-demo-<service>-1.
+#   database     own Postgres container + volume, and a distinct database name
+#                (tenderbazaar_demo) in every connection URL
+#   search       own Elasticsearch container + volume (index `tenders` inside it)
+#   redis        own Redis container + volume
+#   ports        only web/admin/api are published, on 127.0.0.1 and on ports
+#                the existing stack does not use (3100/3101/4100). Postgres,
+#                Redis, Elasticsearch, ai-service and demo-scraper are not
+#                published at all.
+#   secrets      no env_file: containers receive only the values below. The
+#                developer's .env never reaches the demo.
+# ───────────────────────────────────────────────────────────────────────────
+
+name: tenderbazaar-demo
+
+x-demo-database-url: &demo-database-url postgresql://postgres:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.demo.local}@postgres:5432/tenderbazaar_demo
+
+services:
+  postgres:
+    container_name: !reset null
+    environment:
+      POSTGRES_DB: tenderbazaar_demo
+
+  redis:
+    container_name: !reset null
+
+  elasticsearch:
+    container_name: !reset null
+
+  # Migrations, then the general seed in its production mode: subscription
+  # plans (product configuration) and, only if DEMO_ADMIN_* are set, one admin.
+  # SEED_DEMO_DATA=false keeps its real-portal sample tenders out; demo tenders
+  # come from demo-seed below instead.
+  db-init:
+    container_name: !reset null
+    environment:
+      DATABASE_URL: *demo-database-url
+      DB_INIT_SEED: 'true'
+      NODE_ENV: production
+      SEED_DEMO_DATA: 'false'
+      SEED_ADMIN_EMAIL: ${DEMO_ADMIN_EMAIL:-}
+      SEED_ADMIN_PASSWORD: ${DEMO_ADMIN_PASSWORD:-}
+      SEED_ADMIN_NAME: ${DEMO_ADMIN_NAME:-Demo Administrator}
+
+  # Idempotent synthetic tender dataset (prisma/demo-seed.ts). It refuses to run
+  # unless the target database is tenderbazaar_demo and DEMO_SEED_TARGET matches.
+  # Runs before api-server, whose boot reindex then puts it in Elasticsearch.
+  demo-seed:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.db-init
+    command: ['tsx', 'prisma/demo-seed.ts']
+    environment:
+      DATABASE_URL: *demo-database-url
+      DEMO_SEED_TARGET: tenderbazaar-demo
+      # Optional ADMIN-role account for the login page's "Admin" tab.
+      # Created only if missing; never modified afterwards.
+      DEMO_STAFF_ADMIN_EMAIL: ${DEMO_STAFF_ADMIN_EMAIL:-}
+      DEMO_STAFF_ADMIN_PASSWORD: ${DEMO_STAFF_ADMIN_PASSWORD:-}
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+    restart: 'no'
+
+  ai-service:
+    container_name: !reset null
+
+  api-server:
+    container_name: !reset null
+    ports: !override
+      - '127.0.0.1:4100:4000'
+    environment:
+      DATABASE_URL: *demo-database-url
+      FRONTEND_URL: http://localhost:3100
+      ADMIN_URL: http://localhost:3101
+      ALLOW_DEMO_GOOGLE_AUTH: 'false'
+      RAZORPAY_KEY_ID: dummy_razorpay_key_id
+      RAZORPAY_KEY_SECRET: dummy_razorpay_key_secret
+    depends_on:
+      demo-seed:
+        condition: service_completed_successfully
+
+  web:
+    container_name: !reset null
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:4100/api/v1
+        NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH: 'false'
+        NEXT_PUBLIC_GOOGLE_CLIENT_ID: ''
+    ports: !override
+      - '127.0.0.1:3100:3000'
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:4100/api/v1
+      NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH: 'false'
+
+  admin:
+    container_name: !reset null
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: http://localhost:4100/api/v1
+        # The login page's Super Admin / Admin tabs fill these demo emails (the
+        # demo has no development seed accounts). Passwords are never baked in.
+        NEXT_PUBLIC_DEMO_SUPER_ADMIN_EMAIL: ${DEMO_ADMIN_EMAIL:-}
+        NEXT_PUBLIC_DEMO_ADMIN_EMAIL: ${DEMO_STAFF_ADMIN_EMAIL:-}
+    ports: !override
+      - '127.0.0.1:3101:3001'
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:4100/api/v1
+
+  notification-service:
+    container_name: !reset null
+    environment:
+      DATABASE_URL: *demo-database-url
+
+  demo-scraper:
+    container_name: !reset null
+    environment:
+      DATABASE_URL: *demo-database-url
+
+  # Profiled out by docker-compose.demo.yml; its pinned name is reset as well so
+  # even an explicit `--profile real-scraper` could not hijack the existing
+  # stack's tenderbazaar-scraper container.
+  scraper:
+    container_name: !reset null

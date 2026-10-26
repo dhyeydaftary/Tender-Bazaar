@@ -2,6 +2,8 @@ import { prisma } from '../../../config/database';
 import { env } from '../../../config/env';
 import { AppError } from '../../../shared/middleware/error-handler';
 import { enqueueScrapeJob, portalNameToRegistryKey } from '../../../queue/scraper-job-publisher';
+import { engineBaseUrls, fetchEngineStatus, requestEngineRun } from './scraper-engine-client';
+import { buildRunStats, emptyRunStats } from './scraper-run-stats';
 import {
   isValidCronExpression,
   nextCronRun,
@@ -72,6 +74,23 @@ export const scrapersService = {
     const runMap = new Map(latestRuns.map((r) => [r.portalName, r]));
     const now = new Date();
 
+    // Run outcomes from the run history itself (see scraper-run-stats.ts for why
+    // the ScraperHealth counters are not used for KPIs).
+    const portalNames = scrapers.map((s) => s.portalName);
+    const [runsByStatus, runsWithErrors] = await Promise.all([
+      prisma.scrapingRun.groupBy({
+        by: ['portalName', 'status'],
+        where: { portalName: { in: portalNames } },
+        _count: true,
+      }),
+      prisma.scrapingRun.groupBy({
+        by: ['portalName'],
+        where: { portalName: { in: portalNames }, status: 'COMPLETED', errors: { gt: 0 } },
+        _count: true,
+      }),
+    ]);
+    const runStats = buildRunStats(runsByStatus, runsWithErrors);
+
     return scrapers.map((s) => {
       const realCount = getRealTenderCount(s.portalName, s.totalTendersFound);
 
@@ -104,6 +123,7 @@ export const scrapersService = {
         errorRate: s.errorRate,
         lastError: s.lastError,
         latestRun: runMap.get(s.portalName) || null,
+        runStats: runStats.get(s.portalName) ?? emptyRunStats(),
         // Scheduling visibility (previously absent entirely):
         cronValid,
         nextRunAt,
@@ -153,80 +173,94 @@ export const scrapersService = {
     // SCRAPER_API_TOKEN; without it the engine answers 401 and we fall through
     // to the durable queue below, which is the same path used when the engine
     // is simply down.
-    let engineTriggered = false;
-    const scraperUrls = [
-      env.SCRAPER_API_URL,
-      'http://tenderbazaar-scraper:4001',
-      'http://localhost:4001',
-    ].filter((url, index, all) => url && all.indexOf(url) === index);
+    const outcome = await requestEngineRun({
+      baseUrls: engineBaseUrls(env.SCRAPER_API_URL),
+      registryKey,
+      token: env.SCRAPER_API_TOKEN,
+    });
 
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (env.SCRAPER_API_TOKEN) {
-      headers.Authorization = `Bearer ${env.SCRAPER_API_TOKEN}`;
+    // 409: the engine REFUSED because a run for this portal is already
+    // queued or in progress.
+    //
+    // This must not fall through to the durable-queue fallback below. That
+    // fallback exists for an unreachable engine; using it here would publish
+    // a second job for a portal the engine is deliberately protecting with
+    // its per-portal lock — turning a correct refusal into the duplicate
+    // run the lock exists to prevent. Surface it to the operator instead.
+    if (outcome.kind === 'refused') {
+      throw new AppError(
+        `A scraping run for "${portalName}" is already queued or in progress. ` +
+          'No new job was queued.',
+        409,
+        'RUN_ALREADY_IN_PROGRESS',
+      );
     }
 
-    for (const baseUrl of scraperUrls) {
-      try {
-        const response = await fetch(`${baseUrl}/api/portals/${registryKey}/run`, {
-          method: 'POST',
-          headers,
-          signal: AbortSignal.timeout(3000),
-        });
-        if (response.ok) {
-          engineTriggered = true;
-          break;
-        }
-        // 409: the engine REFUSED because a run for this portal is already
-        // queued or in progress.
-        //
-        // This must not fall through to the durable-queue fallback below. That
-        // fallback exists for an unreachable engine; using it here would publish
-        // a second job for a portal the engine is deliberately protecting with
-        // its per-portal lock — turning a correct refusal into the duplicate
-        // run the lock exists to prevent. Surface it to the operator instead.
-        if (response.status === 409) {
-          throw new AppError(
-            `A scraping run for "${portalName}" is already queued or in progress. ` +
-              'No new job was queued.',
-            409,
-            'RUN_ALREADY_IN_PROGRESS',
-          );
-        }
-        if (response.status === 401) {
-          console.error(
-            '[scrapers] Scraper control API rejected our token (401). ' +
-              'Check that SCRAPER_API_TOKEN matches on api-server and scraper. ' +
-              'Falling back to the job queue.',
-          );
-          break;
-        }
-      } catch (err) {
-        // A 409 is a real answer from the engine, not a connectivity problem,
-        // so it propagates instead of being retried against the next URL.
-        if (err instanceof AppError) throw err;
-        // Unreachable on this URL — try the next, then fall back to the queue.
-      }
+    if (outcome.kind === 'triggered') {
+      return {
+        message: outcome.simulated
+          ? `Simulated demo run started for "${portalName}". No external portal is contacted.`
+          : `Scraper for "${portalName}" triggered successfully`,
+        jobId: outcome.jobId ?? null,
+        registryKey,
+        portalName,
+        simulated: outcome.simulated,
+        dispatch: 'engine' as const,
+        triggeredBy: adminId,
+        triggeredAt: new Date(),
+      };
     }
 
-    // Also publish to BullMQ queue as durable backup if engine HTTP was not reachable
-    let jobId: string | undefined;
-    if (!engineTriggered) {
-      try {
-        const queued = await enqueueScrapeJob(portalName);
-        jobId = queued.jobId;
-      } catch (err) {
-        console.error(`Failed to enqueue scrape job for ${portalName}:`, err);
-      }
+    if (outcome.kind === 'unauthorized') {
+      console.error(
+        '[scrapers] Scraper control API rejected our token (401). ' +
+          'Check that SCRAPER_API_TOKEN matches on api-server and scraper.',
+      );
+    }
+
+    // The engine was not reachable (or rejected our token). The durable BullMQ
+    // queue is the fallback, unless this deployment has no queue consumer —
+    // the demo configuration sets SCRAPER_QUEUE_FALLBACK=false, because a job
+    // published there would never run and the admin would be told otherwise.
+    if (env.SCRAPER_QUEUE_FALLBACK !== 'true') {
+      throw new AppError(
+        outcome.kind === 'unauthorized'
+          ? 'The scraper engine rejected the API token. No run was started.'
+          : 'The scraper engine is unreachable. No run was started.',
+        503,
+        'SCRAPER_ENGINE_UNAVAILABLE',
+      );
+    }
+
+    let queued: { jobId: string };
+    try {
+      queued = await enqueueScrapeJob(portalName);
+    } catch (err) {
+      // Previously this was swallowed and the endpoint still answered
+      // "triggered successfully" with a fabricated job id.
+      console.error(`Failed to enqueue scrape job for ${portalName}:`, err);
+      throw new AppError(
+        'The scraper engine is unreachable and the job could not be queued. No run was started.',
+        503,
+        'SCRAPER_ENGINE_UNAVAILABLE',
+      );
     }
 
     return {
-      message: `Scraper for "${portalName}" triggered successfully`,
-      jobId: jobId || `scrape-${registryKey}-${Date.now()}`,
+      message: `Scraper for "${portalName}" queued; it will run when the scraper engine picks it up`,
+      jobId: queued.jobId,
       registryKey,
       portalName,
+      simulated: false,
+      dispatch: 'queue' as const,
       triggeredBy: adminId,
       triggeredAt: new Date(),
     };
+  },
+
+  /** Which engine answers on SCRAPER_API_URL, and whether it is a demo engine. */
+  async getEngineStatus() {
+    return fetchEngineStatus({ baseUrl: env.SCRAPER_API_URL });
   },
 
   async updateScraper(portalName: string, data: { enabled?: boolean; cronExpression?: string }) {

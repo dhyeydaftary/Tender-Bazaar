@@ -395,17 +395,43 @@ export class StorageWriter {
    */
   async recoverStaleRuns(olderThanMinutes = 15): Promise<number> {
     const cutoff = new Date(Date.now() - olderThanMinutes * 60 * 1000);
-    const result = await this.prisma.scrapingRun.updateMany({
+    const errorMessage = 'Run interrupted: the scraper process stopped before completion';
+    const stale = await this.prisma.scrapingRun.findMany({
       where: {
         status: 'RUNNING',
         OR: [{ startedAt: { lt: cutoff } }, { startedAt: null, createdAt: { lt: cutoff } }],
       },
+      select: { id: true, portalName: true },
+    });
+    if (stale.length === 0) return 0;
+
+    const result = await this.prisma.scrapingRun.updateMany({
+      // Re-check RUNNING so a run that finished in between is left alone.
+      where: { id: { in: stale.map((r) => r.id) }, status: 'RUNNING' },
       data: {
         status: 'FAILED',
-        errorMessage: 'Run interrupted: the scraper process stopped before completion',
+        errorMessage,
         completedAt: new Date(),
       },
     });
+
+    // Count each recovered run as a failure in its portal's health, exactly as
+    // failRun() does. Without this, interrupted runs were FAILED in the run
+    // history but never counted in ScraperHealth (totalRuns, totalFailedRuns,
+    // errorRate, status), so the portal kept reporting HEALTHY at 100%.
+    if (result.count === stale.length) {
+      for (const run of stale) {
+        await this.updateHealthOnFailure(run.portalName, errorMessage);
+      }
+    } else {
+      const recovered = await this.prisma.scrapingRun.findMany({
+        where: { id: { in: stale.map((r) => r.id) }, status: 'FAILED', errorMessage },
+        select: { portalName: true },
+      });
+      for (const run of recovered) {
+        await this.updateHealthOnFailure(run.portalName, errorMessage);
+      }
+    }
     return result.count;
   }
 
@@ -499,6 +525,13 @@ export class StorageWriter {
     }
   }
 
+  private async getOrCreateHealth(portalName: string) {
+    const existing = await this.prisma.scraperHealth.findUnique({ where: { portalName } });
+    if (existing) return existing;
+    await this.ensureHealthRecord(portalName);
+    return this.prisma.scraperHealth.findUniqueOrThrow({ where: { portalName } });
+  }
+
   private async updateHealthOnSuccess(
     portalName: string,
     duration: number,
@@ -506,14 +539,9 @@ export class StorageWriter {
     tendersNew: number,
   ): Promise<void> {
     try {
-      const health = await this.prisma.scraperHealth.findUnique({
-        where: { portalName },
-      });
-
-      if (!health) {
-        await this.ensureHealthRecord(portalName);
-        return;
-      }
+      // Create the row if missing, then count this run. Returning right after
+      // creating it used to drop the run from the counters.
+      const health = await this.getOrCreateHealth(portalName);
 
       const totalRuns = health.totalRuns + 1;
       const totalSuccessRuns = health.totalSuccessRuns + 1;
@@ -545,14 +573,9 @@ export class StorageWriter {
 
   private async updateHealthOnFailure(portalName: string, errorMessage: string): Promise<void> {
     try {
-      const health = await this.prisma.scraperHealth.findUnique({
-        where: { portalName },
-      });
-
-      if (!health) {
-        await this.ensureHealthRecord(portalName);
-        return;
-      }
+      // Create the row if missing, then count this run. Returning right after
+      // creating it used to drop the run from the counters.
+      const health = await this.getOrCreateHealth(portalName);
 
       const totalRuns = health.totalRuns + 1;
       const totalFailedRuns = health.totalFailedRuns + 1;

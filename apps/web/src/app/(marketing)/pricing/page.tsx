@@ -45,6 +45,12 @@ interface PlanFeature {
   included: boolean;
 }
 
+/** Comparison-table cell for the AI check allowance, from the plan data. */
+function aiChecksAllowance(plan: SubscriptionPlan): string {
+  if (plan.maxAiChecks === -1) return 'Unlimited';
+  return plan.aiChecksResetMonthly ? `${plan.maxAiChecks}/mo` : `${plan.maxAiChecks} total`;
+}
+
 function buildFeatures(plan: SubscriptionPlan): PlanFeature[] {
   const unlimited = (n: number) => n === -1;
 
@@ -150,7 +156,7 @@ function buildComparison(plans: SubscriptionPlan[]): ComparisonCategory[] {
     {
       name: 'AI & Intelligence',
       rows: [
-        { feature: 'AI Eligibility Checks', free: `${f.maxAiChecks} total`, starter: `${s.maxAiChecks}/mo`, professional: `${pr.maxAiChecks}/mo`, enterprise: 'Unlimited' },
+        { feature: 'AI Eligibility Checks', free: aiChecksAllowance(f), starter: aiChecksAllowance(s), professional: aiChecksAllowance(pr), enterprise: aiChecksAllowance(e) },
         { feature: 'AI Tender Summary', free: bool(f.aiTenderSummary), starter: bool(s.aiTenderSummary), professional: bool(pr.aiTenderSummary), enterprise: bool(e.aiTenderSummary) },
         { feature: 'Bid Assistant', free: tier(f.aiBidAssistant), starter: tier(s.aiBidAssistant), professional: tier(pr.aiBidAssistant), enterprise: tier(e.aiBidAssistant) },
         { feature: 'Tender Comparison', free: bool(f.tenderComparison), starter: bool(s.tenderComparison), professional: bool(pr.tenderComparison), enterprise: bool(e.tenderComparison) },
@@ -213,7 +219,7 @@ const FAQ_ITEMS = [
   },
   {
     question: 'What is the free plan AI check limit?',
-    answer: 'The free plan includes 1 AI eligibility check as a lifetime allowance. Once used, you will need to upgrade to a paid plan for more checks. Paid plans reset monthly.',
+    answer: 'The free plan includes 1 AI eligibility check per month. Starter includes 10 and Professional 50 checks per month; Enterprise is unlimited. Allowances renew at the start of each calendar month.',
   },
 ];
 

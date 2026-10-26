@@ -30,6 +30,9 @@ router.post('/subscription/preview', authenticate, paymentController.previewPlan
 // Verify Razorpay payment after checkout
 router.post('/subscription/verify', authenticate, paymentController.verifyPayment);
 
+// Complete a simulated checkout — refused unless PAYMENTS_DEMO_MODE is enabled
+router.post('/subscription/demo/confirm', authenticate, paymentController.confirmDemoPayment);
+
 // Switch billing cycle (monthly ↔ yearly) — creates a new order
 router.post('/subscription/switch-cycle', authenticate, paymentController.switchBillingCycle);
 

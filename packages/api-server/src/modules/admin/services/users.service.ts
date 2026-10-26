@@ -9,14 +9,27 @@ interface UserListFilters {
   search?: string;
   plan?: string;
   role?: string;
-  status?: string;
+  emailVerified?: 'verified' | 'unverified';
   sortBy: string;
   sortOrder: string;
 }
 
+/**
+ * Email-verification filter shared by the list and the export.
+ *
+ * The User model has no account active/deactivated field — `isEmailVerified`
+ * is the only flag, and login does not consult it — so it is filtered and
+ * reported as what it is, never as an account status.
+ */
+function emailVerifiedWhere(emailVerified?: 'verified' | 'unverified') {
+  if (emailVerified === 'verified') return { isEmailVerified: true };
+  if (emailVerified === 'unverified') return { isEmailVerified: false };
+  return null;
+}
+
 export const usersService = {
   async getUserList(filters: UserListFilters) {
-    const { page, limit, search, plan, role, status, sortBy, sortOrder } = filters;
+    const { page, limit, search, plan, role, emailVerified, sortBy, sortOrder } = filters;
     const skip = (page - 1) * limit;
 
     const andConditions: any[] = [];
@@ -34,8 +47,8 @@ export const usersService = {
 
     if (role) andConditions.push({ role });
 
-    if (status === 'active') andConditions.push({ isEmailVerified: true });
-    else if (status === 'inactive') andConditions.push({ isEmailVerified: false });
+    const verification = emailVerifiedWhere(emailVerified);
+    if (verification) andConditions.push(verification);
 
     if (plan) {
       if (plan.toLowerCase() === 'free') {
@@ -102,8 +115,8 @@ export const usersService = {
         email: u.email,
         phone: u.phone,
         role: u.role,
-        isActive: u.isEmailVerified,
-        status: u.isEmailVerified ? 'Active' : 'Inactive',
+        // No account active/inactive state is reported: the data model has
+        // none (see emailVerifiedWhere). Email verification is reported as such.
         isEmailVerified: u.isEmailVerified,
         isPhoneVerified: u.isPhoneVerified,
         createdAt: u.createdAt,
@@ -325,11 +338,10 @@ export const usersService = {
     };
   },
 
-  async exportUsers(filters: { plan?: string; role?: string; status?: string }) {
+  async exportUsers(filters: { plan?: string; role?: string; emailVerified?: 'verified' | 'unverified' }) {
     const where: any = {};
     if (filters.role) where.role = filters.role;
-    if (filters.status === 'active') where.isEmailVerified = true;
-    else if (filters.status === 'inactive') where.isEmailVerified = false;
+    Object.assign(where, emailVerifiedWhere(filters.emailVerified));
     if (filters.plan && filters.plan !== 'free') {
       where.subscription = { plan: { slug: filters.plan }, status: 'ACTIVE' };
     }
@@ -365,7 +377,7 @@ export const usersService = {
       email: u.email,
       phone: u.phone || '',
       role: u.role,
-      isActive: u.isEmailVerified,
+      emailVerified: u.isEmailVerified,
       plan: u.subscription?.plan?.name || 'Free',
       subscriptionStatus: u.subscription?.status || 'N/A',
       billingCycle: u.subscription?.billingCycle || 'N/A',

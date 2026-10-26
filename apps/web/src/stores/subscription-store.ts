@@ -116,6 +116,8 @@ interface SubscriptionState {
   isFreePlan: boolean;
   subscriptionStatus: SubscriptionStatus;
   usage: UsageStat[];
+  /** Same three states for `usage`: an empty list is not "nothing used" until loaded. */
+  usageStatus: SubscriptionStatus;
   invoices: Invoice[];
   invoiceTotal: number;
 
@@ -190,6 +192,7 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
   isFreePlan: true,
   subscriptionStatus: 'unknown',
   usage: [],
+  usageStatus: 'unknown',
   invoices: [],
   invoiceTotal: 0,
   isLoading: false,
@@ -216,7 +219,10 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
 
       set({
         plans: Array.isArray(plans) ? plans : [],
-        usage: Array.isArray(usageData) ? usageData : [],
+        // A failed usage request keeps the last known usage and says so.
+        ...(usageRes
+          ? { usage: Array.isArray(usageData) ? usageData : [], usageStatus: 'loaded' as const }
+          : { usageStatus: 'error' as const }),
         invoices: Array.isArray(invoiceData) ? invoiceData : [],
         isLoading: false,
       });
@@ -249,9 +255,11 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
   fetchUsage: async () => {
     try {
       const res = await api.get('/subscription/usage');
-      set({ usage: res.data?.data || [] });
+      const data = res.data?.data;
+      set({ usage: Array.isArray(data) ? data : [], usageStatus: 'loaded' });
     } catch {
-      // silent
+      // Keep the last known usage, but never present it as current.
+      set({ usageStatus: 'error' });
     }
   },
 
@@ -276,6 +284,7 @@ export const useSubscriptionStore = create<SubscriptionState>((set, get) => ({
       isFreePlan: true,
       subscriptionStatus: 'unknown',
       usage: [],
+      usageStatus: 'unknown',
       invoices: [],
       invoiceTotal: 0,
       isLoading: false,
