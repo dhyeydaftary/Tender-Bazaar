@@ -22,8 +22,16 @@ export function loadRazorpayScript(): Promise<boolean> {
   });
 }
 
+/**
+ * How the server says this checkout completes (POST /subscription/checkout →
+ * `paymentMode`). The server is the only authority: the browser never infers a
+ * simulated payment from the order id or key.
+ */
+export type PaymentMode = 'razorpay' | 'demo' | 'dev-mock';
+
 interface RazorpayCheckoutOptions {
   orderId: string;
+  paymentMode?: PaymentMode;
   amount: number;
   currency: string;
   keyId: string;
@@ -39,14 +47,15 @@ interface RazorpayCheckoutOptions {
 }
 
 export async function openRazorpayCheckout(options: RazorpayCheckoutOptions) {
-  const isMock =
-    options.orderId.startsWith('order_mock_') ||
-    !options.keyId ||
-    options.keyId.includes('xxxx') ||
-    options.keyId === 'rzp_test_placeholder';
+  if (options.paymentMode === 'demo') {
+    // Demo checkouts are confirmed through /subscription/demo/confirm by the
+    // caller; they must never be submitted to Razorpay verification.
+    throw new Error('Demo checkouts are not completed through Razorpay');
+  }
 
-  if (isMock) {
-    // In dev / demo mode, complete checkout with mock payment verification
+  if (options.paymentMode === 'dev-mock') {
+    // Local development without Razorpay keys: the server (non-production
+    // only) accepts this mock verification. Never used in production.
     setTimeout(() => {
       options.onSuccess({
         razorpay_order_id: options.orderId,

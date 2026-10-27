@@ -23,6 +23,7 @@ import {
 import { cn, getScoreStrokeColor } from '@/lib/utils';
 import api from '@/lib/api';
 import { useLimitGate } from '@/lib/hooks/use-feature-gate';
+import { useSubscriptionStore } from '@/stores/subscription-store';
 
 /* ═══════════════════════════════════════════════════════════════════════════
    TYPES
@@ -159,10 +160,21 @@ export default function EligibilityDashboardPage() {
   const [page, setPage] = useState(1);
   const limit = 10;
 
-  // Entitlement gate for AI eligibility checks
+  // Entitlement gate for AI eligibility checks. Used and limit come from the
+  // plan and GET /subscription/usage — the counts the API enforces — not from
+  // the history list below (all-time, while the allowance is per period) and
+  // never from a guessed default limit.
+  const fetchSubscription = useSubscriptionStore((s) => s.fetchSubscription);
+  const fetchUsage = useSubscriptionStore((s) => s.fetchUsage);
+  useEffect(() => {
+    fetchSubscription();
+    fetchUsage();
+  }, [fetchSubscription, fetchUsage]);
   const aiCheckLimit = useLimitGate('maxAiChecks');
   const isUnlimited = aiCheckLimit.isUnlimited;
-  const planLimit = isUnlimited ? -1 : (aiCheckLimit.limit || 5);
+  const planLimit = isUnlimited ? -1 : aiCheckLimit.limit;
+  const usageReady = aiCheckLimit.status === 'ready';
+  const allowancePeriod = aiCheckLimit.resetType === 'lifetime' ? '' : ' this month';
 
   const fetchChecks = useCallback(async () => {
     try {
@@ -219,7 +231,7 @@ export default function EligibilityDashboardPage() {
     fetchChecks();
   }, [fetchChecks]);
 
-  const stats = computeStats(checks, planLimit, isUnlimited);
+  const stats = { ...computeStats(checks, planLimit, isUnlimited), totalUsed: aiCheckLimit.used };
 
   /* ─── Filtered ─── */
 
@@ -289,12 +301,14 @@ export default function EligibilityDashboardPage() {
             <div className="h-9 w-9 rounded-lg bg-primary-50 dark:bg-primary-950/30 flex items-center justify-center">
               <Shield className="h-5 w-5 text-primary-500" />
             </div>
-            <span className="text-caption text-muted-foreground font-medium">Total Checks Used</span>
+            <span className="text-caption text-muted-foreground font-medium">
+              AI Checks Used{usageReady ? allowancePeriod : ''}
+            </span>
           </div>
           <div className="flex items-baseline gap-1.5">
-            <p className="text-display-sm font-mono text-foreground font-bold">{stats.totalUsed}</p>
+            <p className="text-display-sm font-mono text-foreground font-bold">{usageReady ? stats.totalUsed : '—'}</p>
             <span className="text-body-sm text-muted-foreground font-mono">
-              / {stats.isUnlimited ? '∞' : stats.planLimit}
+              / {!usageReady ? '—' : stats.isUnlimited ? '∞' : stats.planLimit}
             </span>
           </div>
           <div className="mt-3">
@@ -302,25 +316,27 @@ export default function EligibilityDashboardPage() {
               <div
                 className={cn(
                   'h-full rounded-full transition-all duration-700',
-                  stats.isUnlimited
+                  usageReady && stats.isUnlimited
                     ? 'bg-accent-500'
-                    : stats.planLimit > 0 && stats.totalUsed / stats.planLimit > 0.8
+                    : usageReady && aiCheckLimit.percentage > 80
                       ? 'bg-amber-500'
                       : 'bg-primary-500',
                 )}
                 style={{
-                  width: stats.isUnlimited
-                    ? '100%'
-                    : `${Math.min(100, Math.max(0, (stats.totalUsed / (stats.planLimit || 1)) * 100))}%`,
+                  width: !usageReady ? '0%' : stats.isUnlimited ? '100%' : `${aiCheckLimit.percentage}%`,
                 }}
               />
             </div>
             <p className="text-[11px] text-muted-foreground mt-1.5 font-medium">
-              {stats.isUnlimited
-                ? 'Unlimited AI checks on your active plan'
-                : stats.planLimit - stats.totalUsed > 0
-                  ? `${stats.planLimit - stats.totalUsed} checks remaining this month`
-                  : 'Limit reached — upgrade for more checks'}
+              {aiCheckLimit.status === 'error'
+                ? "Couldn't load your plan usage"
+                : !usageReady
+                  ? 'Loading your plan…'
+                  : stats.isUnlimited
+                    ? 'Unlimited AI checks on your active plan'
+                    : aiCheckLimit.remaining > 0
+                      ? `${aiCheckLimit.remaining} ${aiCheckLimit.remaining === 1 ? 'check' : 'checks'} remaining${allowancePeriod}`
+                      : 'Limit reached — upgrade for more checks'}
             </p>
           </div>
         </div>

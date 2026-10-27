@@ -13,6 +13,12 @@ import {
 import { useFetch } from '../../lib/hooks';
 import { getUserList } from '../../lib/admin-api';
 import type { UserListResponse } from '../../lib/types';
+import {
+  ROLE_OPTIONS,
+  EMAIL_FILTER_OPTIONS,
+  roleBadge,
+  type EmailVerifiedFilter,
+} from '../../lib/user-display';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -41,22 +47,6 @@ function planBadge(plan: string | null) {
   );
 }
 
-function statusBadge(status: string) {
-  const isActive =
-    status === 'Active' || status === 'active' || status === 'ACTIVE';
-  return isActive ? (
-    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-400">
-      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-      Active
-    </span>
-  ) : (
-    <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-500/15 text-red-400">
-      <span className="w-1.5 h-1.5 rounded-full bg-red-400" />
-      Inactive
-    </span>
-  );
-}
-
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr);
   return d.toLocaleDateString('en-IN', {
@@ -71,15 +61,13 @@ function formatDate(dateStr: string): string {
 // ---------------------------------------------------------------------------
 
 const PLANS = ['free', 'starter', 'professional', 'enterprise'];
-const ROLES = ['USER', 'ADMIN'];
-const STATUSES = ['active', 'inactive'];
 const PAGE_SIZE = 10;
 
 export default function UsersPage() {
   const [search, setSearch] = useState('');
   const [planFilter, setPlanFilter] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
-  const [statusFilter, setStatusFilter] = useState('');
+  const [emailFilter, setEmailFilter] = useState<EmailVerifiedFilter | ''>('');
   const [page, setPage] = useState(1);
 
   const {
@@ -95,11 +83,11 @@ export default function UsersPage() {
         search: search || undefined,
         plan: planFilter || undefined,
         role: roleFilter || undefined,
-        status: statusFilter || undefined,
+        emailVerified: emailFilter || undefined,
         sortBy: 'createdAt',
         sortOrder: 'desc',
       }),
-    [page, search, planFilter, roleFilter, statusFilter],
+    [page, search, planFilter, roleFilter, emailFilter],
   );
 
   const users = data?.users || [];
@@ -190,24 +178,25 @@ export default function UsersPage() {
             className="bg-card border border-border rounded-lg text-sm text-foreground/80 px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring/50"
           >
             <option value="">All Roles</option>
-            {ROLES.map((r) => (
-              <option key={r} value={r}>
-                {r}
+            {ROLE_OPTIONS.map((r) => (
+              <option key={r.value} value={r.value}>
+                {r.label}
               </option>
             ))}
           </select>
           <select
-            value={statusFilter}
+            value={emailFilter}
             onChange={(e) => {
-              setStatusFilter(e.target.value);
+              setEmailFilter(e.target.value as EmailVerifiedFilter | '');
               setPage(1);
             }}
+            aria-label="Filter by email verification"
             className="bg-card border border-border rounded-lg text-sm text-foreground/80 px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-ring/50"
           >
-            <option value="">All Statuses</option>
-            {STATUSES.map((s) => (
-              <option key={s} value={s}>
-                {s.charAt(0).toUpperCase() + s.slice(1)}
+            <option value="">All email states</option>
+            {EMAIL_FILTER_OPTIONS.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
               </option>
             ))}
           </select>
@@ -245,9 +234,6 @@ export default function UsersPage() {
                       Joined
                     </th>
                     <th className="p-4 text-xs font-medium text-muted-foreground uppercase tracking-wider">
-                      Status
-                    </th>
-                    <th className="p-4 text-xs font-medium text-muted-foreground uppercase tracking-wider">
                       Verified
                     </th>
                   </tr>
@@ -270,11 +256,14 @@ export default function UsersPage() {
                             <span className="text-sm text-foreground font-medium">
                               {user.name}
                             </span>
-                            {user.role === 'ADMIN' && (
-                              <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/15 text-amber-400">
-                                ADMIN
-                              </span>
-                            )}
+                            {(() => {
+                              const badge = roleBadge(user.role);
+                              return badge ? (
+                                <span className={`ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${badge.className}`}>
+                                  {badge.label}
+                                </span>
+                              ) : null;
+                            })()}
                           </div>
                         </div>
                       </td>
@@ -291,7 +280,6 @@ export default function UsersPage() {
                       <td className="p-4 text-sm text-muted-foreground">
                         {formatDate(user.createdAt)}
                       </td>
-                      <td className="p-4">{statusBadge(user.status)}</td>
                       <td className="p-4">
                         <div className="flex items-center gap-2">
                           {user.isEmailVerified ? (

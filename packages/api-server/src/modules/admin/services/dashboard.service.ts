@@ -1,5 +1,6 @@
 import { prisma } from '../../../config/database';
 import redis from '../../../config/redis';
+import { OPEN_TENDER_STATUSES } from '../../tenders/status-groups';
 
 export const dashboardService = {
   async getDashboardStats() {
@@ -49,7 +50,7 @@ export const dashboardService = {
         _sum: { amount: true },
       }),
       prisma.tender.count(),
-      prisma.tender.count({ where: { status: 'ACTIVE' } }),
+      prisma.tender.count({ where: { status: { in: [...OPEN_TENDER_STATUSES] } } }),
       prisma.tender.count({ where: { createdAt: { gte: startOfToday } } }),
       prisma.tender.count({ where: { createdAt: { gte: startOfYesterday, lt: startOfToday } } }),
       prisma.tender.count({ where: { createdAt: { gte: startOfWeek } } }),

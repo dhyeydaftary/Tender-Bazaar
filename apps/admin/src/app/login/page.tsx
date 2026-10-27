@@ -20,6 +20,16 @@ import {
 import { useAuthStore } from '@/lib/auth';
 import { useAppearance } from '@/lib/appearance';
 
+/**
+ * Email the role tabs fill in. By default the development fixture accounts from
+ * prisma/seed.ts; a demo build (docker-compose.demo-local.yml) sets these
+ * build-time emails instead. The password is never filled: the user always
+ * types it. NEXT_PUBLIC_* values are inlined at build time, so changing them
+ * requires rebuilding the admin image.
+ */
+const DEMO_SUPER_ADMIN_EMAIL = process.env.NEXT_PUBLIC_DEMO_SUPER_ADMIN_EMAIL || '';
+const DEMO_ADMIN_EMAIL = process.env.NEXT_PUBLIC_DEMO_ADMIN_EMAIL || '';
+
 export default function LoginPage() {
   const router = useRouter();
   const { login } = useAuthStore();
@@ -57,15 +67,15 @@ export default function LoginPage() {
 
   const selectSuperAdmin = () => {
     setSelectedRole('superadmin');
-    setEmail('superadmin@tenderbazaar.com');
-    setPassword('SuperAdmin@123');
+    setEmail(DEMO_SUPER_ADMIN_EMAIL || 'superadmin@tenderbazaar.com');
+    setPassword('');
     setError('');
   };
 
   const selectAdmin = () => {
     setSelectedRole('admin');
-    setEmail('admin@tenderbazaar.com');
-    setPassword('Admin@123');
+    setEmail(DEMO_ADMIN_EMAIL || 'admin@tenderbazaar.com');
+    setPassword('');
     setError('');
   };
 
@@ -249,32 +259,8 @@ export default function LoginPage() {
             </button>
           </form>
 
-          {/* Quick Credential Hint Pills */}
-          <div className="mt-5 pt-4 border-t border-border">
-            <div className="flex items-center justify-between text-[11px] text-muted-foreground mb-2">
-              <span className="font-semibold text-foreground">Quick Access Accounts:</span>
-              <span className="text-[10px] text-primary-500">Click tab above to fill</span>
-            </div>
-            <div className="grid grid-cols-2 gap-2 text-[11px] font-mono">
-              <div
-                onClick={selectSuperAdmin}
-                className="cursor-pointer p-2.5 rounded-lg bg-muted/40 border border-border hover:border-primary-500/40 hover:bg-muted/70 transition-colors"
-              >
-                <div className="text-amber-500 font-sans font-bold text-[10px] uppercase">Super Admin</div>
-                <div className="text-muted-foreground truncate">superadmin@...</div>
-              </div>
-              <div
-                onClick={selectAdmin}
-                className="cursor-pointer p-2.5 rounded-lg bg-muted/40 border border-border hover:border-primary-500/40 hover:bg-muted/70 transition-colors"
-              >
-                <div className="text-primary-500 font-sans font-bold text-[10px] uppercase">Admin</div>
-                <div className="text-muted-foreground truncate">admin@...</div>
-              </div>
-            </div>
-          </div>
-
           {/* Footer Security Badge */}
-          <div className="mt-5 flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
+          <div className="mt-6 pt-4 border-t border-border flex items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
             <Shield className="w-3.5 h-3.5 text-accent-500 shrink-0" />
             <span>256-Bit TLS Encryption • Audit Logged • RBAC Protected</span>
           </div>

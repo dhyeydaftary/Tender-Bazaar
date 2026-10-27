@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { prisma } from '../../config/database';
-import { env } from '../../config/env';
+import { env, validatePaymentsDemoMode } from '../../config/env';
 import { getRazorpayClient, isRazorpayConfigured } from '../../config/razorpay';
 import { AppError } from '../../shared/middleware/error-handler';
 import { planConfigService } from '../subscriptions/plan-config.service';
@@ -33,6 +33,10 @@ function calculatePriceWithGST(basePrice: number) {
  * not configured Razorpay still gets a working mock checkout.
  */
 function isRazorpayMockMode(): boolean {
+  // Demo payments have their own confirmation path and never relax Razorpay
+  // signature verification.
+  if (isPaymentsDemoMode()) return false;
+
   // SECURITY: mock mode is a DEVELOPMENT convenience and must never engage in
   // production.
   //
@@ -52,6 +56,68 @@ function isRazorpayMockMode(): boolean {
   if (env.NODE_ENV === 'production') return false;
 
   return !isRazorpayConfigured();
+}
+
+/**
+ * Simulated payments for the isolated client demo (PAYMENTS_DEMO_MODE).
+ *
+ * SECURITY: decided ONLY by server configuration, and re-validated here on top
+ * of the startup check in config/env.ts (validatePaymentsDemoMode), so the
+ * demo path stays closed even if that check were bypassed. Request input —
+ * flags, order ids, signatures — never enables it.
+ */
+export function isPaymentsDemoMode(): boolean {
+  return env.PAYMENTS_DEMO_MODE === 'true' && validatePaymentsDemoMode(env).length === 0;
+}
+
+/** Order ids minted for demo checkouts; never sent to Razorpay. */
+export const DEMO_ORDER_PREFIX = 'order_demo_';
+
+/** How a checkout is completed, as reported to the client. */
+export type PaymentMode = 'razorpay' | 'demo' | 'dev-mock';
+
+function resolvePaymentMode(): PaymentMode {
+  if (isPaymentsDemoMode()) return 'demo';
+  if (isRazorpayMockMode()) return 'dev-mock';
+  return 'razorpay';
+}
+
+/**
+ * Raised when Razorpay rejects or cannot be reached while creating an order.
+ * There is deliberately no fallback: a locally minted order id would represent
+ * a payment that never reached the gateway.
+ */
+function gatewayOrderError(err: any): AppError {
+  console.error(
+    'Razorpay order creation failed:',
+    err?.error?.description || err?.message || 'unknown error',
+  );
+  return new AppError(
+    'The payment gateway could not create an order. No payment was taken; please try again later.',
+    502,
+    'PAYMENT_ORDER_FAILED',
+  );
+}
+
+/**
+ * Payment states that Razorpay confirmation (verify or `payment.captured`) may
+ * move to SUCCESS. FAILED is included because Razorpay lets a customer retry
+ * within the same order after a declined attempt, which `payment.failed` has
+ * already recorded as FAILED. SUCCESS is already processed, and REFUNDED must
+ * never become successful again.
+ */
+const CONFIRMABLE_PAYMENT_STATUSES: Array<'PENDING' | 'FAILED'> = ['PENDING', 'FAILED'];
+
+/**
+ * Constant-time comparison of an expected hex HMAC with a caller-supplied
+ * signature. Malformed or wrong-length input is a mismatch, never a throw.
+ */
+export function signaturesMatch(expectedHex: string, provided: unknown): boolean {
+  if (typeof provided !== 'string') return false;
+  const expected = Buffer.from(expectedHex, 'utf8');
+  const actual = Buffer.from(provided, 'utf8');
+  if (expected.length !== actual.length) return false;
+  return crypto.timingSafeEqual(expected, actual);
 }
 
 /** Plan display order for upgrade/downgrade detection */
@@ -107,14 +173,19 @@ export const paymentService = {
 
     let razorpayOrderId: string;
 
-    const isMockMode = isRazorpayMockMode();
+    const paymentMode = resolvePaymentMode();
 
-    if (isMockMode) {
+    if (paymentMode === 'demo') {
+      // Isolated demo: completed by confirmDemoPayment, never by Razorpay.
+      razorpayOrderId = `${DEMO_ORDER_PREFIX}${crypto.randomBytes(8).toString('hex')}`;
+    } else if (paymentMode === 'dev-mock') {
       // Dev / Test mode: create mock order
       razorpayOrderId = `order_mock_${crypto.randomBytes(8).toString('hex')}`;
     } else {
+      // Outside the try: missing credentials surface as 503 PAYMENTS_NOT_CONFIGURED.
+      const gateway = getRazorpayClient();
       try {
-        const order = await getRazorpayClient().orders.create({
+        const order = await gateway.orders.create({
           amount: amountInPaise,
           currency: 'INR',
           receipt: `rcpt_${userId.slice(-8)}_${Date.now()}`,
@@ -130,8 +201,7 @@ export const paymentService = {
         });
         razorpayOrderId = order.id;
       } catch (err: any) {
-        console.warn('Razorpay order creation failed, falling back to mock order:', err?.error?.description || err?.message);
-        razorpayOrderId = `order_mock_${crypto.randomBytes(8).toString('hex')}`;
+        throw gatewayOrderError(err);
       }
     }
 
@@ -159,6 +229,8 @@ export const paymentService = {
       finalAmount,
       currency: 'INR',
       keyId: env.RAZORPAY_KEY_ID || 'rzp_test_placeholder',
+      paymentMode,
+      isSimulated: paymentMode !== 'razorpay',
       paymentId: payment.id,
       planName: plan.name,
       billingCycle,
@@ -268,6 +340,7 @@ export const paymentService = {
   // ───────────────────────────────────────────────────────────────
 
   async verifyPayment(
+    userId: string,
     razorpayOrderId: string,
     razorpayPaymentId: string,
     razorpaySignature: string
@@ -277,7 +350,19 @@ export const paymentService = {
     });
 
     if (!payment) throw new AppError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
+    if (payment.userId !== userId) throw new AppError('Payment does not belong to this user', 403, 'UNAUTHORIZED');
     if (payment.status === 'SUCCESS') throw new AppError('Payment already verified', 400, 'PAYMENT_ALREADY_VERIFIED');
+    if (!(CONFIRMABLE_PAYMENT_STATUSES as string[]).includes(payment.status)) {
+      // REFUNDED: replaying the original, genuinely valid signature must not
+      // turn a refunded payment back into an active subscription.
+      throw new AppError('This payment can no longer be verified', 400, 'INVALID_PAYMENT_STATUS');
+    }
+
+    // A demo order never reached Razorpay, so no gateway signature can exist
+    // for it. It is completed only by confirmDemoPayment, under demo mode.
+    if (razorpayOrderId.startsWith(DEMO_ORDER_PREFIX)) {
+      throw new AppError('Demo orders cannot be verified as Razorpay payments', 400, 'DEMO_ORDER');
+    }
 
     // Verify the HMAC signature.
     //
@@ -288,29 +373,39 @@ export const paymentService = {
     // real order by sending an id prefixed `pay_mock_`.
     //
     // Consequence by design: when real credentials are configured, EVERY
-    // verification must present a valid signature. A `order_mock_*` row that
-    // only exists because a live Razorpay call failed represents a payment that
-    // never reached Razorpay, so it correctly fails here rather than silently
+    // verification must present a valid signature. Order creation no longer
+    // falls back to a locally minted id when Razorpay fails, and any such
+    // legacy `order_mock_*` row correctly fails here rather than silently
     // activating a subscription.
     if (!isRazorpayMockMode()) {
+      // SECURITY: an HMAC keyed with an empty (or placeholder) secret is
+      // computable by anyone, so it proves nothing. Without real credentials
+      // there is no verification to perform: refuse, and change nothing.
+      if (!isRazorpayConfigured()) {
+        throw new AppError('Payment gateway is not configured on this server.', 503, 'PAYMENTS_NOT_CONFIGURED');
+      }
+
       const expectedSignature = crypto
         .createHmac('sha256', env.RAZORPAY_KEY_SECRET)
         .update(`${razorpayOrderId}|${razorpayPaymentId}`)
         .digest('hex');
 
-      if (expectedSignature !== razorpaySignature) {
-        await prisma.payment.update({
-          where: { id: payment.id },
+      if (!signaturesMatch(expectedSignature, razorpaySignature)) {
+        // Conditional, so a concurrent successful verification is never
+        // overwritten back to FAILED.
+        await prisma.payment.updateMany({
+          where: { id: payment.id, status: { in: CONFIRMABLE_PAYMENT_STATUSES } },
           data: { status: 'FAILED' },
         });
         throw new AppError('Invalid payment signature', 400, 'INVALID_SIGNATURE');
       }
     }
 
-    // Update payment to SUCCESS
+    // Claim the payment atomically: of concurrent or replayed verifications,
+    // exactly one moves it to SUCCESS and goes on to activate the subscription.
     const paidAt = new Date();
-    const updatedPayment = await prisma.payment.update({
-      where: { id: payment.id },
+    const claimed = await prisma.payment.updateMany({
+      where: { id: payment.id, status: { in: CONFIRMABLE_PAYMENT_STATUSES } },
       data: {
         status: 'SUCCESS',
         razorpayPaymentId,
@@ -318,7 +413,64 @@ export const paymentService = {
         paidAt,
       },
     });
+    if (claimed.count !== 1) {
+      throw new AppError('Payment already verified', 400, 'PAYMENT_ALREADY_VERIFIED');
+    }
 
+    const updatedPayment = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    return this.activateSubscription(payment, updatedPayment, razorpayOrderId, false);
+  },
+
+  // ───────────────────────────────────────────────────────────────
+  // CONFIRM DEMO PAYMENT (PAYMENTS_DEMO_MODE only — no money moves)
+  // ───────────────────────────────────────────────────────────────
+
+  async confirmDemoPayment(userId: string, orderId: string) {
+    if (!isPaymentsDemoMode()) {
+      throw new AppError('Demo payments are not enabled on this server', 403, 'DEMO_PAYMENTS_DISABLED');
+    }
+    if (!orderId.startsWith(DEMO_ORDER_PREFIX)) {
+      throw new AppError('Only demo orders can be confirmed here', 400, 'NOT_A_DEMO_ORDER');
+    }
+
+    const payment = await prisma.payment.findUnique({ where: { razorpayOrderId: orderId } });
+
+    if (!payment) throw new AppError('Payment not found', 404, 'PAYMENT_NOT_FOUND');
+    if (payment.userId !== userId) throw new AppError('Payment does not belong to this user', 403, 'UNAUTHORIZED');
+    if (payment.status === 'SUCCESS') throw new AppError('Payment already verified', 400, 'PAYMENT_ALREADY_VERIFIED');
+    if (payment.status !== 'PENDING') {
+      throw new AppError('Only pending payments can be confirmed', 400, 'INVALID_PAYMENT_STATUS');
+    }
+
+    // Claim the payment atomically, so two concurrent confirmations cannot
+    // both activate a subscription.
+    const paidAt = new Date();
+    const claimed = await prisma.payment.updateMany({
+      where: { id: payment.id, status: 'PENDING' },
+      data: {
+        status: 'SUCCESS',
+        razorpayPaymentId: `pay_demo_${crypto.randomBytes(8).toString('hex')}`,
+        paidAt,
+      },
+    });
+    if (claimed.count !== 1) {
+      throw new AppError('Payment already verified', 400, 'PAYMENT_ALREADY_VERIFIED');
+    }
+
+    const updatedPayment = await prisma.payment.findUniqueOrThrow({ where: { id: payment.id } });
+    return this.activateSubscription(payment, updatedPayment, orderId, true);
+  },
+
+  // ───────────────────────────────────────────────────────────────
+  // ACTIVATE SUBSCRIPTION (after a payment has been marked SUCCESS)
+  // ───────────────────────────────────────────────────────────────
+
+  async activateSubscription(
+    payment: { userId: string; planSlug: string | null; billingCycle: string | null },
+    updatedPayment: unknown,
+    razorpayOrderId: string,
+    isDemo: boolean,
+  ) {
     // Calculate subscription dates
     const startDate = new Date();
     const endDate = new Date();
@@ -376,8 +528,10 @@ export const paymentService = {
         type: 'SYSTEM',
         channel: 'IN_APP',
         title: 'Subscription Activated',
-        message: `Your ${plan.name} plan (${payment.billingCycle?.toLowerCase()}) is now active until ${endDate.toLocaleDateString('en-IN')}.`,
-        data: { planSlug: plan.slug, billingCycle: payment.billingCycle },
+        message:
+          `Your ${plan.name} plan (${payment.billingCycle?.toLowerCase()}) is now active until ${endDate.toLocaleDateString('en-IN')}.` +
+          (isDemo ? ' Demo transaction — no payment was taken.' : ''),
+        data: { planSlug: plan.slug, billingCycle: payment.billingCycle, ...(isDemo ? { demo: true } : {}) },
       },
     });
     await invalidateUnreadCount(payment.userId);
@@ -385,7 +539,10 @@ export const paymentService = {
     return {
       subscription,
       payment: updatedPayment,
-      message: `Successfully subscribed to ${plan.name} plan`,
+      isSimulated: isDemo,
+      message: isDemo
+        ? `Demo subscription to ${plan.name} activated — no payment was taken`
+        : `Successfully subscribed to ${plan.name} plan`,
     };
   },
 
@@ -488,13 +645,16 @@ export const paymentService = {
     const amountInPaise = Math.round(payment.amount * 100);
     let razorpayOrderId: string;
 
-    const isMockMode = isRazorpayMockMode();
+    const paymentMode = resolvePaymentMode();
 
-    if (isMockMode) {
+    if (paymentMode === 'demo') {
+      razorpayOrderId = `${DEMO_ORDER_PREFIX}${crypto.randomBytes(8).toString('hex')}`;
+    } else if (paymentMode === 'dev-mock') {
       razorpayOrderId = `order_mock_${crypto.randomBytes(8).toString('hex')}`;
     } else {
+      const gateway = getRazorpayClient();
       try {
-        const order = await getRazorpayClient().orders.create({
+        const order = await gateway.orders.create({
           amount: amountInPaise,
           currency: 'INR',
           receipt: `retry_${userId.slice(-8)}_${Date.now()}`,
@@ -507,8 +667,7 @@ export const paymentService = {
         });
         razorpayOrderId = order.id;
       } catch (err: any) {
-        console.warn('Razorpay retry order creation failed, falling back to mock order:', err?.error?.description || err?.message);
-        razorpayOrderId = `order_mock_${crypto.randomBytes(8).toString('hex')}`;
+        throw gatewayOrderError(err);
       }
     }
 
@@ -534,6 +693,8 @@ export const paymentService = {
       gstAmount: payment.gstAmount,
       currency: payment.currency,
       keyId: env.RAZORPAY_KEY_ID || 'rzp_test_placeholder',
+      paymentMode,
+      isSimulated: paymentMode !== 'razorpay',
       paymentId: newPayment.id,
       retriedFrom: payment.id,
     };
@@ -688,16 +849,23 @@ export const paymentService = {
   // ───────────────────────────────────────────────────────────────
 
   async handleWebhook(body: Buffer | string, signature: string) {
-    // Verify webhook signature
-    if (env.RAZORPAY_WEBHOOK_SECRET) {
-      const expectedSignature = crypto
-        .createHmac('sha256', env.RAZORPAY_WEBHOOK_SECRET)
-        .update(typeof body === 'string' ? body : body.toString())
-        .digest('hex');
+    // Verify webhook signature.
+    //
+    // SECURITY: without a secret there is nothing to verify against, so the
+    // webhook is refused. It used to be processed UNVERIFIED in that case, and
+    // a forged `payment.captured` for any pending order activated a
+    // subscription without payment (handlePaymentCaptured).
+    if (!env.RAZORPAY_WEBHOOK_SECRET) {
+      throw new AppError('Payment webhooks are not configured on this server', 503, 'WEBHOOKS_NOT_CONFIGURED');
+    }
 
-      if (expectedSignature !== signature) {
-        throw new AppError('Invalid webhook signature', 400, 'INVALID_WEBHOOK_SIGNATURE');
-      }
+    const expectedSignature = crypto
+      .createHmac('sha256', env.RAZORPAY_WEBHOOK_SECRET)
+      .update(typeof body === 'string' ? body : body.toString())
+      .digest('hex');
+
+    if (!signaturesMatch(expectedSignature, signature)) {
+      throw new AppError('Invalid webhook signature', 400, 'INVALID_WEBHOOK_SIGNATURE');
     }
 
     const payload = typeof body === 'string' ? JSON.parse(body) : JSON.parse(body.toString());
@@ -740,22 +908,28 @@ export const paymentService = {
   async handlePaymentCaptured(payload: any) {
     const paymentEntity = payload.payload?.payment?.entity;
     if (!paymentEntity?.order_id) return;
+    // Demo orders never reach Razorpay; no gateway event can complete one.
+    if (String(paymentEntity.order_id).startsWith(DEMO_ORDER_PREFIX)) return;
 
     const payment = await prisma.payment.findUnique({
       where: { razorpayOrderId: paymentEntity.order_id },
     });
 
-    if (!payment || payment.status === 'SUCCESS') return;
+    // SUCCESS is already processed; a REFUNDED payment must not be revived by
+    // a (re)delivered capture event.
+    if (!payment || !(CONFIRMABLE_PAYMENT_STATUSES as string[]).includes(payment.status)) return;
 
-    // Mark payment as successful
-    await prisma.payment.update({
-      where: { id: payment.id },
+    // Mark payment as successful — atomically, so a capture event racing the
+    // client's verification activates the subscription only once.
+    const claimed = await prisma.payment.updateMany({
+      where: { id: payment.id, status: { in: CONFIRMABLE_PAYMENT_STATUSES } },
       data: {
         status: 'SUCCESS',
         razorpayPaymentId: paymentEntity.id,
         paidAt: new Date(),
       },
     });
+    if (claimed.count !== 1) return;
 
     console.log(`[Razorpay Webhook] Payment captured: ${paymentEntity.id} for order ${paymentEntity.order_id}`);
 

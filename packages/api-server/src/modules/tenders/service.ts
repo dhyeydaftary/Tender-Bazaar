@@ -4,6 +4,12 @@ import redis from '../../config/redis';
 import { TENDER_INDEX, indexTender } from '../../config/elasticsearch-setup';
 import { AppError } from '../../shared/middleware/error-handler';
 import { enrichTenderDetails } from './tender-enricher';
+import {
+  OPEN_TENDER_STATUSES,
+  expiredOpenTendersWhere,
+  pickUnambiguous,
+  summarizeStatusCounts,
+} from './status-groups';
 
 interface SearchFilters {
   query?: string;
@@ -303,14 +309,7 @@ export const tenderService = {
 
     if (!tender) {
       tender = await prisma.tender.findFirst({
-        where: {
-          OR: [
-            { sourceId: id },
-            { referenceNumber: id },
-            { sourceId: { contains: id } },
-            { referenceNumber: { contains: id } },
-          ],
-        },
+        where: { OR: [{ sourceId: id }, { referenceNumber: id }] },
         include: {
           documents: true,
           results: true,
@@ -319,17 +318,23 @@ export const tenderService = {
     }
 
     if (!tender) {
-      // Graceful fallback for mock/external tender IDs (e.g. t1, t2, b1)
-      const fallbackTender = await prisma.tender.findFirst({
-        where: { status: 'ACTIVE' },
+      // Partial ids are accepted only when they identify exactly one tender.
+      const partial = await prisma.tender.findMany({
+        where: {
+          OR: [{ sourceId: { contains: id } }, { referenceNumber: { contains: id } }],
+        },
         include: {
           documents: true,
           results: true,
         },
+        take: 2,
       });
-      if (fallbackTender) {
-        return fallbackTender;
-      }
+      tender = pickUnambiguous(partial);
+    }
+
+    if (!tender) {
+      // Previously an unknown id returned the first ACTIVE tender, so a stale
+      // or mistyped link silently showed an unrelated tender.
       throw new AppError('Tender not found', 404, 'TENDER_NOT_FOUND');
     }
 
@@ -427,11 +432,9 @@ export const tenderService = {
   async getTenderStats(stateFilter?: string) {
     // Dynamically update tender statuses based on deadline expiration
     try {
+      const now = new Date();
       const expired = await prisma.tender.updateMany({
-        where: {
-          status: 'ACTIVE',
-          bidSubmissionDeadline: { lt: new Date() },
-        },
+        where: expiredOpenTendersWhere(now),
         data: {
           status: 'CLOSED',
         },
@@ -450,8 +453,8 @@ export const tenderService = {
               query: {
                 bool: {
                   must: [
-                    { term: { status: 'ACTIVE' } },
-                    { range: { bidSubmissionDeadline: { lt: new Date().toISOString() } } },
+                    { terms: { status: [...OPEN_TENDER_STATUSES] } },
+                    { range: { bidSubmissionDeadline: { lt: now.toISOString() } } },
                   ],
                 },
               },
@@ -461,25 +464,26 @@ export const tenderService = {
       }
     } catch {}
 
-    const activeWhere: any = { status: 'ACTIVE' };
+    // "Active" = open for bidding (ACTIVE + CORRIGENDUM); see status-groups.ts.
+    const activeWhere: any = { status: { in: [...OPEN_TENDER_STATUSES] } };
     const baseWhere: any = {};
-    const closedWhere: any = { status: { in: ['CLOSED', 'AWARDED', 'CANCELLED'] } };
     const todayWhere: any = {
       createdAt: { gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-      status: 'ACTIVE',
+      status: { in: [...OPEN_TENDER_STATUSES] },
     };
 
     if (stateFilter) {
       activeWhere.state = { equals: stateFilter, mode: 'insensitive' };
       baseWhere.state = { equals: stateFilter, mode: 'insensitive' };
-      closedWhere.state = { equals: stateFilter, mode: 'insensitive' };
       todayWhere.state = { equals: stateFilter, mode: 'insensitive' };
     }
 
-    const [total, activeCount, closedCount, newToday, byCategory, byState] = await Promise.all([
-      prisma.tender.count({ where: Object.keys(baseWhere).length > 0 ? baseWhere : undefined }),
-      prisma.tender.count({ where: activeWhere }),
-      prisma.tender.count({ where: closedWhere }),
+    const [byStatus, newToday, byCategory, byState] = await Promise.all([
+      prisma.tender.groupBy({
+        by: ['status'],
+        _count: true,
+        where: Object.keys(baseWhere).length > 0 ? baseWhere : undefined,
+      }),
       prisma.tender.count({ where: todayWhere }),
       prisma.tender.groupBy({
         by: ['category'],
@@ -489,20 +493,21 @@ export const tenderService = {
       prisma.tender.groupBy({
         by: ['state'],
         _count: true,
-        where: { status: 'ACTIVE' },
+        where: { status: { in: [...OPEN_TENDER_STATUSES] } },
         orderBy: { _count: { state: 'desc' } },
       }),
     ]);
 
+    const counts = summarizeStatusCounts(byStatus);
     const stateCountMap: Record<string, number> = {};
     for (const s of byState) {
       if (s.state) stateCountMap[s.state] = s._count;
     }
 
     return {
-      total,
-      active: activeCount,
-      closed: closedCount,
+      total: counts.total,
+      active: counts.active,
+      closed: counts.closed,
       newToday,
       byCategory: Object.fromEntries(byCategory.map((c) => [c.category, c._count])),
       byState: stateCountMap,

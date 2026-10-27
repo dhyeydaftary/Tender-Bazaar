@@ -1,0 +1,82 @@
+# ───────────────────────────────────────────────────────────────────────────
+# Demo overlay — replaces the real scraper with the lightweight demo scraper.
+#
+# Add it LAST to an explicit file list. It never stands alone.
+#
+#   Local:       docker compose -f docker-compose.yml -f docker-compose.override.yml \
+#                               -f docker-compose.demo.yml up -d --build
+#   Demo server: docker compose -f docker-compose.yml -f docker-compose.prod.yml \
+#                               -f docker-compose.demo.yml up -d --build
+#
+# What changes versus the file set it is layered on:
+#   scraper        moved into the `real-scraper` profile: not built, not started
+#   demo-scraper   added: node:20-alpine, no browser, simulated runs only
+#   api-server     SCRAPER_API_URL → demo-scraper; queue fallback off (the demo
+#                  has no queue consumer, so a queued job would never run)
+#   elasticsearch  heap 512m / 1G limit (demo data volumes; saves ~0.5-1 GB RAM)
+#
+# Everything else (postgres, redis, elasticsearch, db-init, api-server, web,
+# admin, ai-service, notification-service) runs exactly as in the base files,
+# with the same container, network and volume names. Run this only against a
+# database used for the demo: simulated runs are written to ScrapingRun and
+# ScraperHealth (under *-Demo portal names, marked simulated).
+#
+# CAVEAT — a profile is not a lock. Compose still builds/starts `scraper` if you
+# name it explicitly (`up scraper`, `build scraper`), pass `--profile
+# real-scraper` or `--profile "*"`, or set COMPOSE_PROFILES. Verify with
+# `scripts/check-demo-compose.py` (see docs/DEMO.md) before presenting.
+#
+# SCRAPER_API_TOKEN must be set in .env (>=16 characters, not a placeholder):
+# the demo scraper runs with NODE_ENV=production and refuses to start
+# otherwise. api-server sends the same value.
+# ───────────────────────────────────────────────────────────────────────────
+
+services:
+  scraper:
+    profiles: ['real-scraper']
+
+  demo-scraper:
+    build:
+      context: .
+      dockerfile: packages/scraper-engine/Dockerfile.demo
+    container_name: tenderbazaar-demo-scraper
+    restart: unless-stopped
+    # Not published: api-server reaches it at http://demo-scraper:4001 on the
+    # Compose network, and the healthcheck runs inside the container.
+    environment:
+      DEMO_SCRAPER_MODE: 'true'
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-postgres}@postgres:5432/tenderbazaar
+      SCRAPER_API_PORT: '4001'
+      SCRAPER_API_TOKEN: ${SCRAPER_API_TOKEN:?SCRAPER_API_TOKEN must be set (>=16 chars) for the demo scraper}
+      DEMO_SCHEDULE_ENABLED: ${DEMO_SCHEDULE_ENABLED:-false}
+      DEMO_CONCURRENCY: ${DEMO_CONCURRENCY:-2}
+      DEMO_PAGE_DELAY_MIN_MS: ${DEMO_PAGE_DELAY_MIN_MS:-1800}
+      DEMO_PAGE_DELAY_MAX_MS: ${DEMO_PAGE_DELAY_MAX_MS:-4200}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          memory: 192M
+          cpus: '0.25'
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+
+  api-server:
+    environment:
+      SCRAPER_API_URL: http://demo-scraper:4001
+      SCRAPER_QUEUE_FALLBACK: 'false'
+
+  elasticsearch:
+    environment:
+      - 'ES_JAVA_OPTS=-Xms512m -Xmx512m'
+    deploy:
+      resources:
+        limits:
+          memory: 1G

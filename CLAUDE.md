@@ -50,8 +50,8 @@ prisma/         — Database schema and migrations
 ## Subscription Plans (₹ INR)
 | Plan | Monthly | Yearly | Views/Day | Alerts | AI Checks/Mo |
 |------|---------|--------|-----------|--------|--------------|
-| Free | ₹0 | ₹0 | 5 | 1 | 1 (total) |
-| Starter | ₹1,499 | ₹14,999 | 50 | 5 | 5 |
+| Free | ₹0 | ₹0 | 5 | 1 | 1 |
+| Starter | ₹1,499 | ₹14,999 | 50 | 5 | 10 |
 | Professional | ₹4,999 | ₹49,999 | Unlimited | 20 | 50 |
 | Enterprise | ₹14,999 | ₹1,49,999 | Unlimited | Unlimited | Unlimited |
 

@@ -24,7 +24,7 @@ const FREE_PLAN_DEFAULTS: Partial<SubscriptionPlan> = {
   whatsappAlerts: false,
   corrigendumAlerts: false,
   maxAiChecks: 1,
-  aiChecksResetMonthly: false,
+  aiChecksResetMonthly: true,
   aiTenderSummary: false,
   aiBidAssistant: 'none',
   tenderComparison: false,
@@ -45,6 +45,11 @@ const FREE_PLAN_DEFAULTS: Partial<SubscriptionPlan> = {
   displayOrder: 0,
   isActive: true,
 };
+
+/** First instant of the calendar month (UTC) containing `now`. */
+function startOfUtcMonth(now: Date): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+}
 
 export const planConfigService = {
   /**
@@ -123,15 +128,7 @@ export const planConfigService = {
 
     switch (limitName) {
       case 'maxAiChecks': {
-        // Free plan: lifetime counter; Paid: monthly counter
-        if (!plan.aiChecksResetMonthly) {
-          // Lifetime — use DB field
-          const sub = await prisma.subscription.findUnique({ where: { userId } });
-          return sub?.lifetimeAiChecksUsed ?? 0;
-        }
-        // Monthly — use DB field (reset monthly by cron)
-        const sub = await prisma.subscription.findUnique({ where: { userId } });
-        return sub?.aiChecksUsed ?? 0;
+        return this.getAiCheckUsage(userId, plan);
       }
 
       case 'maxSavedTenders': {
@@ -163,34 +160,73 @@ export const planConfigService = {
   },
 
   /**
+   * AI eligibility checks used against the plan's allowance — the single count
+   * that checkLimit (requireAiCheck and the eligibility service), the usage API
+   * behind the dashboard's AI Checks card, and incrementUsage all agree on.
+   *
+   * Monthly plans count within the current calendar month (UTC):
+   *   - with an active subscription, `aiChecksUsed`, which only counts while
+   *     `aiChecksResetDate` falls in this month. The counter rolls over lazily
+   *     here and in incrementUsage — nothing schedules resetMonthlyCounters, so
+   *     a counter that waited for it would never renew;
+   *   - otherwise (no subscription row, or an expired one — the user is on the
+   *     Free plan), the checks recorded for the user this month.
+   * Lifetime plans count subscription.lifetimeAiChecksUsed, or all recorded
+   * checks when there is no subscription row.
+   */
+  async getAiCheckUsage(userId: string, plan: SubscriptionPlan, now = new Date()): Promise<number> {
+    const sub = await prisma.subscription.findUnique({ where: { userId } });
+    if (plan.aiChecksResetMonthly) {
+      const monthStart = startOfUtcMonth(now);
+      const subscriptionCounts = !!sub && sub.status === 'ACTIVE' && sub.endDate > now;
+      if (subscriptionCounts) {
+        return sub.aiChecksResetDate && sub.aiChecksResetDate >= monthStart ? sub.aiChecksUsed : 0;
+      }
+      return prisma.eligibilityCheck.count({ where: { userId, updatedAt: { gte: monthStart } } });
+    }
+    if (sub) return sub.lifetimeAiChecksUsed;
+    return prisma.eligibilityCheck.count({ where: { userId } });
+  },
+
+  /**
    * Increment usage after a successful action.
    */
   async incrementUsage(userId: string, limitName: string): Promise<void> {
     switch (limitName) {
       case 'maxAiChecks': {
+        // updateMany throughout: a user without a subscription row has no
+        // counter (their recorded checks are counted instead — see
+        // getAiCheckUsage), and must not make the check fail after it ran.
         const plan = await this.getUserPlan(userId);
         if (plan.aiChecksResetMonthly) {
-          // Paid plan: increment monthly counter
-          await prisma.subscription.update({
-            where: { userId },
+          // Count within this month's window; a counter from an earlier month
+          // restarts at 1 with a new window.
+          const now = new Date();
+          const thisMonth = await prisma.subscription.updateMany({
+            where: { userId, aiChecksResetDate: { gte: startOfUtcMonth(now) } },
             data: {
               aiChecksUsed: { increment: 1 },
               lifetimeAiChecksUsed: { increment: 1 },
             },
           });
-        } else {
-          // Free plan: increment lifetime counter only
-          // User might not have a subscription record, create free one if needed
-          const sub = await prisma.subscription.findUnique({ where: { userId } });
-          if (sub) {
-            await prisma.subscription.update({
+          if (thisMonth.count === 0) {
+            await prisma.subscription.updateMany({
               where: { userId },
               data: {
+                aiChecksUsed: 1,
+                aiChecksResetDate: now,
                 lifetimeAiChecksUsed: { increment: 1 },
-                aiChecksUsed: { increment: 1 },
               },
             });
           }
+        } else {
+          await prisma.subscription.updateMany({
+            where: { userId },
+            data: {
+              lifetimeAiChecksUsed: { increment: 1 },
+              aiChecksUsed: { increment: 1 },
+            },
+          });
         }
         break;
       }
@@ -243,8 +279,11 @@ export const planConfigService = {
   },
 
   /**
-   * Reset monthly AI check counters for all paid subscriptions.
-   * Called by a scheduled cron job.
+   * Reset monthly AI check counters for all subscriptions on monthly plans.
+   *
+   * Not scheduled anywhere, and not required: monthly counters roll over by
+   * date in getAiCheckUsage/incrementUsage. Running it is still consistent —
+   * it zeroes the counters and starts a new window now.
    */
   async resetMonthlyCounters(): Promise<number> {
     const result = await prisma.subscription.updateMany({
@@ -318,16 +357,12 @@ export const planConfigService = {
    */
   async getUsageStats(userId: string) {
     const plan = await this.getUserPlan(userId);
-    const subscription = await prisma.subscription.findUnique({ where: { userId } });
 
-    const [savedCount, alertCount] = await Promise.all([
+    const [savedCount, alertCount, aiChecksUsed] = await Promise.all([
       prisma.savedTender.count({ where: { userId } }),
       prisma.alert.count({ where: { userId } }),
+      this.getAiCheckUsage(userId, plan),
     ]);
-
-    const aiChecksUsed = plan.aiChecksResetMonthly
-      ? (subscription?.aiChecksUsed ?? 0)
-      : (subscription?.lifetimeAiChecksUsed ?? 0);
 
     return [
       {
@@ -336,7 +371,7 @@ export const planConfigService = {
         used: aiChecksUsed,
         limit: plan.maxAiChecks,
         resetType: plan.aiChecksResetMonthly ? 'monthly' : 'lifetime',
-        percentage: plan.maxAiChecks === -1 ? 0 : Math.round((aiChecksUsed / plan.maxAiChecks) * 100),
+        percentage: plan.maxAiChecks === -1 ? 0 : plan.maxAiChecks === 0 ? 100 : Math.round((aiChecksUsed / plan.maxAiChecks) * 100),
       },
       {
         feature: 'maxAlerts',

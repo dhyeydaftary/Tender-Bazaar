@@ -1,4 +1,5 @@
 import api, { unwrap, unwrapWithMeta } from './api';
+import { isHealthReport, type SystemHealthResponse } from './service-health';
 import type {
   DashboardStats,
   DashboardCharts,
@@ -10,6 +11,8 @@ import type {
   Period,
   ScraperHealthEntry,
   ScraperRun,
+  ScraperEngineStatus,
+  TriggerScraperResult,
   PlatformAnalytics,
   SearchTrends,
   TenderAnalyticsData,
@@ -148,7 +151,7 @@ export async function getUserList(params: {
   search?: string;
   role?: string;
   plan?: string;
-  status?: string;
+  emailVerified?: 'verified' | 'unverified';
   sortBy?: string;
   sortOrder?: string;
 }): Promise<UserListResponse> {
@@ -278,9 +281,19 @@ export async function getScraperRuns(
  * The backend queues the run and returns immediately; it does not wait for the
  * scrape to finish. Callers should refetch getScraperHealth() to read real
  * results rather than predicting them.
+ *
+ * `simulated` is true when the engine is the demo scraper: the run is recorded
+ * but no portal is contacted. Fails with 503 when no run could be started.
  */
 export async function triggerScraper(portalName: string) {
-  return unwrap(api.post(`/admin/scrapers/${encodeURIComponent(portalName)}/trigger`));
+  return unwrap<TriggerScraperResult>(
+    api.post(`/admin/scrapers/${encodeURIComponent(portalName)}/trigger`),
+  );
+}
+
+/** Which scraper engine is connected, and whether it only simulates runs. */
+export async function getScraperEngineStatus(): Promise<ScraperEngineStatus> {
+  return unwrap<ScraperEngineStatus>(api.get('/admin/scrapers/engine'));
 }
 
 // ---------------------------------------------------------------------------
@@ -471,23 +484,25 @@ export async function replyToTicket(
 // System Health
 // ---------------------------------------------------------------------------
 
-export interface SystemHealthResponse {
-  status: 'ok' | 'degraded' | 'unhealthy';
-  timestamp: string;
-  uptime: number;
-  services: {
-    database?: 'healthy' | 'unhealthy';
-    redis?: 'healthy' | 'unhealthy';
-    elasticsearch?: 'healthy' | 'unhealthy';
-    [key: string]: string | undefined;
-  };
-}
+export type { SystemHealthResponse } from './service-health';
 
-export async function getSystemHealth(): Promise<SystemHealthResponse> {
-  const baseURL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
-  const rootURL = baseURL.replace(/\/api\/v1\/?$/, '');
-  const res = await api.get<SystemHealthResponse>('/health', { baseURL: rootURL });
-  return res.data;
+/**
+ * GET /api/v1/health, answered by the API itself (not proxied to the admin app).
+ *
+ * This used to strip `/api/v1` from the API URL and request `/health`. With the
+ * relative API URL the server build uses, that became `/health` on the admin
+ * origin — the admin app's own 404 page — so every service read Disconnected.
+ * A degraded API answers 503 with the same per-service body, which is the
+ * information this card exists to show, so 503 is not treated as a failure.
+ */
+export async function getSystemHealth(): Promise<{ report: SystemHealthResponse; latencyMs: number }> {
+  const started = performance.now();
+  const res = await api.get('/health', { validateStatus: (s) => s === 200 || s === 503 });
+  const latencyMs = Math.round(performance.now() - started);
+  if (!isHealthReport(res.data)) {
+    throw new Error('The health endpoint returned an unexpected response.');
+  }
+  return { report: res.data, latencyMs };
 }
 
 // ---------------------------------------------------------------------------

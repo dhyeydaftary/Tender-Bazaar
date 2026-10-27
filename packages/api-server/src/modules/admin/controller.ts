@@ -379,6 +379,15 @@ export const adminController = {
     }
   },
 
+  async getScraperEngineStatus(_req: Request, res: Response, next: NextFunction) {
+    try {
+      const status = await scrapersService.getEngineStatus();
+      res.json({ success: true, data: status });
+    } catch (error) {
+      next(error);
+    }
+  },
+
   async getScraperRuns(req: Request, res: Response, next: NextFunction) {
     try {
       const { page, limit } = scraperRunsQuerySchema.parse(req.query);

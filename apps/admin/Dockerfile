@@ -26,6 +26,12 @@ COPY packages/shared/ packages/shared/
 # Accept build-time env vars so they get baked into the JS bundle
 ARG NEXT_PUBLIC_API_URL=http://localhost:4000/api/v1
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+# Demo builds only: emails the login page's quick-fill tabs use instead of the
+# development seed accounts. Empty (the default) keeps the original behaviour.
+ARG NEXT_PUBLIC_DEMO_SUPER_ADMIN_EMAIL=
+ARG NEXT_PUBLIC_DEMO_ADMIN_EMAIL=
+ENV NEXT_PUBLIC_DEMO_SUPER_ADMIN_EMAIL=$NEXT_PUBLIC_DEMO_SUPER_ADMIN_EMAIL
+ENV NEXT_PUBLIC_DEMO_ADMIN_EMAIL=$NEXT_PUBLIC_DEMO_ADMIN_EMAIL
 
 # Build Next.js (standalone output)
 RUN pnpm --filter @tenderbazaar/admin run build

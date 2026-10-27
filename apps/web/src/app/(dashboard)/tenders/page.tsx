@@ -76,6 +76,18 @@ function FilterSection({ title, open, onToggle, children }: { title: string; ope
 
 const ITEMS_PER_PAGE = 20;
 
+/**
+ * Status filter behind each tab. Mirrors OPEN_TENDER_STATUSES /
+ * CLOSED_TENDER_STATUSES in packages/api-server/src/modules/tenders/
+ * status-groups.ts, which GET /tenders/stats uses for the tab counts, so a
+ * tab's list and its count always cover the same statuses. "Active" means open
+ * for bidding, which includes tenders with a corrigendum.
+ */
+function statusFilterForTab(tab: 'ACTIVE' | 'CLOSED' | 'ALL'): string[] | undefined {
+  if (tab === 'ALL') return undefined;
+  return tab === 'CLOSED' ? ['CLOSED', 'AWARDED', 'CANCELLED'] : ['ACTIVE', 'CORRIGENDUM'];
+}
+
 const VALUE_RANGES: Record<string, { min?: number; max?: number }> = {
   'Under 10L': { max: 1000000 },
   '10L-1Cr': { min: 1000000, max: 10000000 },
@@ -111,7 +123,7 @@ export default function TendersPage() {
     limit: ITEMS_PER_PAGE,
     sortBy: sortOption.sortBy,
     sortOrder: sortOption.sortOrder,
-    status: ['ACTIVE'],
+    status: statusFilterForTab('ACTIVE'),
   });
   const { saved: savedIds, toggleSave } = useSavedTenders();
 
@@ -147,7 +159,7 @@ export default function TendersPage() {
   const handleStatusTabChange = (tab: 'ACTIVE' | 'CLOSED' | 'ALL') => {
     setStatusTab(tab);
     updateFilters({
-      status: tab === 'ALL' ? undefined : tab === 'CLOSED' ? ['CLOSED', 'AWARDED', 'CANCELLED'] : ['ACTIVE'],
+      status: statusFilterForTab(tab),
       page: 1,
     });
   };
@@ -236,7 +248,7 @@ export default function TendersPage() {
     setSelectedValueRange(null);
     setSpecialFilters({ msme: false, startup: false, emdExempt: false });
     updateFilters({
-      status: statusTab === 'ALL' ? undefined : [statusTab],
+      status: statusFilterForTab(statusTab),
       categories: undefined,
       states: undefined,
       minValue: undefined,

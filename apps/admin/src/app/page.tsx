@@ -40,6 +40,7 @@ import {
   getScraperHealth,
 } from '@/lib/admin-api';
 import type { DashboardStats, DashboardCharts, RecentSignup, Period } from '@/lib/types';
+import { useAppearance } from '@/lib/appearance';
 
 // ---------------------------------------------------------------------------
 // Chart colors
@@ -87,6 +88,8 @@ function formatChartDate(dateStr: string): string {
 
 export default function AdminDashboard() {
   const [chartPeriod, setChartPeriod] = useState<Period>('30d');
+  // Chart libraries need concrete colors, so they read the live brand colors.
+  const { secondaryColor, accentColor } = useAppearance();
 
   const { data: stats, isLoading: statsLoading, error: statsError, refetch: refetchStats } =
     useFetch(() => getDashboardStats(), []);
@@ -280,7 +283,7 @@ export default function AdminDashboard() {
                 <XAxis dataKey="name" stroke="#6B7280" fontSize={12} tickLine={false} />
                 <YAxis stroke="#6B7280" fontSize={12} tickLine={false} tickFormatter={(v) => `${Math.floor(v / 1000)}k`} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '10px', color: '#ffffff', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.4)' }}
+                  contentStyle={{ backgroundColor: secondaryColor, border: '1px solid #334155', borderRadius: '10px', color: '#ffffff', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.4)' }}
                   labelStyle={{ color: '#ffffff', fontWeight: 600, fontSize: '13px' }}
                   itemStyle={{ color: '#f1f5f9', fontSize: '12px' }}
                   formatter={(value: number) => [`₹${formatINR(value)}`, 'Revenue']}
@@ -316,7 +319,7 @@ export default function AdminDashboard() {
                   ))}
                 </Pie>
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '10px', color: '#ffffff', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.4)' }}
+                  contentStyle={{ backgroundColor: secondaryColor, border: '1px solid #334155', borderRadius: '10px', color: '#ffffff', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.4)' }}
                   labelStyle={{ color: '#ffffff', fontWeight: 600, fontSize: '13px' }}
                   itemStyle={{ color: '#f1f5f9', fontSize: '12px' }}
                   formatter={(value: number, name: string) => [formatINR(value), name]}
@@ -349,12 +352,12 @@ export default function AdminDashboard() {
                 <XAxis dataKey="name" stroke="#6B7280" fontSize={12} tickLine={false} />
                 <YAxis stroke="#6B7280" fontSize={12} tickLine={false} />
                 <Tooltip
-                  contentStyle={{ backgroundColor: '#0f172a', border: '1px solid #334155', borderRadius: '10px', color: '#ffffff', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.4)' }}
+                  contentStyle={{ backgroundColor: secondaryColor, border: '1px solid #334155', borderRadius: '10px', color: '#ffffff', boxShadow: '0 10px 25px -5px rgba(0,0,0,0.4)' }}
                   labelStyle={{ color: '#ffffff', fontWeight: 600, fontSize: '13px' }}
                   itemStyle={{ color: '#f1f5f9', fontSize: '12px' }}
                   formatter={(value: number) => [`${value} new users`, 'Signups']}
                 />
-                <Bar dataKey="users" fill="#00D4AA" radius={[4, 4, 0, 0]} />
+                <Bar dataKey="users" fill={accentColor} radius={[4, 4, 0, 0]} />
               </BarChart>
             </ResponsiveContainer>
           )}
