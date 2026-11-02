@@ -1,8 +1,9 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Search, Trophy, MapPin, Calendar, ChevronLeft, ChevronRight, X, Filter, Loader2 } from 'lucide-react';
+import { Search, Trophy, MapPin, Calendar, ChevronLeft, ChevronRight, X, Filter, Loader2, RefreshCw, Play, Pause } from 'lucide-react';
 import api from '@/lib/api';
+import { cn } from '@/lib/utils';
 
 /* ─── Value & date formatters ─── */
 function formatValue(value?: number | null): string {
@@ -89,55 +90,140 @@ export default function ResultsPage() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
 
+  /* ─── Real-time Auto-refresh State ─── */
+  const [isAutoRefresh, setIsAutoRefresh] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [lastRefreshedAt, setLastRefreshedAt] = useState<Date>(new Date());
+  const [timeAgoText, setTimeAgoText] = useState('just now');
+  const [newResultIds, setNewResultIds] = useState<Set<string>>(new Set());
+  const resultsRef = useRef<TenderResult[]>([]);
+  resultsRef.current = results;
+
   /* Debounce timer for search input */
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
 
   /* ─── Fetch results from API ─── */
-  const fetchResults = useCallback(async (params: {
-    page: number;
-    search: string;
-    category: string;
-    state: string;
-  }) => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const queryParams: Record<string, string | number> = {
-        page: params.page,
-        limit: RESULTS_PER_PAGE,
-        sortBy: 'awardedDate',
-        sortOrder: 'desc',
-      };
-      if (params.search) {
-        queryParams.query = params.search;
-        queryParams.search = params.search;
-      }
-      if (params.category) queryParams.category = params.category;
-      if (params.state) queryParams.state = params.state;
-
-      const res = await api.get('/results', { params: queryParams });
-      const data = res.data;
-
-      if (data.success) {
-        const mapped = (data.data as ApiResult[]).map(mapApiResult);
-        setResults(mapped);
-        setTotal(data.meta?.total ?? mapped.length);
+  const fetchResults = useCallback(
+    async (
+      params: {
+        page: number;
+        search: string;
+        category: string;
+        state: string;
+      },
+      isBackground = false
+    ) => {
+      if (!isBackground) {
+        setIsLoading(true);
+        setError(null);
       } else {
-        setError(data.error?.message || 'Failed to fetch results');
-        setResults([]);
+        setIsRefreshing(true);
       }
-    } catch (err: any) {
-      setError(err.response?.data?.error?.message || 'Failed to fetch results');
-      setResults([]);
-    } finally {
-      setIsLoading(false);
-    }
-  }, []);
+
+      try {
+        const queryParams: Record<string, string | number> = {
+          page: params.page,
+          limit: RESULTS_PER_PAGE,
+          sortBy: 'awardedDate',
+          sortOrder: 'desc',
+        };
+        if (params.search) {
+          queryParams.query = params.search;
+          queryParams.search = params.search;
+        }
+        if (params.category) queryParams.category = params.category;
+        if (params.state) queryParams.state = params.state;
+
+        const res = await api.get('/results', { params: queryParams });
+        const data = res.data;
+
+        if (data.success) {
+          const mapped = (data.data as ApiResult[]).map(mapApiResult);
+
+          // Detect new items during background poll
+          if (isBackground && resultsRef.current.length > 0) {
+            const currentIds = new Set(resultsRef.current.map((r) => r.id));
+            const fresh = mapped.filter((r) => !currentIds.has(r.id)).map((r) => r.id);
+            if (fresh.length > 0) {
+              setNewResultIds(new Set(fresh));
+              setTimeout(() => setNewResultIds(new Set()), 4000);
+            }
+          }
+
+          setResults(mapped);
+          setTotal(data.meta?.total ?? mapped.length);
+          setLastRefreshedAt(new Date());
+        } else if (!isBackground) {
+          setError(data.error?.message || 'Failed to fetch results');
+          setResults([]);
+        }
+      } catch (err: any) {
+        if (!isBackground) {
+          setError(err.response?.data?.error?.message || 'Failed to fetch results');
+          setResults([]);
+        }
+      } finally {
+        if (!isBackground) setIsLoading(false);
+        setIsRefreshing(false);
+      }
+    },
+    []
+  );
 
   /* Trigger fetch when filters or page change */
   useEffect(() => {
     fetchResults({ page, search: searchQuery, category: categoryFilter, state: stateFilter });
   }, [page, categoryFilter, stateFilter, fetchResults]);
+
+  /* Real-time automatic polling effect */
+  useEffect(() => {
+    if (!isAutoRefresh) return;
+
+    // Poll every 8 seconds for new tender results
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      fetchResults(
+        { page, search: searchQuery, category: categoryFilter, state: stateFilter },
+        true // background poll
+      );
+    }, 8000);
+
+    // Immediately poll when the tab gains focus or visibility returns
+    const handleVisibilityOrFocus = () => {
+      if (typeof document !== 'undefined' && !document.hidden && isAutoRefresh) {
+        fetchResults(
+          { page, search: searchQuery, category: categoryFilter, state: stateFilter },
+          true
+        );
+      }
+    };
+
+    window.addEventListener('focus', handleVisibilityOrFocus);
+    document.addEventListener('visibilitychange', handleVisibilityOrFocus);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('focus', handleVisibilityOrFocus);
+      document.removeEventListener('visibilitychange', handleVisibilityOrFocus);
+    };
+  }, [isAutoRefresh, page, searchQuery, categoryFilter, stateFilter, fetchResults]);
+
+  /* Relative time ticker */
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const diffSec = Math.floor((Date.now() - lastRefreshedAt.getTime()) / 1000);
+      if (diffSec < 5) {
+        setTimeAgoText('just now');
+      } else if (diffSec < 60) {
+        setTimeAgoText(`${diffSec}s ago`);
+      } else {
+        const diffMin = Math.floor(diffSec / 60);
+        setTimeAgoText(`${diffMin}m ago`);
+      }
+    }, 2000);
+
+    return () => clearInterval(timer);
+  }, [lastRefreshedAt]);
 
   /* Debounced search — resets page to 1 */
   const handleSearchChange = (value: string) => {
@@ -190,8 +276,8 @@ export default function ResultsPage() {
   return (
     <div>
       {/* Page header */}
-      <div className="mb-6">
-        <div className="flex items-center gap-3 mb-2">
+      <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div className="flex items-center gap-3">
           <div className="p-2 bg-primary-50 dark:bg-primary-950/30 rounded-lg">
             <Trophy className="h-6 w-6 text-primary-500" />
           </div>
@@ -199,6 +285,60 @@ export default function ResultsPage() {
             <h1 className="text-2xl font-bold text-foreground">Tender Results</h1>
             <p className="text-sm text-muted-foreground">Track who won government tenders across India</p>
           </div>
+        </div>
+
+        {/* Real-time status badge & controls */}
+        <div className="flex items-center gap-2.5 self-start sm:self-auto">
+          {/* Live pulsing badge */}
+          <div className="flex items-center gap-2 px-3 py-1.5 bg-card border border-border rounded-lg text-xs">
+            <span className="relative flex h-2 w-2">
+              {isAutoRefresh && (
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+              )}
+              <span
+                className={cn(
+                  'relative inline-flex rounded-full h-2 w-2',
+                  isAutoRefresh ? 'bg-emerald-500' : 'bg-muted-foreground/50'
+                )}
+              />
+            </span>
+            <span className="font-medium text-foreground">
+              {isAutoRefresh ? 'Live' : 'Paused'}
+            </span>
+            <span className="text-muted-foreground text-[11px] hidden sm:inline">
+              • {isRefreshing ? 'Checking...' : `Updated ${timeAgoText}`}
+            </span>
+          </div>
+
+          {/* Toggle Auto-Refresh */}
+          <button
+            onClick={() => setIsAutoRefresh((prev) => !prev)}
+            title={isAutoRefresh ? 'Pause real-time auto-refresh' : 'Resume real-time auto-refresh'}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border transition-all',
+              isAutoRefresh
+                ? 'bg-emerald-50 dark:bg-emerald-950/20 text-emerald-600 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/40 hover:bg-emerald-100 dark:hover:bg-emerald-950/40'
+                : 'bg-muted/50 text-muted-foreground border-border hover:text-foreground'
+            )}
+          >
+            {isAutoRefresh ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
+            <span>{isAutoRefresh ? 'Auto-refresh' : 'Resume'}</span>
+          </button>
+
+          {/* Manual Refresh Button */}
+          <button
+            onClick={() =>
+              fetchResults(
+                { page, search: searchQuery, category: categoryFilter, state: stateFilter },
+                true
+              )
+            }
+            disabled={isRefreshing}
+            title="Refresh now"
+            className="p-2 text-muted-foreground hover:text-foreground hover:bg-muted border border-border rounded-lg transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={cn('h-3.5 w-3.5', isRefreshing && 'animate-spin text-primary-500')} />
+          </button>
         </div>
       </div>
 
@@ -329,9 +469,21 @@ export default function ResultsPage() {
           filteredResults.map((result) => (
             <div key={result.id}>
               {/* Desktop row */}
-              <div className="hidden md:grid md:grid-cols-12 gap-4 px-4 py-4 border-b border-border last:border-0 hover:bg-muted/30 transition-colors items-center">
+              <div
+                className={cn(
+                  'hidden md:grid md:grid-cols-12 gap-4 px-4 py-4 border-b border-border last:border-0 hover:bg-muted/30 transition-all duration-500 items-center',
+                  newResultIds.has(result.id) && 'bg-emerald-500/10 dark:bg-emerald-950/20 ring-1 ring-inset ring-emerald-500/30'
+                )}
+              >
                 <div className="col-span-4">
-                  <p className="text-sm font-medium text-foreground line-clamp-2">{result.tenderTitle}</p>
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-medium text-foreground line-clamp-2">{result.tenderTitle}</p>
+                    {newResultIds.has(result.id) && (
+                      <span className="shrink-0 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-500 text-white">
+                        NEW
+                      </span>
+                    )}
+                  </div>
                   <div className="flex items-center gap-2 mt-1">
                     <span className="text-xs text-muted-foreground">{result.referenceNumber}</span>
                     <span className="text-xs px-1.5 py-0.5 rounded bg-muted text-muted-foreground">{result.category}</span>
@@ -365,8 +517,20 @@ export default function ResultsPage() {
               </div>
 
               {/* Mobile card */}
-              <div className="md:hidden p-4 border-b border-border last:border-0">
-                <p className="text-sm font-medium text-foreground mb-1">{result.tenderTitle}</p>
+              <div
+                className={cn(
+                  'md:hidden p-4 border-b border-border last:border-0 transition-all duration-500',
+                  newResultIds.has(result.id) && 'bg-emerald-500/10 dark:bg-emerald-950/20'
+                )}
+              >
+                <div className="flex items-start justify-between gap-2 mb-1">
+                  <p className="text-sm font-medium text-foreground">{result.tenderTitle}</p>
+                  {newResultIds.has(result.id) && (
+                    <span className="shrink-0 text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-emerald-500 text-white">
+                      NEW
+                    </span>
+                  )}
+                </div>
                 <p className="text-xs text-muted-foreground mb-2">{result.organization}</p>
                 <div className="flex items-center justify-between">
                   <button

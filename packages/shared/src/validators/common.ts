@@ -4,7 +4,7 @@ export const emailSchema = z.string().email('Invalid email address');
 
 export const phoneSchema = z.string().regex(
   /^[6-9]\d{9}$/,
-  'Invalid Indian phone number'
+  'Invalid phone number'
 );
 
 export const passwordSchema = z.string()

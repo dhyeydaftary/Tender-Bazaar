@@ -106,6 +106,21 @@ export const authService = {
         isEmailVerified: true,
         avatarUrl: true,
         createdAt: true,
+        subscription: {
+          select: {
+            id: true,
+            status: true,
+            billingCycle: true,
+            endDate: true,
+            plan: {
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -320,8 +335,36 @@ export const authService = {
       },
     });
 
+    const userWithSub = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        avatarUrl: true,
+        isPhoneVerified: true,
+        subscription: {
+          select: {
+            id: true,
+            status: true,
+            billingCycle: true,
+            endDate: true,
+            plan: {
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
     return {
-      user: { id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role },
+      user: userWithSub || { id: user.id, name: user.name, email: user.email, phone: user.phone, role: user.role },
       accessToken,
       refreshToken,
     };
@@ -413,8 +456,34 @@ export const authService = {
       },
     });
 
+    const userWithSub = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        avatarUrl: true,
+        subscription: {
+          select: {
+            id: true,
+            status: true,
+            billingCycle: true,
+            endDate: true,
+            plan: {
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
     return {
-      user: { id: user.id, name: user.name, email: user.email, role: user.role, avatarUrl: user.avatarUrl },
+      user: userWithSub || { id: user.id, name: user.name, email: user.email, role: user.role, avatarUrl: user.avatarUrl },
       accessToken,
       refreshToken,
     };

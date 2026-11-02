@@ -107,8 +107,11 @@ export default function RegisterPage() {
       toast.success('Account created successfully!');
       router.push('/dashboard');
     } catch (error: any) {
+      const err = error.response?.data?.error;
       const message =
-        error.response?.data?.error?.message || 'Registration failed';
+        err?.details?.[0]?.message ||
+        err?.message ||
+        'Registration failed';
       toast.error(message);
     }
   };

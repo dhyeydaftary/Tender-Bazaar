@@ -133,6 +133,7 @@ function Sidebar() {
   const router = useRouter();
   const { collapsed, toggle } = useContext(SidebarContext);
   const { user, logout, fetchUser } = useAuthStore();
+  const { currentPlan, fetchSubscription } = useSubscriptionStore();
   const { data: dashboard, fetchDashboard } = useDashboardStore();
   const [mounted, setMounted] = useState(false);
 
@@ -143,11 +144,39 @@ function Sidebar() {
     // TTL-guarded and de-duplicates concurrent callers, so this shares one
     // request with the dashboard page rather than adding another.
     fetchDashboard();
-  }, [fetchUser, fetchDashboard]);
+    fetchSubscription();
+  }, [fetchUser, fetchDashboard, fetchSubscription]);
 
   if (!mounted) return null;
 
   const displayName = user?.name || 'User';
+
+  // Resolve active plan dynamically (from subscription store or user object)
+  const activePlanName =
+    currentPlan?.name ||
+    (user?.subscription?.status === 'ACTIVE' ? user?.subscription?.plan?.name : null);
+
+  const activePlanSlug = (
+    currentPlan?.slug ||
+    (user?.subscription?.status === 'ACTIVE' ? user?.subscription?.plan?.slug : null) ||
+    (activePlanName ? activePlanName.toLowerCase() : 'free')
+  ).toLowerCase();
+
+  const isPaidPlan =
+    activePlanSlug !== 'free' &&
+    activePlanName &&
+    activePlanName.toLowerCase() !== 'free';
+
+  const planLabel = (() => {
+    if (user?.role === 'SUPER_ADMIN') return 'Super Admin';
+    if (user?.role === 'ADMIN' && !isPaidPlan) return 'Admin';
+    if (activePlanName) {
+      return activePlanName.toLowerCase().endsWith('plan')
+        ? activePlanName
+        : `${activePlanName} Plan`;
+    }
+    return 'Free Plan';
+  })();
 
   const handleLogout = async () => {
     try {
@@ -264,9 +293,28 @@ function Sidebar() {
             </div>
             <div className="flex-1 min-w-0">
               <p className="text-sm font-medium text-foreground truncate">{displayName}</p>
-              <p className="text-[10px] text-muted-foreground">
-                {user?.role === 'SUPER_ADMIN' ? 'Super Admin' : user?.role === 'ADMIN' ? 'Admin' : 'Free Plan'}
-              </p>
+              <div className="flex items-center gap-1.5 mt-0.5">
+                <span
+                  className={cn(
+                    'text-[10px] font-medium px-1.5 py-0.5 rounded border inline-flex items-center leading-none',
+                    activePlanSlug === 'enterprise' &&
+                      'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/30',
+                    activePlanSlug === 'professional' &&
+                      'bg-primary-500/10 text-primary-600 dark:text-primary-400 border-primary-500/30',
+                    activePlanSlug === 'starter' &&
+                      'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30',
+                    (!activePlanSlug || activePlanSlug === 'free') &&
+                      'bg-muted text-muted-foreground border-border',
+                    user?.role === 'SUPER_ADMIN' &&
+                      'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30',
+                    user?.role === 'ADMIN' &&
+                      !isPaidPlan &&
+                      'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/30'
+                  )}
+                >
+                  {planLabel}
+                </span>
+              </div>
             </div>
             <button
               type="button"
@@ -316,8 +364,35 @@ function TopBar() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const pathname = usePathname();
   const router = useRouter();
-  const { logout } = useAuthStore();
+  const { logout, user } = useAuthStore();
+  const { currentPlan } = useSubscriptionStore();
   const { data: dashboard } = useDashboardStore();
+
+  const mobileActivePlanName =
+    currentPlan?.name ||
+    (user?.subscription?.status === 'ACTIVE' ? user?.subscription?.plan?.name : null);
+
+  const mobileActivePlanSlug = (
+    currentPlan?.slug ||
+    (user?.subscription?.status === 'ACTIVE' ? user?.subscription?.plan?.slug : null) ||
+    (mobileActivePlanName ? mobileActivePlanName.toLowerCase() : 'free')
+  ).toLowerCase();
+
+  const mobileIsPaidPlan =
+    mobileActivePlanSlug !== 'free' &&
+    mobileActivePlanName &&
+    mobileActivePlanName.toLowerCase() !== 'free';
+
+  const mobilePlanLabel = (() => {
+    if (user?.role === 'SUPER_ADMIN') return 'Super Admin';
+    if (user?.role === 'ADMIN' && !mobileIsPaidPlan) return 'Admin';
+    if (mobileActivePlanName) {
+      return mobileActivePlanName.toLowerCase().endsWith('plan')
+        ? mobileActivePlanName
+        : `${mobileActivePlanName} Plan`;
+    }
+    return 'Free Plan';
+  })();
 
   // next-themes resolves the theme only on the client, so rendering an icon on
   // the server produced a hydration mismatch. A fixed-size placeholder holds
@@ -344,9 +419,11 @@ function TopBar() {
       <header className="sticky top-0 z-40 h-14 border-b border-border bg-background/80 backdrop-blur-xl flex items-center justify-between px-4 lg:px-6">
         {/* Mobile menu button */}
         <button
+          type="button"
           onClick={() => setMobileMenuOpen((o) => !o)}
           className="md:hidden p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
           aria-label="Toggle menu"
+          suppressHydrationWarning
         >
           {mobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
         </button>
@@ -357,21 +434,26 @@ function TopBar() {
         </Link>
 
         {/* Search bar hint - desktop */}
-        <button className="hidden md:flex items-center gap-2.5 bg-muted/50 border border-border rounded-lg px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted transition-colors max-w-xs">
+        <Link
+          href="/tenders"
+          className="hidden md:flex items-center gap-2.5 bg-muted/50 border border-border rounded-lg px-3 py-1.5 text-sm text-muted-foreground hover:bg-muted transition-colors max-w-xs"
+        >
           <Search className="w-4 h-4" />
           <span>Search tenders...</span>
           <kbd className="hidden lg:inline-flex items-center gap-0.5 bg-background/50 border border-border rounded px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground ml-auto">
             <Command className="w-3 h-3" />K
           </kbd>
-        </button>
+        </Link>
 
         {/* Right side */}
         <div className="flex items-center gap-2">
           {/* Theme toggle */}
           <button
+            type="button"
             onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}
             className="p-2 rounded-lg text-muted-foreground hover:text-foreground hover:bg-muted transition-colors min-w-[36px] min-h-[36px] flex items-center justify-center"
             aria-label="Toggle theme"
+            suppressHydrationWarning
           >
             {mounted ? (
               theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />
@@ -450,6 +532,43 @@ function TopBar() {
                 </div>
               ))}
             </nav>
+            {/* Mobile user profile info */}
+            <div className="border-t border-border p-3 mt-auto">
+              <div className="flex items-center gap-3 px-2 py-1">
+                <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-500/30 to-accent-500/30 flex items-center justify-center shrink-0 overflow-hidden border border-border">
+                  {user?.avatarUrl ? (
+                    <img src={user.avatarUrl} alt={user?.name || 'User'} className="w-full h-full object-cover" />
+                  ) : (
+                    <User className="w-4 h-4 text-primary-500" />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-foreground truncate">{user?.name || 'User'}</p>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    <span
+                      className={cn(
+                        'text-[10px] font-medium px-1.5 py-0.5 rounded border inline-flex items-center leading-none',
+                        mobileActivePlanSlug === 'enterprise' &&
+                          'bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/30',
+                        mobileActivePlanSlug === 'professional' &&
+                          'bg-primary-500/10 text-primary-600 dark:text-primary-400 border-primary-500/30',
+                        mobileActivePlanSlug === 'starter' &&
+                          'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/30',
+                        (!mobileActivePlanSlug || mobileActivePlanSlug === 'free') &&
+                          'bg-muted text-muted-foreground border-border',
+                        user?.role === 'SUPER_ADMIN' &&
+                          'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30',
+                        user?.role === 'ADMIN' &&
+                          !mobileIsPaidPlan &&
+                          'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/30'
+                      )}
+                    >
+                      {mobilePlanLabel}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       )}

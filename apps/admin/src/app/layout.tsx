@@ -498,7 +498,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           }}
         />
       </head>
-      <body className="antialiased bg-background text-foreground font-sans">
+      <body className="antialiased bg-background text-foreground font-sans" suppressHydrationWarning>
         <AppearanceProvider>
           <AuthGuard>{children}</AuthGuard>
         </AppearanceProvider>

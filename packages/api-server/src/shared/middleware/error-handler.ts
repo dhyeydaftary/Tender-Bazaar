@@ -31,15 +31,17 @@ export function errorHandler(err: Error, _req: Request, res: Response, _next: Ne
 
   // Zod validation errors
   if (err instanceof ZodError) {
+    const details = err.errors.map((e) => ({
+      field: e.path.join('.'),
+      message: e.message,
+    }));
+    const firstErrorMessage = details[0]?.message;
     return res.status(400).json({
       success: false,
       error: {
         code: 'VALIDATION_ERROR',
-        message: 'Invalid input data',
-        details: err.errors.map((e) => ({
-          field: e.path.join('.'),
-          message: e.message,
-        })),
+        message: firstErrorMessage || 'Invalid input data',
+        details,
       },
     });
   }

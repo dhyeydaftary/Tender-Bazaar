@@ -27,24 +27,66 @@ export default function LoginPage() {
 
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    const cleanEmail = email.trim();
+    if (!cleanEmail) {
+      toast.error('Please enter your email address');
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      toast.error('Invalid email address');
+      return;
+    }
+    if (!password) {
+      toast.error('Please enter your password');
+      return;
+    }
     try {
-      await login(email, password);
+      await login(cleanEmail, password);
       toast.success('Welcome back!');
       router.push('/dashboard');
     } catch (error: any) {
-      const message = error.response?.data?.error?.message || 'Login failed';
+      const err = error.response?.data?.error;
+      const message =
+        err?.details?.[0]?.message ||
+        err?.message ||
+        (typeof err === 'string' ? err : null) ||
+        error.response?.data?.message ||
+        (error.message?.includes('Network Error') ? 'Cannot connect to server. Please check your connection.' : null) ||
+        error.message ||
+        'Login failed';
       toast.error(message);
     }
   };
 
   const handleSendOtp = async () => {
+    const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+    if (!cleanPhone) {
+      toast.error('Please enter your phone number');
+      return;
+    }
+    if (cleanPhone.length !== 10) {
+      toast.error('Invalid phone number. Please enter a 10-digit mobile number.');
+      return;
+    }
+    if (!/^[6-9]\d{9}$/.test(cleanPhone)) {
+      toast.error('Invalid phone number. Mobile number must start with 6, 7, 8, or 9.');
+      return;
+    }
     try {
-      await sendOtp(phone);
+      await sendOtp(cleanPhone);
       setOtpSent(true);
       toast.success('Verification code sent to your phone number');
       setTimeout(() => otpRefs.current[0]?.focus(), 100);
     } catch (error: any) {
-      const message = error.response?.data?.error?.message || 'Failed to send OTP';
+      const err = error.response?.data?.error;
+      const message =
+        err?.details?.[0]?.message ||
+        err?.message ||
+        (typeof err === 'string' ? err : null) ||
+        error.response?.data?.message ||
+        (error.message?.includes('Network Error') ? 'Cannot connect to server. Please check your connection.' : null) ||
+        error.message ||
+        'Failed to send OTP';
       toast.error(message);
     }
   };
@@ -82,15 +124,41 @@ export default function LoginPage() {
 
   const otpValue = otp.join('');
 
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleVerifyOtp = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const cleanPhone = phone.replace(/\D/g, '').slice(-10);
+    if (!cleanPhone || cleanPhone.length !== 10 || !/^[6-9]\d{9}$/.test(cleanPhone)) {
+      toast.error('Invalid phone number');
+      return;
+    }
+    if (otpValue.length !== 6) {
+      toast.error('Please enter the complete 6-digit OTP');
+      return;
+    }
     try {
-      await verifyOtp(phone, otpValue);
+      await verifyOtp(cleanPhone, otpValue);
       toast.success('Welcome!');
       router.push('/dashboard');
     } catch (error: any) {
-      const message = error.response?.data?.error?.message || 'Invalid OTP';
+      const err = error.response?.data?.error;
+      const message =
+        err?.details?.[0]?.message ||
+        err?.message ||
+        (typeof err === 'string' ? err : null) ||
+        error.response?.data?.message ||
+        (error.message?.includes('Network Error') ? 'Cannot connect to server. Please check your connection.' : null) ||
+        error.message ||
+        'Invalid OTP';
       toast.error(message);
+    }
+  };
+
+  const handlePhoneSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!otpSent) {
+      handleSendOtp();
+    } else {
+      handleVerifyOtp(e);
     }
   };
 
@@ -219,7 +287,7 @@ export default function LoginPage() {
             </form>
           ) : (
             /* Phone Tab */
-            <form onSubmit={handleVerifyOtp} className="space-y-4">
+            <form onSubmit={handlePhoneSubmit} className="space-y-4">
               {/* Phone Number */}
               <div>
                 <label className="block text-sm font-medium text-foreground mb-1.5">
@@ -238,7 +306,6 @@ export default function LoginPage() {
                     }
                     placeholder="9876543210"
                     maxLength={10}
-                    required
                     disabled={otpSent}
                     className="w-full pl-[4.25rem] pr-4 py-2.5 border border-border rounded-lg bg-card text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-colors disabled:opacity-50"
                   />
@@ -247,10 +314,9 @@ export default function LoginPage() {
 
               {!otpSent ? (
                 <button
-                  type="button"
-                  onClick={handleSendOtp}
-                  disabled={phone.length !== 10 || isLoading}
-                  className="w-full py-2.5 bg-primary-500 hover:bg-primary-600 active:bg-primary-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  type="submit"
+                  disabled={isLoading}
+                  className="w-full py-2.5 bg-primary-500 hover:bg-primary-600 active:bg-primary-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer"
                 >
                   {isLoading && <Loader2 className="h-4 w-4 animate-spin" />}
                   Send OTP

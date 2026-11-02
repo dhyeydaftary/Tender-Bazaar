@@ -28,8 +28,18 @@ api.interceptors.response.use(
   async (error) => {
     const originalRequest = error.config;
 
-    // Only handle 401 responses (not network errors)
-    if (error.response?.status === 401 && !originalRequest._retry) {
+    // Only handle 401 responses for non-auth requests (do NOT refresh on login/register failures)
+    const requestUrl = originalRequest?.url || '';
+    const isAuthRoute =
+      requestUrl.includes('/auth/login') ||
+      requestUrl.includes('/auth/register') ||
+      requestUrl.includes('/auth/send-otp') ||
+      requestUrl.includes('/auth/verify-otp') ||
+      requestUrl.includes('/auth/refresh-token') ||
+      requestUrl.includes('/auth/forgot-password') ||
+      requestUrl.includes('/auth/reset-password');
+
+    if (error.response?.status === 401 && !originalRequest._retry && !isAuthRoute) {
       originalRequest._retry = true;
 
       try {

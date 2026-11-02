@@ -516,7 +516,7 @@ export default function DashboardPage() {
     year: 'numeric',
   });
 
-  const displayName = user?.name || (mounted ? 'User' : '');
+  const displayName = mounted ? (user?.name || 'User') : '';
   const stats = data?.stats;
   // Only show skeletons on the very first load; a background refresh should not
   // blank out data the user is already reading.
@@ -531,10 +531,10 @@ export default function DashboardPage() {
     <div className="space-y-6">
       {/* ── Greeting ──────────────────────────────────────────────── */}
       <div>
-        <h1 className="text-heading-lg text-foreground font-display">
-          {greeting}, {displayName}
+        <h1 suppressHydrationWarning className="text-heading-lg text-foreground font-display">
+          {greeting}{displayName ? `, ${displayName}` : ''}
         </h1>
-        <p className="text-body-sm text-muted-foreground mt-0.5">{dateStr}</p>
+        <p suppressHydrationWarning className="text-body-sm text-muted-foreground mt-0.5">{dateStr}</p>
       </div>
 
       {/* ── Error banner ──────────────────────────────────────────── */}

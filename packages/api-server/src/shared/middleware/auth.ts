@@ -44,6 +44,21 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
         avatarUrl: true,
         isEmailVerified: true,
         isPhoneVerified: true,
+        subscription: {
+          select: {
+            id: true,
+            status: true,
+            billingCycle: true,
+            endDate: true,
+            plan: {
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+              },
+            },
+          },
+        },
       },
     });
 
