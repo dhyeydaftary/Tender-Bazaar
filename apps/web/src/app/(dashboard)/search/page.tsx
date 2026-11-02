@@ -177,10 +177,13 @@ export default function SearchPage() {
         const res = await api.get('/search/history');
         const history = res.data.data || [];
         // Extract unique query strings
-        const queries = history
-          .map((h: { query: string }) => h.query)
-          .filter(Boolean)
-          .slice(0, 8);
+        const queries = Array.from(
+          new Set(
+            history
+              .map((h: { query: string }) => h.query?.trim())
+              .filter(Boolean),
+          ),
+        ).slice(0, 8) as string[];
         setRecentSearches(queries);
       } catch {
         // Non-critical; silently ignore
@@ -575,9 +578,9 @@ export default function SearchPage() {
         {recentSearches.length > 0 && (
           <div className="mt-3 flex items-center gap-2 flex-wrap">
             <span className="text-caption text-muted-foreground">Recent:</span>
-            {recentSearches.map((term) => (
+            {recentSearches.map((term, idx) => (
               <button
-                key={term}
+                key={`${term}-${idx}`}
                 onClick={() => handleSearch(term)}
                 className="text-[11px] px-2.5 py-1 rounded-full bg-muted/50 text-muted-foreground hover:bg-primary-500/10 hover:text-primary-500 border border-border hover:border-primary-500/30 transition-all"
               >

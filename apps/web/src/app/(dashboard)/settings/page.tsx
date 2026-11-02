@@ -386,18 +386,21 @@ export default function SettingsPage() {
 
 function ProfileTab() {
   const { user, setUser } = useAuthStore();
-  const [name, setName] = useState(user?.name || '');
-  const [email] = useState(user?.email || '');
-  const [phone, setPhone] = useState(user?.phone || '');
+  const [mounted, setMounted] = useState(false);
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [avatarUploading, setAvatarUploading] = useState(false);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
+    setMounted(true);
     if (user?.name) setName(user.name);
+    if (user?.email) setEmail(user.email);
     if (user?.phone) setPhone(user.phone);
-  }, [user?.name, user?.phone]);
+  }, [user?.name, user?.email, user?.phone]);
 
   useEffect(() => {
     if (user?.avatarUrl) {
@@ -410,12 +413,14 @@ function ProfileTab() {
     }
   }, [user?.avatarUrl]);
 
-  const initials = (name || user?.name || 'User')
-    .split(' ')
-    .map((n) => n[0])
-    .join('')
-    .toUpperCase()
-    .slice(0, 2) || 'U';
+  const initials = mounted
+    ? (name || user?.name || 'User')
+        .split(' ')
+        .map((n) => n[0])
+        .join('')
+        .toUpperCase()
+        .slice(0, 2) || 'U'
+    : 'U';
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -490,7 +495,7 @@ function ProfileTab() {
     toast.success('Profile photo removed');
   };
 
-  const currentAvatar = avatarPreview || user?.avatarUrl;
+  const currentAvatar = mounted ? (avatarPreview || user?.avatarUrl) : null;
 
   return (
     <div className="space-y-6">
@@ -1509,7 +1514,7 @@ function AppearanceTab() {
     }
   };
 
-  const currentTheme = mounted ? theme : 'dark';
+  const currentTheme = mounted ? theme : 'light';
 
   const themeOptions: { key: 'dark' | 'light' | 'system'; label: string; description: string; icon: typeof Moon }[] = [
     { key: 'dark', label: 'Dark', description: 'Easy on the eyes', icon: Moon },
