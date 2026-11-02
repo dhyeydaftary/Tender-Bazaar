@@ -10,6 +10,17 @@ interface User {
   avatarUrl?: string;
   isEmailVerified?: boolean;
   isPhoneVerified?: boolean;
+  subscription?: {
+    id: string;
+    status: string;
+    billingCycle?: string;
+    endDate?: string;
+    plan: {
+      id: string;
+      name: string;
+      slug: string;
+    };
+  } | null;
 }
 
 interface AuthState {

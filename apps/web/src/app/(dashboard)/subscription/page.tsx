@@ -411,7 +411,7 @@ function DemoPaymentModal({
 /* ------------------------------------------------------------------ */
 
 export default function SubscriptionPage() {
-  const { user } = useAuthStore();
+  const { user, fetchUser } = useAuthStore();
 
   // Subscription store
   const {
@@ -510,6 +510,7 @@ export default function SubscriptionPage() {
             });
             toast.success('Subscription activated successfully!');
             fetchAll();
+            fetchUser();
           } catch {
             toast.error('Payment verification failed. Please contact support.');
           }
@@ -536,6 +537,7 @@ export default function SubscriptionPage() {
       toast.success('Demo subscription activated. No payment was taken.');
       setDemoOrder(null);
       fetchAll();
+      fetchUser();
     } catch (err: any) {
       toast.error(err.response?.data?.error?.message || 'Demo checkout could not be completed.');
     } finally {
@@ -551,6 +553,7 @@ export default function SubscriptionPage() {
       toast.success('Subscription cancelled. Access continues until end of billing period.');
       setIsCancelModalOpen(false);
       fetchAll();
+      fetchUser();
     } catch (err: any) {
       toast.error(
         err.response?.data?.error?.message || 'Failed to cancel subscription'

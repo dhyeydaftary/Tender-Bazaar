@@ -72,7 +72,7 @@ const DEFAULT_SETTINGS: { category: string; key: string; value: any; description
   { category: 'appearance', key: 'font', value: 'plus-jakarta-sans', description: 'Platform typography font' },
   { category: 'appearance', key: 'logoUrl', value: '/logo.svg', description: 'Platform logo URL' },
   { category: 'appearance', key: 'faviconUrl', value: '/favicon.ico', description: 'Platform favicon URL' },
-  { category: 'appearance', key: 'darkMode', value: true, description: 'Admin dark mode preference' },
+  { category: 'appearance', key: 'darkMode', value: false, description: 'Admin dark mode preference' },
   { category: 'appearance', key: 'compactLayout', value: false, description: 'Compact display layout' },
 ];
 

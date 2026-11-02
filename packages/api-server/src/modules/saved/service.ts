@@ -47,7 +47,13 @@ export const savedService = {
     }
     const realId = tender ? tender.id : tenderId;
     const deleted = await prisma.savedTender.deleteMany({
-      where: { userId, tenderId: realId },
+      where: {
+        userId,
+        OR: [
+          { tenderId: realId },
+          { id: tenderId },
+        ],
+      },
     });
 
     if (deleted.count > 0) {

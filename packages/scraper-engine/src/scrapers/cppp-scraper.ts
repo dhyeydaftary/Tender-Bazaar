@@ -34,7 +34,7 @@ export class CpppScraper extends BaseScraper {
       fullRescrape: options?.fullRescrape,
     });
 
-    this.searchUrl = 'https://eprocure.gov.in/cppp/latestactivetendersnew/cpppdata';
+    this.searchUrl = 'https://eprocure.gov.in/eprocure/app?page=FrontEndLatestActiveTenders&service=page';
     this.detailBaseUrl = 'https://eprocure.gov.in/eprocure/app';
   }
 
@@ -55,161 +55,171 @@ export class CpppScraper extends BaseScraper {
 
     try {
       // CPPP uses a paginated table. First page load to get session and total count.
-      const firstPageHtml = await this.fetchPage(this.searchUrl, {
-        headers: {
-          Referer: 'https://eprocure.gov.in/cppp/',
-          Accept: 'text/html,application/xhtml+xml',
-        },
-      });
+      let firstPageHtml = '';
+      try {
+        firstPageHtml = await this.fetchPage(this.searchUrl, {
+          headers: {
+            Referer: 'https://eprocure.gov.in/cppp/',
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+        });
+      } catch (fetchErr) {
+        this.logger.warn(`Failed to fetch initial CPPP listing page: ${(fetchErr as Error).message}`);
+      }
 
-      const listings = this.parseTenderList(firstPageHtml);
+      const listings = firstPageHtml ? this.parseTenderList(firstPageHtml) : [];
       // Fetched and parsed into listings, so page 1 counts as scraped.
-      // fetchPage() throws on failure, so a failed fetch never reaches here.
       if (listings.length > 0) pagesScraped++;
       totalFound += listings.length;
 
       this.logger.info(`Found ${listings.length} tenders on page 1`);
 
-      // New-only: one batch existence check per page; known-and-unchanged
-      // tenders never reach the detail fetch below.
-      const firstPage = await this.partitionListings(listings);
-      skippedExisting += firstPage.skipped.length;
+      if (listings.length > 0) {
+        // New-only: one batch existence check per page; known-and-unchanged
+        // tenders never reach the detail fetch below.
+        const firstPage = await this.partitionListings(listings);
+        skippedExisting += firstPage.skipped.length;
 
-      // Process each listing
-      for (const listing of firstPage.toProcess) {
-        try {
-          if (!listing.sourceId) continue;
+        // Process each listing
+        for (const listing of firstPage.toProcess) {
+          try {
+            if (!listing.sourceId) continue;
 
-          // Fetch individual tender detail page
-          const detailUrl = `${this.detailBaseUrl}?page=FrontEndTendersByOrganisation&service=page&tenderid=${listing.sourceId}`;
-          const detailHtml = await this.fetchPage(detailUrl, {
-            headers: {
-              Referer: this.searchUrl,
-            },
-          });
+            // Fetch individual tender detail page
+            const detailUrl = `${this.detailBaseUrl}?page=FrontEndTendersByOrganisation&service=page&tenderid=${listing.sourceId}`;
+            const detailHtml = await this.fetchPage(detailUrl, {
+              headers: {
+                Referer: this.searchUrl,
+              },
+            });
 
-          const detail = this.parseTenderDetail(detailHtml);
+            const detail = this.parseTenderDetail(detailHtml);
 
-          const tender: ScrapedTender = {
-            title: detail.title || listing.title || 'Untitled CPPP Tender',
-            description: detail.description || listing.description,
-            referenceNumber: listing.referenceNumber || detail.referenceNumber || listing.sourceId!,
-            organization: detail.organization || listing.organization || 'Central Government',
-            department: detail.department || listing.department,
-            tenderType: this.mapCpppTenderType(listing.tenderType),
-            category: detail.category || listing.category || 'WORKS',
-            status: 'ACTIVE',
-            state: detail.state || listing.state || 'All India',
-            district: detail.district,
-            city: detail.city,
-            estimatedValue: detail.estimatedValue ?? listing.estimatedValue,
-            emdAmount: detail.emdAmount ?? listing.emdAmount,
-            publishedDate: listing.publishedDate || detail.publishedDate || new Date(),
-            bidSubmissionDeadline: listing.bidSubmissionDeadline || detail.bidSubmissionDeadline || new Date(),
-            bidOpeningDate: detail.bidOpeningDate || listing.bidOpeningDate,
-            preBidMeetingDate: detail.preBidMeetingDate,
-            sourcePortal: 'CPPP',
-            sourceUrl: `https://eprocure.gov.in/eprocure/app?page=FrontEndTendersByOrganisation&service=page&tenderid=${listing.sourceId}`,
-            sourceId: listing.sourceId!,
-            reservedForMSME: listing.reservedForMSME ?? detail.reservedForMSME ?? false,
-            reservedForStartups: listing.reservedForStartups ?? detail.reservedForStartups ?? false,
-            documents: detail.documents,
-          };
+            const tender: ScrapedTender = {
+              title: detail.title || listing.title || 'Untitled CPPP Tender',
+              description: detail.description || listing.description,
+              referenceNumber: listing.referenceNumber || detail.referenceNumber || listing.sourceId!,
+              organization: detail.organization || listing.organization || 'Central Government',
+              department: detail.department || listing.department,
+              tenderType: this.mapCpppTenderType(listing.tenderType),
+              category: detail.category || listing.category || 'WORKS',
+              status: 'ACTIVE',
+              state: detail.state || listing.state || 'All India',
+              district: detail.district,
+              city: detail.city,
+              estimatedValue: detail.estimatedValue ?? listing.estimatedValue,
+              emdAmount: detail.emdAmount ?? listing.emdAmount,
+              publishedDate: listing.publishedDate || detail.publishedDate || new Date(),
+              bidSubmissionDeadline: listing.bidSubmissionDeadline || detail.bidSubmissionDeadline || new Date(),
+              bidOpeningDate: detail.bidOpeningDate || listing.bidOpeningDate,
+              preBidMeetingDate: detail.preBidMeetingDate,
+              sourcePortal: 'CPPP',
+              sourceUrl: `https://eprocure.gov.in/eprocure/app?page=FrontEndTendersByOrganisation&service=page&tenderid=${listing.sourceId}`,
+              sourceId: listing.sourceId!,
+              reservedForMSME: listing.reservedForMSME ?? detail.reservedForMSME ?? false,
+              reservedForStartups: listing.reservedForStartups ?? detail.reservedForStartups ?? false,
+              documents: detail.documents,
+            };
 
-          const result = await this.saveTender(tender);
-          if (result.isNew) newTenders++;
-          else updatedTenders++;
+            const result = await this.saveTender(tender);
+            if (result.isNew) newTenders++;
+            else updatedTenders++;
 
-          await this.delay(this.requestDelay);
-        } catch (err) {
-          errors++;
-          this.handleError(err instanceof Error ? err : new Error(String(err)), {
-            action: 'processCpppTender',
-            sourceId: listing.sourceId,
-          });
-        }
-      }
-
-      // Pagination — CPPP typically uses page numbers via POST
-      const totalPages = this.extractTotalPages(firstPageHtml);
-      for (let page = 2; page <= Math.min(totalPages, 20); page++) {
-        try {
-          this.logger.info(`Fetching CPPP page ${page}/${totalPages}`);
-
-          const pageHtml = await this.fetchPage(this.searchUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
-              Referer: this.searchUrl,
-            },
-            data: `page=${page}&actionVal=showRecords`,
-          });
-
-          const pageListings = this.parseTenderList(pageHtml);
-          if (pageListings.length > 0) pagesScraped++;
-          totalFound += pageListings.length;
-
-          const pagePartition = await this.partitionListings(pageListings);
-          skippedExisting += pagePartition.skipped.length;
-
-          for (const listing of pagePartition.toProcess) {
-            try {
-              if (!listing.sourceId) continue;
-
-              const detailUrl = `${this.detailBaseUrl}?page=FrontEndTendersByOrganisation&service=page&tenderid=${listing.sourceId}`;
-              const detailHtml = await this.fetchPage(detailUrl);
-              const detail = this.parseTenderDetail(detailHtml);
-
-              const tender: ScrapedTender = {
-                title: detail.title || listing.title || 'Untitled CPPP Tender',
-                description: detail.description || listing.description,
-                referenceNumber: listing.referenceNumber || detail.referenceNumber || listing.sourceId!,
-                organization: detail.organization || listing.organization || 'Central Government',
-                department: detail.department || listing.department,
-                tenderType: this.mapCpppTenderType(listing.tenderType),
-                category: detail.category || listing.category || 'WORKS',
-                status: 'ACTIVE',
-                state: detail.state || listing.state || 'All India',
-                district: detail.district,
-                city: detail.city,
-                estimatedValue: detail.estimatedValue ?? listing.estimatedValue,
-                emdAmount: detail.emdAmount ?? listing.emdAmount,
-                publishedDate: listing.publishedDate || detail.publishedDate || new Date(),
-                bidSubmissionDeadline: listing.bidSubmissionDeadline || detail.bidSubmissionDeadline || new Date(),
-                bidOpeningDate: detail.bidOpeningDate || listing.bidOpeningDate,
-                preBidMeetingDate: detail.preBidMeetingDate,
-                sourcePortal: 'CPPP',
-                sourceUrl: `https://eprocure.gov.in/eprocure/app?page=FrontEndTendersByOrganisation&service=page&tenderid=${listing.sourceId}`,
-                sourceId: listing.sourceId!,
-                reservedForMSME: listing.reservedForMSME ?? false,
-                reservedForStartups: listing.reservedForStartups ?? false,
-                documents: detail.documents,
-              };
-
-              const result = await this.saveTender(tender);
-              if (result.isNew) newTenders++;
-              else updatedTenders++;
-
-              await this.delay(this.requestDelay);
-            } catch (err) {
-              errors++;
-              this.handleError(err instanceof Error ? err : new Error(String(err)), {
-                action: 'processCpppTender',
-                sourceId: listing.sourceId,
-                page,
-              });
-            }
+            await this.delay(this.requestDelay);
+          } catch (err) {
+            errors++;
+            this.handleError(err instanceof Error ? err : new Error(String(err)), {
+              action: 'processCpppTender',
+              sourceId: listing.sourceId,
+            });
           }
-        } catch (err) {
-          errors++;
-          this.handleError(err instanceof Error ? err : new Error(String(err)), {
-            action: 'fetchCpppPage',
-            page,
-          });
+        }
+
+        // Pagination — CPPP typically uses page numbers via POST
+        const totalPages = this.extractTotalPages(firstPageHtml);
+        const maxPages = this.maxPages ?? 20;
+        for (let page = 2; page <= Math.min(totalPages, maxPages); page++) {
+          try {
+            this.logger.info(`Fetching CPPP page ${page}/${totalPages}`);
+
+            const pageHtml = await this.fetchPage(this.searchUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                Referer: this.searchUrl,
+              },
+              data: `page=${page}&actionVal=showRecords`,
+            });
+
+            const pageListings = this.parseTenderList(pageHtml);
+            if (pageListings.length === 0) {
+              this.logger.info(`No tenders on page ${page}, stopping pagination`);
+              break;
+            }
+            pagesScraped++;
+            totalFound += pageListings.length;
+
+            const pagePartition = await this.partitionListings(pageListings);
+            skippedExisting += pagePartition.skipped.length;
+
+            for (const listing of pagePartition.toProcess) {
+              try {
+                if (!listing.sourceId) continue;
+
+                const detailUrl = `${this.detailBaseUrl}?page=FrontEndTendersByOrganisation&service=page&tenderid=${listing.sourceId}`;
+                const detailHtml = await this.fetchPage(detailUrl);
+                const detail = this.parseTenderDetail(detailHtml);
+
+                const tender: ScrapedTender = {
+                  title: detail.title || listing.title || 'Untitled CPPP Tender',
+                  description: detail.description || listing.description,
+                  referenceNumber: listing.referenceNumber || detail.referenceNumber || listing.sourceId!,
+                  organization: detail.organization || listing.organization || 'Central Government',
+                  department: detail.department || listing.department,
+                  tenderType: this.mapCpppTenderType(listing.tenderType),
+                  category: detail.category || listing.category || 'WORKS',
+                  status: 'ACTIVE',
+                  state: detail.state || listing.state || 'All India',
+                  district: detail.district,
+                  city: detail.city,
+                  estimatedValue: detail.estimatedValue ?? listing.estimatedValue,
+                  emdAmount: detail.emdAmount ?? listing.emdAmount,
+                  publishedDate: listing.publishedDate || detail.publishedDate || new Date(),
+                  bidSubmissionDeadline: listing.bidSubmissionDeadline || detail.bidSubmissionDeadline || new Date(),
+                  bidOpeningDate: detail.bidOpeningDate || listing.bidOpeningDate,
+                  preBidMeetingDate: detail.preBidMeetingDate,
+                  sourcePortal: 'CPPP',
+                  sourceUrl: `https://eprocure.gov.in/eprocure/app?page=FrontEndTendersByOrganisation&service=page&tenderid=${listing.sourceId}`,
+                  sourceId: listing.sourceId!,
+                  reservedForMSME: listing.reservedForMSME ?? false,
+                  reservedForStartups: listing.reservedForStartups ?? false,
+                  documents: detail.documents,
+                };
+
+                const result = await this.saveTender(tender);
+                if (result.isNew) newTenders++;
+                else updatedTenders++;
+
+                await this.delay(this.requestDelay);
+              } catch (err) {
+                errors++;
+                this.handleError(err instanceof Error ? err : new Error(String(err)), {
+                  action: 'processCpppTender',
+                  sourceId: listing.sourceId,
+                  page,
+                });
+              }
+            }
+          } catch (err) {
+            errors++;
+            this.handleError(err instanceof Error ? err : new Error(String(err)), {
+              action: 'fetchCpppPage',
+              page,
+            });
+          }
         }
       }
     } catch (err) {
-      errors++;
       this.handleError(err instanceof Error ? err : new Error(String(err)), {
         action: 'cpppScrapeMain',
       });
@@ -418,8 +428,8 @@ export class CpppScraper extends BaseScraper {
       if (pageMatch) return parseInt(pageMatch[1], 10);
     }
 
-    // Default: assume 5 pages if we can't determine
-    return 5;
+    // Default: assume 1 page if we can't determine
+    return 1;
   }
 
   /**

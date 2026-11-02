@@ -172,25 +172,31 @@ export const reportsService = {
     const startDate = filters.startDate ? new Date(filters.startDate) : new Date(0);
     const endDate = filters.endDate ? new Date(filters.endDate) : new Date();
 
-    const tenders = await prisma.tender.findMany({
-      where: { createdAt: { gte: startDate, lte: endDate } },
-      select: {
-        id: true,
-        referenceNumber: true,
-        title: true,
-        organization: true,
-        category: true,
-        status: true,
-        state: true,
-        sourcePortal: true,
-        estimatedValue: true,
-        bidSubmissionDeadline: true,
-        viewCount: true,
-        createdAt: true,
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 2000,
-    });
+    const [tenders, totalTendersCount, totalAllTenders] = await Promise.all([
+      prisma.tender.findMany({
+        where: { createdAt: { gte: startDate, lte: endDate } },
+        select: {
+          id: true,
+          referenceNumber: true,
+          title: true,
+          organization: true,
+          category: true,
+          status: true,
+          state: true,
+          sourcePortal: true,
+          estimatedValue: true,
+          bidSubmissionDeadline: true,
+          viewCount: true,
+          createdAt: true,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 5000,
+      }),
+      prisma.tender.count({
+        where: { createdAt: { gte: startDate, lte: endDate } },
+      }),
+      prisma.tender.count(),
+    ]);
 
     // Monthly
     const monthlyMap = new Map<string, number>();
@@ -222,7 +228,8 @@ export const reportsService = {
     const totalViews = tenders.reduce((sum, t) => sum + t.viewCount, 0);
 
     return {
-      totalTenders: tenders.length,
+      totalTenders: totalAllTenders,
+      filteredTendersCount: totalTendersCount,
       totalEstimatedValue: totalValue,
       totalViews,
       monthlyTenders: Array.from(monthlyMap.entries()).map(([month, count]) => ({ month, count })),

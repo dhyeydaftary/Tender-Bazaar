@@ -345,25 +345,22 @@ export default function ReportsPage() {
       }
     } catch {}
 
-    // Fetch live dashboard & report metrics on mount
-    getDashboardStats()
-      .then((stats) => {
-        if (stats?.tenders?.total) setTotalTendersCount(stats.tenders.total);
-        if (stats?.users?.total) setTotalUsersCount(stats.users.total);
-      })
-      .catch(() => {});
+    // Fetch live dashboard & report metrics on mount and keep updated dynamically
+    const fetchLiveMetrics = async () => {
+      try {
+        const stats = await getDashboardStats();
+        if (typeof stats?.tenders?.total === 'number') {
+          setTotalTendersCount(stats.tenders.total);
+        }
+        if (typeof stats?.users?.total === 'number') {
+          setTotalUsersCount(stats.users.total);
+        }
+      } catch {}
+    };
 
-    getTenderReport()
-      .then((res) => {
-        if (res?.totalTenders) setTotalTendersCount(res.totalTenders);
-      })
-      .catch(() => {});
-
-    getUserReport()
-      .then((res) => {
-        if (res?.totalUsers) setTotalUsersCount(res.totalUsers);
-      })
-      .catch(() => {});
+    fetchLiveMetrics();
+    const interval = setInterval(fetchLiveMetrics, 8000);
+    return () => clearInterval(interval);
   }, []);
 
   const saveRecentReports = (list: RecentReport[]) => {
@@ -669,8 +666,14 @@ export default function ReportsPage() {
           <p className="text-[11px] text-muted-foreground mt-0.5">Session &amp; historical</p>
         </div>
         <div className="bg-card border border-border rounded-xl p-4">
-          <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Tenders in Database</p>
-          <p className="text-2xl font-bold text-primary-500 mt-1">{totalTendersCount}</p>
+          <div className="flex items-center justify-between">
+            <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Tenders in Database</p>
+            <span className="inline-flex items-center gap-1.5 text-[10px] font-semibold text-emerald-500 bg-emerald-500/10 px-2 py-0.5 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              Live
+            </span>
+          </div>
+          <p className="text-2xl font-bold text-foreground mt-1">{totalTendersCount.toLocaleString()}</p>
           <p className="text-[11px] text-muted-foreground mt-0.5">Available for export</p>
         </div>
         <div className="bg-card border border-border rounded-xl p-4">
