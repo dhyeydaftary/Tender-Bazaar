@@ -26,6 +26,7 @@ import NotificationsScreen from '../../screens/home/NotificationsScreen';
 import TenderCompareScreen from '../../screens/tenders/TenderCompareScreen';
 import FilterScreen from '../../screens/search/FilterScreen';
 import TenderDocumentsScreen from '../../screens/tenders/TenderDocumentsScreen';
+import TenderListScreen, { TENDER_LIST_TITLES } from '../../screens/tenders/TenderListScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -77,6 +78,17 @@ export default function RootNavigator() {
             name="TenderDetail"
             component={TenderDetailScreen}
             options={{ ...DETAIL_HEADER, title: 'Tender Details' }}
+          />
+          <Stack.Screen
+            name="TenderList"
+            component={TenderListScreen}
+            options={({ route }) => ({
+              ...DETAIL_HEADER,
+              // The stack hides headers by default (other screens draw their own);
+              // this list relies on the native header for its title, back button and inset.
+              headerShown: true,
+              title: TENDER_LIST_TITLES[route.params.kind],
+            })}
           />
           <Stack.Screen
             name="EligibilityResult"

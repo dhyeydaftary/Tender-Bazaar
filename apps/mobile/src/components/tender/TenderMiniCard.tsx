@@ -33,11 +33,12 @@ interface Tender {
   organization: string;
   state: string;
   category: 'Works' | 'Goods' | 'Services' | 'Consultancy';
-  estimatedValue: number;
-  emdAmount: number;
+  /** null when the issuing authority did not publish an estimate. */
+  estimatedValue: number | null;
+  emdAmount: number | null;
   submissionDeadline: string;
   publishedDate: string;
-  status: 'ACTIVE' | 'CLOSED' | 'AWARDED' | 'CANCELLED';
+  status: 'ACTIVE' | 'CORRIGENDUM' | 'CLOSED' | 'AWARDED' | 'CANCELLED';
   sourcePortal: string;
   referenceNumber: string;
 }
@@ -137,7 +138,7 @@ const TenderMiniCard: React.FC<TenderMiniCardProps> = ({
     [tender.submissionDeadline],
   );
   const formattedValue = useMemo(
-    () => formatValue(tender.estimatedValue),
+    () => formatValue(tender.estimatedValue ?? 0), // formatValue shows 'N/D' for no value
     [tender.estimatedValue],
   );
 

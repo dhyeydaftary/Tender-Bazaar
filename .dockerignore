@@ -7,10 +7,20 @@ node_modules
 **/dist
 **/.next
 
-# Environment files
-.env
-.env.local
-.env.*.local
+# Environment files, at any depth; only the *.example templates may enter the
+# build context. Secrets reach containers at runtime, never through the image.
+**/.env
+**/.env.*
+!**/.env.example
+!**/.env.*.example
+
+# Credentials and local user uploads
+**/secrets
+**/*.pem
+**/*.key
+**/*-firebase-adminsdk-*.json
+**/*service-account*.json
+**/uploads
 
 # Version control
 .git
@@ -49,3 +59,8 @@ apps/mobile
 docker-compose*.yml
 Dockerfile
 **/Dockerfile
+
+# Exported Docker image bundles (docker save); never part of a build context
+**/*.tar
+**/*.tar.gz
+**/*.tgz

@@ -98,8 +98,17 @@ export function requireLimit(limitName: NumericLimit) {
 }
 
 /**
+ * The plan's page size is a ceiling: a smaller requested limit (e.g. a 5-item
+ * home-page preview) is kept rather than inflated to the plan size.
+ */
+export function cappedLimit(requested: unknown, planLimit: number): string {
+  const n = Number(requested);
+  return String(Number.isInteger(n) && n > 0 ? Math.min(n, planLimit) : planLimit);
+}
+
+/**
  * Middleware: enforce tender pagination rules based on plan.
- * Free users: first page only (no pagination), limited to tenderViewsPerPage results.
+ * Free users: first page only (no pagination), at most tenderViewsPerPage results.
  * Paid users: full pagination allowed.
  */
 export function tenderPagination() {
@@ -115,7 +124,7 @@ export function tenderPagination() {
       // Unauthenticated users get free-tier limits
       if (!user?.id) {
         req.query.page = '1';
-        req.query.limit = '20';
+        req.query.limit = cappedLimit(req.query.limit, 20);
         (req as any).paginationLocked = true;
         return next();
       }
@@ -123,9 +132,9 @@ export function tenderPagination() {
       const plan = await planConfigService.getUserPlan(user.id);
 
       if (!plan.paginationAllowed) {
-        // Free plan: force page 1 with plan's tenderViewsPerPage
+        // Free plan: force page 1, at most the plan's tenderViewsPerPage
         req.query.page = '1';
-        req.query.limit = String(plan.tenderViewsPerPage);
+        req.query.limit = cappedLimit(req.query.limit, plan.tenderViewsPerPage);
         (req as any).paginationLocked = true;
       }
 

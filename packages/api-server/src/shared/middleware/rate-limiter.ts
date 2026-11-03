@@ -48,15 +48,19 @@ const AUTH_ATTEMPT_MAX = env.RATE_LIMIT_AUTH_MAX;
  * `skipSuccessfulRequests` semantics are unchanged.
  */
 export function isRateLimitBypassed(
-  nodeEnv: string,
+  nodeEnv: string | undefined,
   disableRateLimit: string,
 ): boolean {
   return nodeEnv === 'development' && disableRateLimit === 'true';
 }
 
-/** Bound to the live environment; evaluated per request by both limiters. */
+/**
+ * Bound to the live environment; evaluated per request by both limiters. It
+ * reads the raw NODE_ENV: the schema defaults an unset NODE_ENV to
+ * 'development', which must not count as opting in to the bypass.
+ */
 const skipWhenBypassed = () =>
-  isRateLimitBypassed(env.NODE_ENV, env.DISABLE_RATE_LIMIT);
+  isRateLimitBypassed(process.env.NODE_ENV, env.DISABLE_RATE_LIMIT);
 
 /**
  * Resolve the user id from the access token so each account gets its own
@@ -69,7 +73,7 @@ function userIdFromRequest(req: Request): string | null {
   if (!authHeader?.startsWith('Bearer ')) return null;
 
   try {
-    const decoded = jwt.verify(authHeader.slice(7), env.JWT_SECRET) as { userId?: string };
+    const decoded = jwt.verify(authHeader.slice(7), env.JWT_SECRET, { algorithms: ['HS256'] }) as { userId?: string };
     return decoded.userId ?? null;
   } catch {
     return null;

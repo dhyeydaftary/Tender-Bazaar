@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { config } from '../config';
+import { assertDevFallbackAllowed } from './delivery-guard';
 
 const MSG91_API_URL = 'https://control.msg91.com/api/v5';
 
@@ -7,6 +8,7 @@ export async function sendSms(
   phone: string,
   message: string
 ): Promise<void> {
+  if (!config.sms.authKey) assertDevFallbackAllowed('SMS', 'MSG91_AUTH_KEY');
   if (config.isDev || !config.sms.authKey) {
     console.log('[SMS] Dev mode - message would be sent:');
     console.log(`  To: ${phone}`);
@@ -61,6 +63,7 @@ export async function sendOtpSms(
 ): Promise<void> {
   const message = `Your TenderBazaar verification code is ${otp}. Valid for 10 minutes. Do not share this code with anyone.`;
 
+  if (!config.sms.authKey) assertDevFallbackAllowed('SMS', 'MSG91_AUTH_KEY');
   if (config.isDev || !config.sms.authKey) {
     console.log('[SMS] Dev mode - OTP would be sent:');
     console.log(`  To: ${phone}`);

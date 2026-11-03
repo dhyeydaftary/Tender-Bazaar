@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import * as savedApi from '@/services/api/saved';
 import { useSavedStore } from '@/stores/savedStore';
+import { dashboardKeys } from '@/hooks/useDashboard';
 import type { Tender } from '@/types/tender';
 
 // ─── Query Key Factory ─────────────────────────────────────────────────────
@@ -56,6 +57,8 @@ export function useSaveTender() {
     onSettled: () => {
       // Refetch saved list to keep server state in sync
       queryClient.invalidateQueries({ queryKey: savedKeys.list() });
+      // The home "Saved" KPI counts saved tenders.
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
   });
 }
@@ -97,6 +100,8 @@ export function useUnsaveTender() {
 
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: savedKeys.list() });
+      // The home "Saved" KPI counts saved tenders.
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
   });
 }

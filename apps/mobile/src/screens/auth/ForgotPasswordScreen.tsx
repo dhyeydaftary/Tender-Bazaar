@@ -228,7 +228,11 @@ export default function ForgotPasswordScreen() {
         >
           <View style={styles.fieldContainer}>
             <Text style={styles.label}>Email Address</Text>
+            {/* collapsable={false}: inputFocused adds shadowColor/elevation, which would
+                otherwise flip this view into a new stacking context on focus. Fabric then
+                re-parents the native TextInput, detaching it and dropping focus (Android). */}
             <View
+              collapsable={false}
               style={[
                 styles.inputWrapper,
                 isFocused && styles.inputFocused,

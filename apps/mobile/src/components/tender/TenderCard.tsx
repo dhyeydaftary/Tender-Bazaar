@@ -42,20 +42,23 @@ import { timeAgo } from '../../utils/format';
 // Types
 // ---------------------------------------------------------------------------
 
-interface Tender {
+export interface TenderCardData {
   id: string;
   title: string;
   organization: string;
   state: string;
   category: 'Works' | 'Goods' | 'Services' | 'Consultancy';
-  estimatedValue: number;
-  emdAmount: number;
+  /** null when the issuing authority did not publish an estimate. */
+  estimatedValue: number | null;
+  emdAmount: number | null;
   submissionDeadline: string;
   publishedDate: string;
-  status: 'ACTIVE' | 'CLOSED' | 'AWARDED' | 'CANCELLED';
+  status: 'ACTIVE' | 'CORRIGENDUM' | 'CLOSED' | 'AWARDED' | 'CANCELLED';
   sourcePortal: string;
   referenceNumber: string;
 }
+
+type Tender = TenderCardData;
 
 interface TenderCardProps {
   tender: Tender;
@@ -223,7 +226,8 @@ const TenderCard: React.FC<TenderCardProps> = ({
 
   const accentColor = CATEGORY_ACCENT[tender.category];
   const formattedValue = useMemo(
-    () => formatCurrency(tender.estimatedValue),
+    // formatCurrency renders a missing value as ₹0, which reads as a real amount.
+    () => (tender.estimatedValue == null ? 'Not disclosed' : formatCurrency(tender.estimatedValue)),
     [tender.estimatedValue],
   );
   const postedAgo = useMemo(

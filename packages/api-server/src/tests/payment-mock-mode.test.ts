@@ -29,14 +29,17 @@ const SERVICE_SRC = readFileSync(
   'utf8',
 );
 
-/** The rule as implemented: production is never mock mode. */
-function mockModeFor(nodeEnv: string, configured: boolean): boolean {
-  if (nodeEnv === 'production') return false;
+/**
+ * The rule as implemented: mock mode needs an EXPLICIT NODE_ENV=development
+ * (the raw value, before the schema's default) and no real credentials.
+ */
+function mockModeFor(rawNodeEnv: string | undefined, configured: boolean): boolean {
+  if (rawNodeEnv !== 'development') return false;
   return !configured;
 }
 
-// 1. The implementation really does short-circuit on production, and it does so
-//    BEFORE consulting the credentials.
+// 1. The implementation short-circuits unless development shortcuts are on,
+//    and does so BEFORE consulting the credentials.
 {
   const fn = SERVICE_SRC.slice(
     SERVICE_SRC.indexOf('function isRazorpayMockMode'),
@@ -44,30 +47,35 @@ function mockModeFor(nodeEnv: string, configured: boolean): boolean {
   );
 
   assert.ok(
-    /if\s*\(\s*env\.NODE_ENV\s*===\s*'production'\s*\)\s*return\s+false\s*;/.test(fn),
-    'isRazorpayMockMode must return false outright in production',
+    /if\s*\(\s*!DEVELOPMENT_SHORTCUTS_ENABLED\s*\)\s*return\s+false\s*;/.test(fn),
+    'isRazorpayMockMode must return false outright unless NODE_ENV is explicitly development',
   );
-
-  const prodGuardAt = fn.search(/env\.NODE_ENV\s*===\s*'production'/);
-  const credsAt = fn.search(/isRazorpayConfigured\(\)/);
-  assert.ok(prodGuardAt >= 0 && credsAt >= 0, 'both checks must be present');
   assert.ok(
-    prodGuardAt < credsAt,
-    'the production guard must come first, so credentials can never re-enable mock mode',
+    !/env\.NODE_ENV/.test(fn),
+    'the schema NODE_ENV (which defaults an unset value to development) must not decide mock mode',
   );
 
-  console.log('✓ Production short-circuit is present and precedes the credential check');
+  const guardAt = fn.search(/!DEVELOPMENT_SHORTCUTS_ENABLED/);
+  const credsAt = fn.search(/isRazorpayConfigured\(\)/);
+  assert.ok(guardAt >= 0 && credsAt >= 0, 'both checks must be present');
+  assert.ok(
+    guardAt < credsAt,
+    'the environment guard must come first, so credentials can never re-enable mock mode',
+  );
+
+  console.log('✓ Development-only short-circuit is present and precedes the credential check');
 }
 
-// 2. Truth table: unconfigured production must NOT be mock mode.
+// 2. Truth table: only explicit development + unconfigured is mock mode.
 {
   assert.equal(mockModeFor('production', false), false, 'production + unconfigured');
   assert.equal(mockModeFor('production', true), false, 'production + configured');
+  assert.equal(mockModeFor(undefined, false), false, 'unset NODE_ENV + unconfigured');
+  assert.equal(mockModeFor('test', false), false, 'test + unconfigured');
   assert.equal(mockModeFor('development', false), true, 'development + unconfigured');
   assert.equal(mockModeFor('development', true), false, 'development + configured');
-  assert.equal(mockModeFor('test', false), true, 'test + unconfigured');
 
-  console.log('✓ Unconfigured production is not mock mode; development behaviour unchanged');
+  console.log('✓ Only explicit development without credentials is mock mode');
 }
 
 // 3. Signature verification is still gated on the predicate (not removed), and

@@ -1,3 +1,6 @@
+const { PHASE_PRODUCTION_BUILD } = require('next/constants');
+const { validateApiUrlForBuild } = require('./api-url.config');
+
 // `output: 'standalone'` is what apps/web/Dockerfile deploys: it copies
 // .next/standalone and runs `node apps/web/server.js`. The Docker builder is
 // node:20-alpine, so it keeps standalone output unchanged.
@@ -46,4 +49,11 @@ const nextConfig = {
   ],
 };
 
-module.exports = nextConfig;
+module.exports = (phase) => {
+  // Production builds must know the public API URL; see api-url.config.js.
+  if (phase === PHASE_PRODUCTION_BUILD) {
+    const { problem } = validateApiUrlForBuild(process.env);
+    if (problem) throw new Error(`[config] ${problem}`);
+  }
+  return nextConfig;
+};

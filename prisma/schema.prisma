@@ -766,3 +766,23 @@ model ScraperHealth {
   @@index([status])
   @@index([enabled])
 }
+
+/// Admin broadcast campaigns (title, audience, delivery counters). Until the
+/// broadcast_campaigns migration this table was created at runtime by the API
+/// server with raw SQL; the API still reads and writes it with raw queries, so
+/// the column names below are the snake_case ones that SQL uses.
+model BroadcastCampaign {
+  id        String   @id
+  title     String
+  message   String
+  channel   String
+  target    String   @default("ALL")
+  status    String   @default("DELIVERED")
+  delivered Int      @default(0)
+  failed    Int      @default(0)
+  opened    Int      @default(0)
+  sentAt    DateTime @default(now()) @map("sent_at") @db.Timestamptz(6)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@map("broadcast_campaigns")
+}

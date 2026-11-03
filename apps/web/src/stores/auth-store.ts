@@ -30,7 +30,16 @@ interface AuthState {
   login: (email: string, password: string) => Promise<void>;
   register: (data: { name: string; email: string; password: string; phone?: string }) => Promise<void>;
   googleAuth: (idToken: string) => Promise<void>;
-  sendOtp: (phone: string) => Promise<{ message?: string; otp?: string }>;
+  sendOtp: (phone: string) => Promise<{
+    message?: string;
+    /** Seconds the issued code stays valid. */
+    expiresInSeconds?: number;
+    /** Seconds before another code may be requested for this number. */
+    resendAfterSeconds?: number;
+    /** Wrong codes tolerated before the number is locked out. */
+    maxAttempts?: number;
+    sendsRemainingThisHour?: number;
+  }>;
   verifyOtp: (phone: string, otp: string) => Promise<void>;
   forgotPassword: (email: string) => Promise<{ message: string }>;
   resetPassword: (token: string, password: string) => Promise<void>;

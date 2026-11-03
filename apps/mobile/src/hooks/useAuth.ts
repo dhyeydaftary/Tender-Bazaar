@@ -15,28 +15,21 @@ export function useAuth() {
   const clearError = useCallback(() => setError(null), []);
 
   const login = useCallback(
-    async (email: string, _password: string) => {
+    async (email: string, password: string) => {
       setIsSubmitting(true);
       setError(null);
       try {
-        // ── Mock login (no backend needed) ──────────────────────────
-        // Use any email/password — e.g. demo@tenderbazaar.in / password123
-        await new Promise<void>((resolve) => setTimeout(() => resolve(), 1000));
-        const mockUser = {
-          id: 'usr_mock_001',
-          name: email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
-          email,
-          phone: '+919876543210',
-          avatarUrl: undefined,
-          role: 'USER' as const,
-          isEmailVerified: true,
-          isPhoneVerified: true,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
-        await store.login(mockUser, 'mock_token_abc123', 'mock_refresh_xyz789');
-        return true;
-        // ────────────────────────────────────────────────────────────
+        const res = await authApi.login(email, password);
+        if (res.success && res.data) {
+          await store.login(
+            res.data.user,
+            res.data.accessToken,
+            res.data.refreshToken,
+          );
+          return true;
+        }
+        setError(res.error?.message ?? 'Login failed');
+        return false;
       } catch {
         setError('An unexpected error occurred');
         return false;
@@ -53,12 +46,10 @@ export function useAuth() {
       setError(null);
       try {
         const res = await authApi.register(data);
+        // Account is created but not signed in: the user verifies their phone on the
+        // OTP screen first, and verifyOtp signs them in. Signing in here would switch
+        // RootNavigator to the Main stack and unmount the Auth stack (and OTP) mid-flow.
         if (res.success && res.data) {
-          await store.login(
-            res.data.user,
-            res.data.tokens.token,
-            res.data.tokens.refreshToken,
-          );
           return true;
         }
         setError(res.error?.message ?? 'Registration failed');
@@ -70,13 +61,15 @@ export function useAuth() {
         setIsSubmitting(false);
       }
     },
-    [store],
+    [],
   );
 
   const logout = useCallback(async () => {
     try {
       // Fire-and-forget server logout; always clear local state
-      authApi.logout().catch(() => {});
+      if (store.token && store.refreshToken) {
+        authApi.logout(store.refreshToken, store.token).catch(() => {});
+      }
     } finally {
       await store.logout();
     }
@@ -107,8 +100,8 @@ export function useAuth() {
         if (res.success && res.data) {
           await store.login(
             res.data.user,
-            res.data.tokens.token,
-            res.data.tokens.refreshToken,
+            res.data.accessToken,
+            res.data.refreshToken,
           );
           return true;
         }

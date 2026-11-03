@@ -3,10 +3,13 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import compression from 'compression';
-import { errorHandler } from './shared/middleware/error-handler';
+import { errorHandler, AppError } from './shared/middleware/error-handler';
+import { buildCorsPolicy, isOriginAllowed } from './shared/middleware/cors-policy';
+import { env, parseOriginList, DEVELOPMENT_SHORTCUTS_ENABLED } from './config/env';
 import { sentryErrorHandler } from './shared/middleware/sentry';
 import { apiLimiter } from './shared/middleware/rate-limiter';
-import { buildHealthReport } from './shared/health';
+import { buildHealthReport, healthHttpStatus } from './shared/health';
+import { ELASTICSEARCH_ENABLED } from './config/elasticsearch';
 import { prisma } from './config/database';
 import redis from './config/redis';
 import authRoutes from './modules/auth/routes';
@@ -42,40 +45,22 @@ if (process.env.NODE_ENV !== 'development') {
 
 // Middleware
 app.use(helmet());
-const DEV_ORIGINS = [
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-  'http://localhost:3001',
-  'http://127.0.0.1:3001',
-  'http://localhost:3002',
-  'http://127.0.0.1:3002',
-];
-
-const allowedOrigins = [
-  process.env.FRONTEND_URL,
-  process.env.ADMIN_URL,
-  ...(process.env.NODE_ENV === 'development' ? DEV_ORIGINS : []),
-].filter(Boolean) as string[];
-
-// Any http://localhost:* / http://127.0.0.1:* origin used to be allowed with
-// credentials, in production too, so a page served from any port on a user's
-// machine could make credentialed cross-origin calls to the production API.
-// The loopback allowance is now development-only; production uses exactly the
-// configured origins (FRONTEND_URL / ADMIN_URL), which docker-compose.prod.yml
-// requires to be set.
-const allowLoopbackOrigins = process.env.NODE_ENV === 'development';
+// Production trusts exactly FRONTEND_URL, ADMIN_URL and CORS_ORIGINS; the
+// local and loopback origins are added only for an explicit
+// NODE_ENV=development (see shared/middleware/cors-policy.ts).
+const corsPolicy = buildCorsPolicy({
+  frontendUrl: env.FRONTEND_URL,
+  adminUrl: env.ADMIN_URL,
+  extraOrigins: parseOriginList(env.CORS_ORIGINS),
+  developmentShortcuts: DEVELOPMENT_SHORTCUTS_ENABLED,
+});
 
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    if (
-      allowLoopbackOrigins &&
-      (origin.startsWith('http://localhost:') || origin.startsWith('http://127.0.0.1:'))
-    ) {
-      return callback(null, true);
-    }
-    return callback(new Error(`Origin ${origin} not allowed by CORS`));
+    if (isOriginAllowed(corsPolicy, origin)) return callback(null, true);
+    // Rejected before any route runs, so an untrusted page cannot trigger
+    // side effects even with requests the browser sends without a preflight.
+    return callback(new AppError('Origin not allowed by CORS', 403, 'CORS_ORIGIN_DENIED'));
   },
   credentials: true,
 }));
@@ -91,16 +76,19 @@ app.use(express.urlencoded({ extended: true }));
 // Rate limiting
 app.use('/api/', apiLimiter);
 
-// Health check
+// Health check.
+//
+// PostgreSQL and Redis are essential (503 when either is down); Elasticsearch
+// is optional and only moves the report to "degraded" with search served from
+// PostgreSQL (see shared/health.ts). Platforms point their health check here.
 const healthHandler: express.RequestHandler = async (_req, res) => {
   const health = await buildHealthReport({
     database: () => prisma.$queryRaw`SELECT 1`,
     redis: () => redis.ping(),
-    // GET /api/v1/tenders reads exclusively from Elasticsearch, so without this
-    // check /health reported "ok" while the primary tender-listing endpoint was
-    // failing — which is exactly how the original index_not_found outage stayed
-    // invisible. Both the cluster and the tenders index are checked, because a
-    // reachable cluster with no index is still a broken search.
+    elasticsearchEnabled: ELASTICSEARCH_ENABLED,
+    // Both the cluster and the tenders index are checked, because a reachable
+    // cluster with no index is still a broken search; either way the API keeps
+    // answering from PostgreSQL.
     elasticsearch: async () => {
       const { esClient } = await import('./config/elasticsearch');
       const { TENDER_INDEX } = await import('./config/elasticsearch-setup');
@@ -110,8 +98,14 @@ const healthHandler: express.RequestHandler = async (_req, res) => {
     },
   });
 
-  res.status(health.status === 'ok' ? 200 : 503).json(health);
+  res.status(healthHttpStatus(health)).json(health);
 };
+
+// Liveness only: "this process is up and serving HTTP". No dependency is
+// probed, so it never flaps with the database; use /health for readiness.
+app.get('/health/live', (_req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime() });
+});
 
 // `/health` for container health checks; `/api/v1/health` for browser clients,
 // which reach the API only under /api/* through the gateway (the admin panel's

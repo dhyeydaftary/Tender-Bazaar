@@ -1,10 +1,11 @@
 import logging
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from app.auth import require_service_token
 from app.config import settings
 from app.eligibility.engine import (
     CompanyProfile,
@@ -36,19 +37,33 @@ logger = logging.getLogger(__name__)
 # App
 # ---------------------------------------------------------------------------
 
+# Interactive docs are an unauthenticated map of the service; off unless asked.
+_docs = settings.AI_SERVICE_EXPOSE_DOCS
+
 app = FastAPI(
     title="TenderBazaar AI Service",
     description="AI-powered eligibility checking, summarization, and classification for Indian government tenders",
     version="1.0.0",
+    docs_url="/docs" if _docs else None,
+    redoc_url="/redoc" if _docs else None,
+    openapi_url="/openapi.json" if _docs else None,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Only the API server calls this service, so by default no browser origin is
+# allowed and no CORS headers are sent. AI_SERVICE_ALLOWED_ORIGINS lists exact
+# origins if that ever changes; a wildcard is dropped (app/config.py). CORS is
+# not authentication: every protected route also requires the service token.
+if settings.AI_SERVICE_ALLOWED_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.AI_SERVICE_ALLOWED_ORIGINS,
+        allow_credentials=True,
+        allow_methods=["POST", "GET"],
+        allow_headers=["Authorization", "Content-Type"],
+    )
+
+# Every route below except /health runs through this.
+PROTECTED = [Depends(require_service_token)]
 
 # ---------------------------------------------------------------------------
 # Singleton instances
@@ -116,7 +131,7 @@ async def health():
     return {"status": "ok", "service": "ai-service"}
 
 
-@app.post("/eligibility/check", response_model=EligibilityResult)
+@app.post("/eligibility/check", response_model=EligibilityResult, dependencies=PROTECTED)
 async def check_eligibility(req: EligibilityCheckRequest):
     try:
         result = await eligibility_engine.check(req.company, req.tender)
@@ -126,7 +141,7 @@ async def check_eligibility(req: EligibilityCheckRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/eligibility/bulk", response_model=BulkEligibilityResponse)
+@app.post("/eligibility/bulk", response_model=BulkEligibilityResponse, dependencies=PROTECTED)
 async def bulk_check_eligibility(req: BulkEligibilityRequest):
     if len(req.tenders) > 10:
         raise HTTPException(
@@ -144,7 +159,7 @@ async def bulk_check_eligibility(req: BulkEligibilityRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/ai/summary")
+@app.post("/ai/summary", dependencies=PROTECTED)
 async def generate_summary(req: SummaryRequest):
     try:
         result = await summarizer.summarize(
@@ -159,7 +174,7 @@ async def generate_summary(req: SummaryRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/ai/categorize")
+@app.post("/ai/categorize", dependencies=PROTECTED)
 async def categorize_tender(req: ClassifyRequest):
     try:
         result = await classifier.classify(
@@ -177,7 +192,7 @@ async def categorize_tender(req: ClassifyRequest):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/bid-assistant/analyze")
+@app.post("/bid-assistant/analyze", dependencies=PROTECTED)
 async def bid_analyze(req: BidAnalyzeRequest):
     try:
         result = await bid_analyzer.analyze_tender_document(
@@ -190,7 +205,7 @@ async def bid_analyze(req: BidAnalyzeRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/bid-assistant/checklist")
+@app.post("/bid-assistant/checklist", dependencies=PROTECTED)
 async def bid_checklist(req: BidChecklistRequest):
     try:
         result = await bid_analyzer.generate_document_checklist(
@@ -203,7 +218,7 @@ async def bid_checklist(req: BidChecklistRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.post("/bid-assistant/strategy")
+@app.post("/bid-assistant/strategy", dependencies=PROTECTED)
 async def bid_strategy(req: BidStrategyRequest):
     try:
         result = await bid_analyzer.generate_bid_strategy(

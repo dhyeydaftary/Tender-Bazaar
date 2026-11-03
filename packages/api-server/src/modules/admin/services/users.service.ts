@@ -1,5 +1,12 @@
 import { prisma } from '../../../config/database';
 import { AppError } from '../../../shared/middleware/error-handler';
+import { toSafeUser } from '../../../shared/serializers/user';
+import {
+  AdminActor,
+  assertCanAssignRole,
+  assertCanDeactivateUser,
+  assertCanManageUser,
+} from '../authorization';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 
@@ -199,22 +206,43 @@ export const usersService = {
       throw new AppError('User not found', 404, 'USER_NOT_FOUND');
     }
 
-    return user;
+    // `include` returns the whole row. The password hash and the Google
+    // identifier are authentication material and never leave the server.
+    return toSafeUser(user);
   },
 
   async updateUser(
     userId: string,
     data: { role?: string; isActive?: boolean; planOverride?: string | null; name?: string; email?: string },
+    actor: AdminActor,
   ) {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new AppError('User not found', 404, 'USER_NOT_FOUND');
     }
 
+    // An ADMIN may edit ordinary users only; privileged accounts need a
+    // SUPER_ADMIN. Checked before any field is considered.
+    assertCanManageUser(actor, user);
+
     const updateData: any = {};
     const changes: Record<string, { old: any; new: any }> = {};
 
     if (data.role !== undefined && data.role !== user.role) {
+      // Only a SUPER_ADMIN assigns roles, never their own.
+      assertCanAssignRole(actor, user, data.role);
+
+      if (user.role === 'SUPER_ADMIN') {
+        const superAdmins = await prisma.user.count({ where: { role: 'SUPER_ADMIN' } });
+        if (superAdmins <= 1) {
+          throw new AppError(
+            'Cannot demote the last super administrator.',
+            403,
+            'LAST_SUPER_ADMIN',
+          );
+        }
+      }
+
       changes.role = { old: user.role, new: data.role };
       updateData.role = data.role;
     }
@@ -292,15 +320,14 @@ export const usersService = {
     return { user: updatedUser, changes };
   },
 
-  async deleteUser(userId: string) {
+  async deleteUser(userId: string, actor: AdminActor) {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new AppError('User not found', 404, 'USER_NOT_FOUND');
     }
 
-    if (user.role === 'SUPER_ADMIN') {
-      throw new AppError('Cannot delete super admin', 403, 'CANNOT_DELETE_SUPER_ADMIN');
-    }
+    // Never a SUPER_ADMIN, never oneself, and an ADMIN only for ordinary users.
+    assertCanDeactivateUser(actor, user);
 
     // Soft delete by deactivating
     await prisma.user.update({
@@ -314,11 +341,15 @@ export const usersService = {
     return { message: 'User deactivated and sessions revoked' };
   },
 
-  async resetUserPassword(userId: string) {
+  async resetUserPassword(userId: string, actor: AdminActor) {
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new AppError('User not found', 404, 'USER_NOT_FOUND');
     }
+
+    // Resetting an administrator's password is a takeover of that account;
+    // only a SUPER_ADMIN may do it.
+    assertCanManageUser(actor, user);
 
     // Generate a temporary password
     const tempPassword = crypto.randomBytes(8).toString('hex');

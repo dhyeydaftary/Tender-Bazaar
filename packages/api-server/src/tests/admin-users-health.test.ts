@@ -118,20 +118,22 @@ async function main(): Promise<void> {
     const healthy = await buildHealthReport({ database: ok, redis: ok, elasticsearch: async () => 'healthy' }, 1);
     assert.deepEqual([healthy.status, healthy.services], ['ok', { database: 'healthy', redis: 'healthy', elasticsearch: 'healthy' }]);
 
+    // Redis is essential (token revocation, OTP state, queues): its loss is "unhealthy".
     const redisDown = await buildHealthReport({ database: ok, redis: fail, elasticsearch: async () => 'healthy' }, 1);
-    assert.deepEqual([redisDown.status, redisDown.services.redis, redisDown.services.database], ['degraded', 'unhealthy', 'healthy']);
+    assert.deepEqual([redisDown.status, redisDown.services.redis, redisDown.services.database], ['unhealthy', 'unhealthy', 'healthy']);
 
+    // Elasticsearch is optional: a missing index only degrades (search falls back to PostgreSQL).
     const noIndex = await buildHealthReport({ database: ok, redis: ok, elasticsearch: async () => 'index "tenders" missing' }, 1);
-    assert.deepEqual([noIndex.status, noIndex.services.elasticsearch], ['degraded', 'index "tenders" missing']);
+    assert.deepEqual([noIndex.status, noIndex.services.elasticsearch, noIndex.search], ['degraded', 'index "tenders" missing', 'postgresql']);
 
     const esDown = await buildHealthReport({ database: fail, redis: ok, elasticsearch: () => Promise.reject(new Error('x')) }, 1);
-    assert.deepEqual([esDown.status, esDown.services.database, esDown.services.elasticsearch], ['degraded', 'unhealthy', 'unhealthy']);
+    assert.deepEqual([esDown.status, esDown.services.database, esDown.services.elasticsearch], ['unhealthy', 'unhealthy', 'unhealthy']);
 
     const app = readFileSync(join(__dirname, '..', 'app.ts'), 'utf8');
     assert.ok(/app\.get\('\/health', healthHandler\)/.test(app), '/health still served (container health checks)');
     assert.ok(/app\.get\('\/api\/v1\/health', healthHandler\)/.test(app), '/api/v1/health served for browser clients');
     assert.ok(app.indexOf("app.get('/api/v1/health'") < app.indexOf("app.use('/api/v1/auth'"), 'registered before the routers');
-    assert.ok(/res\.status\(health\.status === 'ok' \? 200 : 503\)/.test(app), 'degraded still answers 503');
+    assert.ok(/res\.status\(healthHttpStatus\(health\)\)/.test(app), 'the HTTP status comes from the shared mapping (503 only for an essential failure)');
     assert.ok(!/healthHandler[\s\S]{0,80}authenticate/.test(app), 'same (public) access as /health');
     console.log('✓ Health: per-dependency states; /health and /api/v1/health share one handler');
   }

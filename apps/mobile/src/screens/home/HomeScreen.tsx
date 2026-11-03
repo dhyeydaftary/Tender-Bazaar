@@ -24,12 +24,12 @@ import {
   Dimensions,
   Platform,
   Pressable,
+  useWindowDimensions,
 } from 'react-native';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
   useAnimatedScrollHandler,
-  useDerivedValue,
   interpolate,
   Extrapolation,
   withTiming,
@@ -49,7 +49,15 @@ import { useAuthStore } from '../../stores/authStore';
 import type { RootStackParamList } from '../../types/navigation';
 import TenderCard from '../../components/tender/TenderCard';
 import TenderMiniCard from '../../components/tender/TenderMiniCard';
+import TenderCardSkeleton from '../../components/tender/TenderCardSkeleton';
+import SkeletonLoader from '../../components/ui/SkeletonLoader';
 import { formatCurrency } from '../../utils/format';
+import { toTenderCardData } from '../../utils/tenderCard';
+import { formatStatNumber, getStatCardWidth, getStatValueFontSize } from '../../utils/homeStats';
+import { useDashboardStats } from '../../hooks/useDashboard';
+import { useExpiringTenders, useRecommendedTenders } from '../../hooks/useTenders';
+import type { DashboardStats } from '../../services/api/dashboard';
+import type { TenderListItem } from '../../services/api/tenders';
 
 // ---------------------------------------------------------------------------
 // Design tokens
@@ -80,7 +88,8 @@ type NavProp = NativeStackNavigationProp<RootStackParamList>;
 interface StatCardData {
   id: string;
   label: string;
-  rawValue: number;
+  /** Which GET /dashboard stat the card shows. */
+  statKey: keyof Pick<DashboardStats, 'newToday' | 'activeTenders' | 'savedCount' | 'avgAiScore'>;
   displaySuffix: string;
   icon: string;
   color: string;
@@ -114,12 +123,17 @@ interface RecentResultData {
 // Static data
 // ---------------------------------------------------------------------------
 
+// Values come from GET /dashboard (see useDashboardStats); only the presentation lives here.
 const STATS: StatCardData[] = [
-  { id: 'new', label: 'New Today', rawValue: 284, displaySuffix: '', icon: 'file-document-outline', color: PRIMARY },
-  { id: 'active', label: 'Active', rawValue: 12438, displaySuffix: '', icon: 'lightning-bolt', color: '#3B82F6' },
-  { id: 'saved', label: 'Saved', rawValue: 23, displaySuffix: '', icon: 'bookmark-outline', color: ACCENT },
-  { id: 'ai', label: 'AI Score', rawValue: 87, displaySuffix: '%', icon: 'brain', color: '#7C3AED' },
+  { id: 'new', label: 'New Today', statKey: 'newToday', displaySuffix: '', icon: 'file-document-outline', color: PRIMARY },
+  { id: 'active', label: 'Active', statKey: 'activeTenders', displaySuffix: '', icon: 'lightning-bolt', color: '#3B82F6' },
+  { id: 'saved', label: 'Saved', statKey: 'savedCount', displaySuffix: '', icon: 'bookmark-outline', color: ACCENT },
+  { id: 'ai', label: 'AI Score', statKey: 'avgAiScore', displaySuffix: '%', icon: 'brain', color: '#7C3AED' },
 ];
+
+/** Number of tenders previewed on the home page; "See all" opens the full list. */
+const RECOMMENDED_PREVIEW_COUNT = 5;
+const EXPIRING_PREVIEW_COUNT = 10;
 
 const QUICK_ACTIONS: QuickActionData[] = [
   { id: 'search', label: 'Search', icon: 'magnify', color: PRIMARY, route: 'SearchTab' },
@@ -133,152 +147,6 @@ const CATEGORIES: CategoryData[] = [
   { id: 'goods', label: 'Goods', icon: 'package-variant-closed', color: '#2563EB', count: '2,894 active' },
   { id: 'services', label: 'Services', icon: 'account-group-outline', color: '#0D9488', count: '1,756 active' },
   { id: 'consultancy', label: 'Consultancy', icon: 'head-lightbulb-outline', color: '#7C3AED', count: '987 active' },
-];
-
-const MOCK_RECOMMENDED_TENDERS = [
-  {
-    id: 'r1',
-    title: 'Construction of 6-Lane Access Controlled Expressway from Ahmedabad to Dholera SIR',
-    organization: 'National Highways Authority of India (NHAI)',
-    state: 'Gujarat',
-    category: 'Works' as const,
-    estimatedValue: 452000000,
-    emdAmount: 9040000,
-    submissionDeadline: '2026-04-28T17:00:00Z',
-    publishedDate: '2026-04-08T09:00:00Z',
-    status: 'ACTIVE' as const,
-    sourcePortal: 'CPPP',
-    referenceNumber: 'NHAI/2026/GJ/EXP-043',
-  },
-  {
-    id: 'r2',
-    title: 'Supply and Installation of 500 KV Power Transformers for Eastern Grid Substation',
-    organization: 'Power Grid Corporation of India Ltd',
-    state: 'West Bengal',
-    category: 'Goods' as const,
-    estimatedValue: 185000000,
-    emdAmount: 3700000,
-    submissionDeadline: '2026-04-25T15:00:00Z',
-    publishedDate: '2026-04-07T11:30:00Z',
-    status: 'ACTIVE' as const,
-    sourcePortal: 'GeM',
-    referenceNumber: 'PGCIL/EG/TR-2026-118',
-  },
-  {
-    id: 'r3',
-    title: 'Annual Maintenance & Operations of Smart City CCTV Surveillance Network',
-    organization: 'Surat Municipal Corporation',
-    state: 'Gujarat',
-    category: 'Services' as const,
-    estimatedValue: 34500000,
-    emdAmount: 690000,
-    submissionDeadline: '2026-05-02T17:00:00Z',
-    publishedDate: '2026-04-09T08:00:00Z',
-    status: 'ACTIVE' as const,
-    sourcePortal: 'GeM',
-    referenceNumber: 'SMC/IT/AMC-2026-027',
-  },
-  {
-    id: 'r4',
-    title: 'Design Consultancy for Redevelopment of 5 Railway Stations under Amrit Bharat Scheme',
-    organization: 'Indian Railways (RLDA)',
-    state: 'Multiple States',
-    category: 'Consultancy' as const,
-    estimatedValue: 78000000,
-    emdAmount: 1560000,
-    submissionDeadline: '2026-04-30T16:00:00Z',
-    publishedDate: '2026-04-06T10:00:00Z',
-    status: 'ACTIVE' as const,
-    sourcePortal: 'IREPS',
-    referenceNumber: 'RLDA/ABS/CONSULT-2026-09',
-  },
-  {
-    id: 'r5',
-    title: 'Procurement of Medical Equipment and ICU Ventilators for District Hospitals Phase-II',
-    organization: 'ONGC CSR Foundation / Ministry of Health',
-    state: 'Rajasthan',
-    category: 'Goods' as const,
-    estimatedValue: 52000000,
-    emdAmount: 1040000,
-    submissionDeadline: '2026-05-05T17:30:00Z',
-    publishedDate: '2026-04-10T06:00:00Z',
-    status: 'ACTIVE' as const,
-    sourcePortal: 'GeM',
-    referenceNumber: 'MOH/RJ/MED-EQ-2026-344',
-  },
-];
-
-const MOCK_EXPIRING_TENDERS = [
-  {
-    id: 'e1',
-    title: 'Emergency Water Pipeline Repair & Rehabilitation - Zone 3 & 4',
-    organization: 'Delhi Jal Board',
-    state: 'Delhi',
-    category: 'Works' as const,
-    estimatedValue: 89000000,
-    emdAmount: 1780000,
-    submissionDeadline: '2026-04-11T17:00:00Z',
-    publishedDate: '2026-04-01T09:00:00Z',
-    status: 'ACTIVE' as const,
-    sourcePortal: 'CPPP',
-    referenceNumber: 'DJB/ZONE34/WP-2026-88',
-  },
-  {
-    id: 'e2',
-    title: 'Supply of IT Hardware & Networking Equipment for Govt Schools',
-    organization: 'Dept of Education, Maharashtra',
-    state: 'Maharashtra',
-    category: 'Goods' as const,
-    estimatedValue: 35000000,
-    emdAmount: 700000,
-    submissionDeadline: '2026-04-12T15:00:00Z',
-    publishedDate: '2026-04-03T10:00:00Z',
-    status: 'ACTIVE' as const,
-    sourcePortal: 'MahaTenders',
-    referenceNumber: 'MAHA/EDU/IT-2026-172',
-  },
-  {
-    id: 'e3',
-    title: 'Construction of Flyover at NH-48 Junction near Manesar Industrial Area',
-    organization: 'CPWD Haryana Division',
-    state: 'Haryana',
-    category: 'Works' as const,
-    estimatedValue: 120000000,
-    emdAmount: 2400000,
-    submissionDeadline: '2026-04-13T17:00:00Z',
-    publishedDate: '2026-04-02T08:30:00Z',
-    status: 'ACTIVE' as const,
-    sourcePortal: 'CPPP',
-    referenceNumber: 'CPWD/HR/FO-2026-056',
-  },
-  {
-    id: 'e4',
-    title: 'Housekeeping & Facility Management Services for Central Govt Complex',
-    organization: 'NBCC India Limited',
-    state: 'Delhi',
-    category: 'Services' as const,
-    estimatedValue: 15000000,
-    emdAmount: 300000,
-    submissionDeadline: '2026-04-16T16:00:00Z',
-    publishedDate: '2026-04-05T07:00:00Z',
-    status: 'ACTIVE' as const,
-    sourcePortal: 'GeM',
-    referenceNumber: 'NBCC/FM/HK-2026-031',
-  },
-  {
-    id: 'e5',
-    title: 'Solar Panel Installation for Rural Health Centers under PM-KUSUM',
-    organization: 'Ministry of New & Renewable Energy',
-    state: 'Madhya Pradesh',
-    category: 'Works' as const,
-    estimatedValue: 45000000,
-    emdAmount: 900000,
-    submissionDeadline: '2026-04-14T17:00:00Z',
-    publishedDate: '2026-04-04T10:00:00Z',
-    status: 'ACTIVE' as const,
-    sourcePortal: 'CPPP',
-    referenceNumber: 'MNRE/MP/SOL-2026-099',
-  },
 ];
 
 const RECENT_RESULTS: RecentResultData[] = [
@@ -323,13 +191,6 @@ function getGreetingEmoji(): string {
   return '\uD83C\uDF19';
 }
 
-function formatStatNumber(value: number): string {
-  if (value >= 10000) {
-    return value.toLocaleString('en-IN');
-  }
-  return value.toString();
-}
-
 function triggerHaptic() {
   try {
     ReactNativeHapticFeedback.trigger('impactLight', {
@@ -350,15 +211,24 @@ const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 const StatCardItem = React.memo(function StatCardItem({
   stat,
   index,
+  value,
+  isLoading,
+  width,
 }: {
   stat: StatCardData;
   index: number;
+  /** null when there is no value to show (load failed, or no AI checks yet). */
+  value: number | null;
+  isLoading: boolean;
+  width: number;
 }) {
   const progress = useSharedValue(0);
   const scale = useSharedValue(1);
 
-  // Trigger count-up animation on mount
+  // Count up whenever a (new) value arrives, e.g. after pull-to-refresh.
   React.useEffect(() => {
+    if (value === null) return;
+    progress.value = 0;
     const delay = index * 100;
     const timer = setTimeout(() => {
       progress.value = withTiming(1, {
@@ -367,11 +237,10 @@ const StatCardItem = React.memo(function StatCardItem({
       });
     }, delay);
     return () => clearTimeout(timer);
-  }, [progress, index]);
+  }, [progress, index, value]);
 
-  const animatedNumber = useDerivedValue(() => {
-    return Math.round(interpolate(progress.value, [0, 1], [0, stat.rawValue]));
-  });
+  // Scale the number with the card so long values (e.g. 12,438) fit narrow cards.
+  const valueFontSize = getStatValueFontSize(width);
 
   const scaleStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
@@ -389,52 +258,75 @@ const StatCardItem = React.memo(function StatCardItem({
     <AnimatedPressable
       onPressIn={handlePressIn}
       onPressOut={handlePressOut}
-      style={[styles.statCard, scaleStyle]}
+      style={[styles.statCard, { width }, scaleStyle]}
+      accessibilityLabel={`${stat.label}: ${value === null ? 'not available' : `${value}${stat.displaySuffix}`}`}
+      testID={`stat-card-${stat.id}`}
     >
       <View style={[styles.statIconCircle, { backgroundColor: stat.color + '1F' }]}>
         <Icon name={stat.icon} size={20} color={stat.color} />
       </View>
-      <AnimatedStatNumber
-        animatedNum={animatedNumber}
-        suffix={stat.displaySuffix}
-      />
-      <Text style={styles.statLabel}>{stat.label}</Text>
+      {isLoading ? (
+        <SkeletonLoader width="60%" height={valueFontSize} borderRadius={6} style={styles.statValueSkeleton} />
+      ) : value === null ? (
+        <Text style={[styles.statValue, { fontSize: valueFontSize }]}>{'—'}</Text>
+      ) : (
+        <AnimatedStatNumber
+          progress={progress}
+          target={value}
+          suffix={stat.displaySuffix}
+          fontSize={valueFontSize}
+        />
+      )}
+      <Text style={styles.statLabel} numberOfLines={1}>
+        {stat.label}
+      </Text>
     </AnimatedPressable>
   );
 });
 
 // Animated stat number — uses JS-thread count-up to avoid worklet text issues
 const AnimatedStatNumber = React.memo(function AnimatedStatNumber({
-  animatedNum,
+  progress,
+  target,
   suffix,
+  fontSize,
 }: {
-  animatedNum: { value: number };
+  /** 0 → 1 count-up progress (a plain shared value, readable from the JS thread). */
+  progress: { value: number };
+  target: number;
   suffix: string;
+  fontSize: number;
 }) {
   const [display, setDisplay] = React.useState('0');
 
-  // Bridge animated value → JS state via useAnimatedReaction
   React.useEffect(() => {
-    // Poll the shared value from JS thread (safe, runs every 16ms during animation)
+    // Poll the progress from the JS thread (runs every frame during animation).
+    // The number is computed here rather than in a derived value: a derived value
+    // rebuilt for a new target was not picked up by this JS-thread poll and stuck at 0.
     let rafId: number;
     let lastValue = -1;
     const tick = () => {
-      const current = Math.round(animatedNum.value);
+      const current = Math.round(Math.min(1, Math.max(0, progress.value)) * target);
       if (current !== lastValue) {
         lastValue = current;
-        if (current >= 10000) {
-          setDisplay(current.toLocaleString('en-IN') + suffix);
-        } else {
-          setDisplay(current.toString() + suffix);
-        }
+        setDisplay(formatStatNumber(current) + suffix);
       }
       rafId = requestAnimationFrame(tick);
     };
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
-  }, [animatedNum, suffix]);
+  }, [progress, target, suffix]);
 
-  return <Text style={styles.statValue}>{display}</Text>;
+  return (
+    <Text
+      style={[styles.statValue, { fontSize }]}
+      numberOfLines={1}
+      adjustsFontSizeToFit
+      minimumFontScale={0.6}
+    >
+      {display}
+    </Text>
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -602,6 +494,13 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
   const user = useAuthStore((s) => s.user);
   const [refreshing, setRefreshing] = React.useState(false);
+  const { width: windowWidth } = useWindowDimensions();
+  const statCardWidth = getStatCardWidth(windowWidth);
+
+  // Live data — filtering (open, not expired, expiry window) happens on the API.
+  const statsQuery = useDashboardStats();
+  const recommendedQuery = useRecommendedTenders(RECOMMENDED_PREVIEW_COUNT);
+  const expiringQuery = useExpiringTenders(EXPIRING_PREVIEW_COUNT);
 
   const scrollY = useSharedValue(0);
 
@@ -683,11 +582,17 @@ export default function HomeScreen() {
   });
 
   // ---- Pull to refresh ----
+  const { refetch: refetchStats } = statsQuery;
+  const { refetch: refetchRecommended } = recommendedQuery;
+  const { refetch: refetchExpiring } = expiringQuery;
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await new Promise<void>((resolve) => setTimeout(resolve, 1500));
-    setRefreshing(false);
-  }, []);
+    try {
+      await Promise.all([refetchStats(), refetchRecommended(), refetchExpiring()]);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refetchStats, refetchRecommended, refetchExpiring]);
 
   // ---- Navigation handlers ----
   const handleNotificationPress = useCallback(() => {
@@ -722,23 +627,41 @@ export default function HomeScreen() {
     navigation.navigate('Main', { screen: 'SearchTab' });
   }, [navigation]);
 
-  const handleSeeAll = useCallback(() => {
+  // Recent results has no listing screen yet; unchanged, it still opens Search.
+  const handleViewAllResults = useCallback(() => {
     navigation.navigate('Main', { screen: 'SearchTab' });
+  }, [navigation]);
+
+  // Each "See all" opens its own full listing (not the generic Search tab).
+  const handleSeeAllRecommended = useCallback(() => {
+    navigation.navigate('TenderList', { kind: 'recommended' });
+  }, [navigation]);
+
+  const handleSeeAllExpiring = useCallback(() => {
+    navigation.navigate('TenderList', { kind: 'expiring' });
   }, [navigation]);
 
   // ---- Render helpers ----
 
+  const stats = statsQuery.data;
+  const statsLoading = statsQuery.isLoading;
   const renderStatCard = useCallback(
     ({ item, index }: { item: StatCardData; index: number }) => (
-      <StatCardItem stat={item} index={index} />
+      <StatCardItem
+        stat={item}
+        index={index}
+        value={stats ? stats[item.statKey] : null}
+        isLoading={statsLoading}
+        width={statCardWidth}
+      />
     ),
-    [],
+    [stats, statsLoading, statCardWidth],
   );
 
   const renderExpiringTender = useCallback(
-    ({ item }: { item: (typeof MOCK_EXPIRING_TENDERS)[0] }) => (
+    ({ item }: { item: TenderListItem }) => (
       <TenderMiniCard
-        tender={item}
+        tender={toTenderCardData(item)}
         onPress={() => handleTenderPress(item.id)}
       />
     ),
@@ -824,7 +747,15 @@ export default function HomeScreen() {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.statsContainer}
             ItemSeparatorComponent={StatSeparator}
+            extraData={statCardWidth}
           />
+          {statsQuery.isError && (
+            <SectionMessage
+              message="Couldn't load your stats."
+              onRetry={() => statsQuery.refetch()}
+              style={styles.statsError}
+            />
+          )}
         </View>
 
         {/* =========================================================== */}
@@ -848,18 +779,36 @@ export default function HomeScreen() {
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Recommended for you</Text>
-            <TouchableOpacity onPress={handleSeeAll} activeOpacity={0.7}>
+            <TouchableOpacity
+              onPress={handleSeeAllRecommended}
+              activeOpacity={0.7}
+              testID="see-all-recommended"
+            >
               <Text style={styles.seeAllText}>See all &rarr;</Text>
             </TouchableOpacity>
           </View>
-          {MOCK_RECOMMENDED_TENDERS.map((tender) => (
-            <View key={tender.id} style={styles.tenderCardWrapper}>
-              <TenderCard
-                tender={tender}
-                onPress={() => handleTenderPress(tender.id)}
-              />
-            </View>
-          ))}
+          {recommendedQuery.isLoading ? (
+            <>
+              <TenderCardSkeleton style={styles.tenderCardWrapper} />
+              <TenderCardSkeleton style={styles.tenderCardWrapper} />
+            </>
+          ) : recommendedQuery.isError ? (
+            <SectionMessage
+              message="Couldn't load recommendations."
+              onRetry={() => recommendedQuery.refetch()}
+            />
+          ) : recommendedQuery.data?.tenders.length ? (
+            recommendedQuery.data.tenders.map((tender) => (
+              <View key={tender.id} style={styles.tenderCardWrapper}>
+                <TenderCard
+                  tender={toTenderCardData(tender)}
+                  onPress={() => handleTenderPress(tender.id)}
+                />
+              </View>
+            ))
+          ) : (
+            <SectionMessage message="No open tenders to recommend right now." />
+          )}
         </View>
 
         {/* =========================================================== */}
@@ -870,19 +819,37 @@ export default function HomeScreen() {
             <Text style={styles.sectionTitle}>
               Expiring soon {'\u23F0'}
             </Text>
-            <TouchableOpacity onPress={handleSeeAll} activeOpacity={0.7}>
+            <TouchableOpacity
+              onPress={handleSeeAllExpiring}
+              activeOpacity={0.7}
+              testID="see-all-expiring"
+            >
               <Text style={styles.seeAllText}>See all &rarr;</Text>
             </TouchableOpacity>
           </View>
-          <FlatList
-            data={MOCK_EXPIRING_TENDERS}
-            renderItem={renderExpiringTender}
-            keyExtractor={(item) => item.id}
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.expiringContainer}
-            ItemSeparatorComponent={CardSeparator}
-          />
+          {expiringQuery.isLoading ? (
+            <View style={styles.expiringSkeletonRow}>
+              <SkeletonLoader width={statCardWidth * 1.6} height={150} borderRadius={16} />
+              <SkeletonLoader width={statCardWidth * 1.6} height={150} borderRadius={16} />
+            </View>
+          ) : expiringQuery.isError ? (
+            <SectionMessage
+              message="Couldn't load expiring tenders."
+              onRetry={() => expiringQuery.refetch()}
+            />
+          ) : expiringQuery.data?.tenders.length ? (
+            <FlatList
+              data={expiringQuery.data.tenders}
+              renderItem={renderExpiringTender}
+              keyExtractor={(item) => item.id}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.expiringContainer}
+              ItemSeparatorComponent={CardSeparator}
+            />
+          ) : (
+            <SectionMessage message="No open tenders close in the next 7 days." />
+          )}
         </View>
 
         {/* =========================================================== */}
@@ -911,7 +878,7 @@ export default function HomeScreen() {
             <Text style={styles.sectionTitle}>
               Recent results {'\uD83C\uDFC6'}
             </Text>
-            <TouchableOpacity onPress={handleSeeAll} activeOpacity={0.7}>
+            <TouchableOpacity onPress={handleViewAllResults} activeOpacity={0.7}>
               <Text style={styles.seeAllText}>View all &rarr;</Text>
             </TouchableOpacity>
           </View>
@@ -923,6 +890,31 @@ export default function HomeScreen() {
         {/* Bottom spacer for floating tab bar */}
         <View style={styles.bottomSpacer} />
       </Animated.ScrollView>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inline empty / error message for a home section
+// ---------------------------------------------------------------------------
+
+function SectionMessage({
+  message,
+  onRetry,
+  style,
+}: {
+  message: string;
+  onRetry?: () => void;
+  style?: object;
+}) {
+  return (
+    <View style={[styles.sectionMessage, style]}>
+      <Text style={styles.sectionMessageText}>{message}</Text>
+      {onRetry && (
+        <TouchableOpacity onPress={onRetry} activeOpacity={0.7} hitSlop={8}>
+          <Text style={styles.sectionMessageRetry}>Retry</Text>
+        </TouchableOpacity>
+      )}
     </View>
   );
 }
@@ -1057,8 +1049,9 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
   },
   statCard: {
-    width: 130,
-    height: 85,
+    // Width comes from getStatCardWidth(); a min height (not a fixed one) lets the
+    // icon, number and label fit at any font scale instead of clipping the label.
+    minHeight: 96,
     backgroundColor: CARD_BG,
     borderRadius: 16,
     paddingHorizontal: 14,
@@ -1149,6 +1142,40 @@ const styles = StyleSheet.create({
   // ---- Expiring soon ----
   expiringContainer: {
     paddingRight: 20,
+  },
+  expiringSkeletonRow: {
+    flexDirection: 'row',
+    gap: 12,
+    overflow: 'hidden',
+  },
+  statsError: {
+    marginTop: 8,
+    marginHorizontal: 20,
+  },
+  statValueSkeleton: {
+    marginVertical: 4,
+  },
+  sectionMessage: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    backgroundColor: CARD_BG,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: BORDER,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+  },
+  sectionMessageText: {
+    flex: 1,
+    fontSize: 14,
+    color: TEXT_SECONDARY,
+  },
+  sectionMessageRetry: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: PRIMARY,
   },
 
   // ---- Categories ----

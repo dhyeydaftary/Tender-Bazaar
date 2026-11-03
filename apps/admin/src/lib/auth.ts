@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import axios from "axios";
+import { API_BASE_URL, API_URL_NOT_CONFIGURED_MESSAGE } from "./api-url";
 
 // ---------- Types ----------
 
@@ -27,8 +28,6 @@ interface AuthState {
 // ---------- Constants ----------
 
 const STORAGE_KEY = "tb-admin-auth";
-const API_BASE_URL =
-  process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000/api/v1";
 
 // ---------- Store ----------
 
@@ -44,6 +43,9 @@ export const useAuthStore = create<AuthState>()(
         set({ isLoading: true });
 
         try {
+          if (!API_BASE_URL) {
+            throw new Error(API_URL_NOT_CONFIGURED_MESSAGE);
+          }
           const res = await axios.post(`${API_BASE_URL}/auth/login`, {
             email,
             password,

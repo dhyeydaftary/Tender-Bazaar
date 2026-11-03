@@ -32,6 +32,8 @@ export type RootStackParamList = {
   Main: NavigatorScreenParams<MainTabParamList>;
   // Detail screens pushed on top of Main tabs
   TenderDetail: { id: string };
+  /** Full listing behind a home-page "See all" button. */
+  TenderList: { kind: 'recommended' | 'expiring' };
   EligibilityResult: { tenderId: string; score: number };
   EditProfile: undefined;
   CompanyProfile: undefined;

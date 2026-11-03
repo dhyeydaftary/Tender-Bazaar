@@ -1,9 +1,10 @@
 import axios from 'axios';
+import { API_BASE_URL, API_URL_NOT_CONFIGURED_MESSAGE } from './api-url';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
+const API_URL = API_BASE_URL;
 
 const api = axios.create({
-  baseURL: API_URL,
+  baseURL: API_URL ?? undefined,
   headers: {
     'Content-Type': 'application/json',
   },
@@ -11,6 +12,10 @@ const api = axios.create({
 
 // Request interceptor: attach Bearer token
 api.interceptors.request.use((config) => {
+  if (!API_URL) {
+    // Never send the request anywhere when the build had no API URL.
+    return Promise.reject(new Error(API_URL_NOT_CONFIGURED_MESSAGE));
+  }
   if (typeof window !== 'undefined') {
     const token = localStorage.getItem('accessToken');
     if (token) {
