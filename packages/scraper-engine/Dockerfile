@@ -5,14 +5,18 @@
 FROM mcr.microsoft.com/playwright:v1.64.1-jammy
 WORKDIR /app
 
-# Install Node.js 20 + pnpm
+# Node.js comes with the Playwright base image (it bundles the current Node
+# release it supports; v1.64.1-jammy ships Node 26). A separate NodeSource
+# install used to be layered on top; it is redundant, and since Node 20 went
+# end-of-life the 20.x setup script no longer pins anything, so it is gone.
+# curl stays for the HEALTHCHECK below.
 RUN apt-get update && \
-    apt-get install -y curl && \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y nodejs && \
+    apt-get install -y --no-install-recommends curl && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
-RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
+# pnpm pinned to the workspace's packageManager version. corepack is not used
+# here: installing it from npm collides with the yarn shims the image ships.
+RUN npm install -g pnpm@10.33.0
 
 # Copy workspace root files
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./

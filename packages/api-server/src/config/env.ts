@@ -281,6 +281,183 @@ export function validatePaymentsDemoMode(input: {
   return problems;
 }
 
+/**
+ * Whether development-only shortcuts (mock payments, dev CORS origins, the
+ * rate-limit bypass, verbose errors) may run.
+ *
+ * Takes the RAW `process.env.NODE_ENV`, not the schema value: the schema
+ * defaults an unset NODE_ENV to 'development' so a bare local checkout keeps
+ * working, but a server that simply forgot to set NODE_ENV must not thereby
+ * switch every development shortcut on. Only an explicit
+ * `NODE_ENV=development` does that.
+ */
+export function developmentShortcutsAllowed(rawNodeEnv: string | undefined): boolean {
+  return rawNodeEnv === 'development';
+}
+
+/**
+ * Environment variables set by hosting platforms on every service they run.
+ * Their presence means "this is a hosted deployment", where NODE_ENV must be
+ * set to 'production' explicitly: a deployed API must never run with the
+ * development defaults (localhost URLs, the public development signing
+ * secrets) just because NODE_ENV was forgotten.
+ *
+ * Render, the deployment target, sets RENDER=true and RENDER_SERVICE_ID on
+ * all services. The other names are the equivalent markers of common
+ * platforms, so the same rule holds if the API is ever moved. None of them is
+ * set on a developer machine or in CI. Exported for the tests.
+ */
+export const HOSTED_PLATFORM_MARKERS = [
+  'RENDER',
+  'RENDER_SERVICE_ID',
+  'FLY_APP_NAME', // Fly.io
+  'RAILWAY_ENVIRONMENT', // Railway
+  'DYNO', // Heroku
+  'K_SERVICE', // Google Cloud Run
+  'WEBSITE_SITE_NAME', // Azure App Service
+  'ECS_CONTAINER_METADATA_URI_V4', // AWS ECS / Fargate
+] as const;
+
+/**
+ * A browser origin the API may trust for CORS: an absolute http(s) URL with no
+ * path, query, fragment, credentials or wildcard. Returns a problem
+ * description, or null when acceptable. In production the origin must also be
+ * https and must not be a loopback host.
+ */
+export function checkTrustedOrigin(
+  name: string,
+  value: string,
+  production: boolean,
+): string | null {
+  const trimmed = value.trim();
+  if (trimmed.includes('*')) {
+    return `${name}: wildcards are not allowed; list each trusted origin exactly.`;
+  }
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return `${name}: must be an absolute URL such as https://app.example.com.`;
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+    return `${name}: must use http or https.`;
+  }
+  if (url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) {
+    return `${name}: must be a bare origin (scheme://host[:port]) with no path, query or credentials.`;
+  }
+  if (production) {
+    if (url.protocol !== 'https:') {
+      return `${name}: must use https in production.`;
+    }
+    if (isLoopbackHost(url.hostname)) {
+      return `${name}: must not point at localhost in production.`;
+    }
+  }
+  return null;
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return (
+    hostname === 'localhost' ||
+    hostname.endsWith('.localhost') ||
+    hostname === '[::1]' ||
+    hostname === '0.0.0.0' ||
+    /^127\./.test(hostname)
+  );
+}
+
+/** Split a comma-separated origin list, dropping empty entries. */
+export function parseOriginList(value: string | undefined): string[] {
+  return (value ?? '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter((origin) => origin !== '');
+}
+
+/**
+ * Settings a production API must have, checked against the RAW environment
+ * (before schema defaults), because several schema defaults point at
+ * localhost and would otherwise be silently accepted.
+ *
+ *   - On a hosted platform (Render), NODE_ENV must be exactly 'production'.
+ *   - In production, DATABASE_URL and FRONTEND_URL must be set explicitly,
+ *     every CORS origin must be a bare https origin that is not localhost, the
+ *     removed unsigned Google sign-in must not be requested, Google client ids
+ *     must look like real ones, and Razorpay must be configured completely or
+ *     not at all.
+ *
+ * Exported for unit testing; values never appear in the messages.
+ */
+export function validateDeploymentEnvironment(raw: Record<string, string | undefined>): string[] {
+  const problems: string[] = [];
+  const nodeEnv = raw.NODE_ENV;
+
+  const hostedMarker = HOSTED_PLATFORM_MARKERS.find((name) => (raw[name] ?? '').trim() !== '');
+  if (hostedMarker && nodeEnv !== 'production') {
+    problems.push(
+      `NODE_ENV: must be set to 'production' on a hosted deployment (${hostedMarker} is set); ` +
+        `got ${nodeEnv === undefined || nodeEnv === '' ? 'nothing' : `'${nodeEnv}'`}.`,
+    );
+  }
+
+  if (nodeEnv !== 'production') return problems;
+
+  if ((raw.DATABASE_URL ?? '').trim() === '') {
+    problems.push('DATABASE_URL: must be set in production (the development default points at localhost).');
+  }
+
+  if ((raw.FRONTEND_URL ?? '').trim() === '') {
+    problems.push('FRONTEND_URL: must be set in production; it is the web origin trusted by CORS and used in emailed links.');
+  } else {
+    const problem = checkTrustedOrigin('FRONTEND_URL', raw.FRONTEND_URL!, true);
+    if (problem) problems.push(problem);
+  }
+
+  if ((raw.ADMIN_URL ?? '').trim() !== '') {
+    const problem = checkTrustedOrigin('ADMIN_URL', raw.ADMIN_URL!, true);
+    if (problem) problems.push(problem);
+  }
+
+  for (const origin of parseOriginList(raw.CORS_ORIGINS)) {
+    const problem = checkTrustedOrigin('CORS_ORIGINS', origin, true);
+    if (problem) problems.push(problem);
+  }
+
+  if (raw.ALLOW_DEMO_GOOGLE_AUTH === 'true') {
+    problems.push(
+      'ALLOW_DEMO_GOOGLE_AUTH: unsigned Google sign-in has been removed and must not be requested in production; unset it.',
+    );
+  }
+
+  for (const clientId of parseOriginList(raw.GOOGLE_CLIENT_ID)) {
+    if (!/^[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com$/.test(clientId)) {
+      problems.push(
+        'GOOGLE_CLIENT_ID: must be one or more OAuth client ids ending in .apps.googleusercontent.com, or unset to disable Google sign-in.',
+      );
+      break;
+    }
+  }
+
+  const aiToken = (raw.AI_SERVICE_TOKEN ?? '').trim();
+  if (aiToken !== '') {
+    if (aiToken.length < 16) {
+      problems.push('AI_SERVICE_TOKEN: must be at least 16 characters in production (or unset to disable AI calls).');
+    } else if (/^dev-|placeholder|change[-_ ]?me|your-/i.test(aiToken)) {
+      problems.push('AI_SERVICE_TOKEN: is a development or placeholder value and must not be used in production.');
+    }
+  }
+
+  const hasKeyId = (raw.RAZORPAY_KEY_ID ?? '').trim() !== '';
+  const hasKeySecret = (raw.RAZORPAY_KEY_SECRET ?? '').trim() !== '';
+  if (hasKeyId !== hasKeySecret) {
+    problems.push(
+      'RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET: set both (payments enabled) or neither (payments disabled); a partial configuration cannot verify payments.',
+    );
+  }
+
+  return problems;
+}
+
 export const envSchema = z
   .object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -288,20 +465,47 @@ export const envSchema = z
   DATABASE_URL: z.string().default('postgresql://postgres:postgres@localhost:5432/tenderbazaar'),
   REDIS_URL: z.string().default('redis://localhost:6379'),
   ELASTICSEARCH_URL: z.string().default('http://localhost:9200'),
+  /**
+   * Elasticsearch is optional: tender search falls back to PostgreSQL whenever
+   * it is unreachable. 'false' turns it off entirely (no index setup, no
+   * boot-time reindex, /health reports it as disabled) for deployments without
+   * a cluster. The tender-index queue is still drained so it stays bounded.
+   */
+  ELASTICSEARCH_ENABLED: z.enum(['true', 'false']).default('true'),
   JWT_SECRET: z.string().default('dev-jwt-secret-change-in-production'),
   JWT_REFRESH_SECRET: z.string().default('dev-jwt-refresh-secret-change-in-production'),
   JWT_EXPIRY: z.string().default('15m'),
   JWT_REFRESH_EXPIRY: z.string().default('7d'),
-  GOOGLE_CLIENT_ID: z.string().default(''),
+  /**
+   * OAuth client id(s) whose Google ID tokens are accepted, comma-separated
+   * when the web and mobile apps use different clients. Empty disables Google
+   * sign-in (the endpoint answers 503).
+   */
+  GOOGLE_CLIENT_ID: z.string().trim().default(''),
   GOOGLE_CLIENT_SECRET: z.string().default(''),
   /**
-   * Opt in to the DEVELOPMENT-ONLY Google sign-in path, which accepts an
-   * unsigned, client-generated ID token. Disabled by default, and ignored
-   * outside NODE_ENV=development (see modules/auth/service.ts).
+   * Retired. It used to enable a sign-in path that accepted unsigned,
+   * client-generated Google tokens; that path has been removed and Google ID
+   * tokens are always verified. Still parsed so a stale 'true' is caught:
+   * production refuses to start with it (validateDeploymentEnvironment).
    */
-  ALLOW_DEMO_GOOGLE_AUTH: z.enum(['true', 'false']).default('true'),
+  ALLOW_DEMO_GOOGLE_AUTH: z.enum(['true', 'false']).default('false'),
   FRONTEND_URL: z.string().default('http://localhost:3000'),
+  /** The admin app's origin, trusted by CORS alongside FRONTEND_URL. */
+  ADMIN_URL: z.string().default(''),
+  /**
+   * Further exact origins trusted by CORS, comma-separated (for example a
+   * custom domain alongside the *.vercel.app one). No wildcards.
+   */
+  CORS_ORIGINS: z.string().default(''),
   AI_SERVICE_URL: z.string().default('http://localhost:5000'),
+  /**
+   * Shared secret presented to the AI service as `Authorization: Bearer ...`
+   * (config/ai-service.ts). The AI service refuses every request without it.
+   * Server-side only; never a NEXT_PUBLIC_* value. Empty disables AI calls
+   * (they fall back to the rule-based results, as when the service is down).
+   */
+  AI_SERVICE_TOKEN: z.string().trim().default(''),
   /**
    * The scraper engine's control API, reached over the Compose network. Its
    * state-changing endpoints require SCRAPER_API_TOKEN (the same shared secret
@@ -384,17 +588,33 @@ const rawEnv = {
 };
 
 const parsed = envSchema.safeParse(rawEnv);
+const deploymentProblems = validateDeploymentEnvironment(process.env);
 
-if (!parsed.success) {
+if (!parsed.success || deploymentProblems.length > 0) {
   // Report which variables are wrong and why, but never their values: this
   // schema also carries JWT secrets, Razorpay keys and the database URL.
-  const problems = parsed.error.issues
-    .map((issue) => `  - ${issue.path.join('.') || '(root)'}: ${issue.message}`)
+  const problems = [
+    ...(parsed.success
+      ? []
+      : parsed.error.issues.map((issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`)),
+    ...deploymentProblems,
+  ]
+    .map((problem) => `  - ${problem}`)
     .join('\n');
   throw new Error(`Invalid environment configuration:\n${problems}`);
 }
 
 export const env = parsed.data;
+
+/** See developmentShortcutsAllowed: true only for an explicit NODE_ENV=development. */
+export const DEVELOPMENT_SHORTCUTS_ENABLED = developmentShortcutsAllowed(process.env.NODE_ENV);
+
+if (process.env.NODE_ENV === undefined || process.env.NODE_ENV === '') {
+  console.warn(
+    '[config] NODE_ENV is not set. Running with development defaults but WITHOUT development shortcuts ' +
+      '(mock payments, dev CORS origins, rate-limit bypass). Set NODE_ENV=development locally or NODE_ENV=production when deployed.',
+  );
+}
 export type Env = z.infer<typeof envSchema>;
 
 /**
@@ -435,6 +655,12 @@ const OPTIONAL_INTEGRATIONS: Array<{
     vars: ['SCRAPER_API_TOKEN'],
     impactWhenUnset:
       'admin "run now" falls back to the durable BullMQ queue instead of calling the scraper directly',
+  },
+  {
+    feature: 'AI service authentication',
+    vars: ['AI_SERVICE_TOKEN'],
+    impactWhenUnset:
+      'the AI service refuses every call (401/503) and eligibility, summaries and the bid assistant fall back to rule-based results',
   },
   {
     feature: 'Error reporting (Sentry)',

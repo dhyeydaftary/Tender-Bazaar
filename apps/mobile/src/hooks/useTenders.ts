@@ -3,15 +3,22 @@ import {
   useInfiniteQuery,
   useQueryClient,
 } from '@tanstack/react-query';
+import type { ApiResponse } from '@/types/api';
 import type { TenderSearchParams } from '@/types/tender';
 import * as tenderApi from '@/services/api/tenders';
+import { getNextTenderListPage } from '@/utils/tenderList';
+
+/** Home-page tender lists, each backed by its own API endpoint. */
+export type TenderListKind = 'recommended' | 'expiring';
 
 // ─── Query Key Factory ─────────────────────────────────────────────────────
 
 export const tenderKeys = {
   all: ['tenders'] as const,
-  recommended: () => [...tenderKeys.all, 'recommended'] as const,
-  expiring: () => [...tenderKeys.all, 'expiring'] as const,
+  recommended: (limit: number) => [...tenderKeys.all, 'recommended', limit] as const,
+  expiring: (limit: number) => [...tenderKeys.all, 'expiring', limit] as const,
+  list: (kind: TenderListKind, limit: number) =>
+    [...tenderKeys.all, 'list', kind, limit] as const,
   detail: (id: string) => [...tenderKeys.all, 'detail', id] as const,
   similar: (id: string) => [...tenderKeys.all, 'similar', id] as const,
   search: (params: TenderSearchParams) =>
@@ -20,33 +27,58 @@ export const tenderKeys = {
 
 // ─── Hooks ─────────────────────────────────────────────────────────────────
 
+/** Unwrap an API envelope, throwing on failure so React Query reports an error state. */
+async function unwrap<T>(request: Promise<ApiResponse<T>>): Promise<T> {
+  const res = await request;
+  if (!res.success || !res.data) {
+    throw new Error(res.error?.message ?? 'Request failed');
+  }
+  return res.data;
+}
+
+const listFetchers = {
+  recommended: tenderApi.getRecommended,
+  expiring: tenderApi.getExpiringTenders,
+} as const;
+
 /**
- * Fetch AI-recommended tenders for the current user.
+ * Fetch the first `limit` recommended tenders for the current user (open for
+ * bidding, most relevant first; filtered by the API).
  */
-export function useRecommendedTenders() {
+export function useRecommendedTenders(limit: number) {
   return useQuery({
-    queryKey: tenderKeys.recommended(),
-    queryFn: async () => {
-      const res = await tenderApi.getRecommended();
-      return res.data!;
-    },
+    queryKey: tenderKeys.recommended(limit),
+    queryFn: () => unwrap(tenderApi.getRecommended({ limit })),
     staleTime: 5 * 60 * 1000, // 5 minutes
     gcTime: 10 * 60 * 1000,
   });
 }
 
 /**
- * Fetch tenders that are expiring soon.
+ * Fetch the first `limit` tenders that are expiring soon (open, deadline within
+ * the API's expiring-soon window, nearest deadline first).
  */
-export function useExpiringTenders() {
+export function useExpiringTenders(limit: number) {
   return useQuery({
-    queryKey: tenderKeys.expiring(),
-    queryFn: async () => {
-      const res = await tenderApi.getExpiringTenders();
-      return res.data!;
-    },
+    queryKey: tenderKeys.expiring(limit),
+    queryFn: () => unwrap(tenderApi.getExpiringTenders({ limit })),
     staleTime: 2 * 60 * 1000, // 2 minutes
     gcTime: 5 * 60 * 1000,
+  });
+}
+
+/**
+ * Infinite-scroll list behind a home-page "See all" button. Stops paging when
+ * every result is loaded or the user's plan pins results to page 1.
+ */
+export function useTenderListInfinite(kind: TenderListKind, limit = 20) {
+  return useInfiniteQuery({
+    queryKey: tenderKeys.list(kind, limit),
+    queryFn: ({ pageParam }) => unwrap(listFetchers[kind]({ page: pageParam, limit })),
+    initialPageParam: 1,
+    getNextPageParam: getNextTenderListPage,
+    staleTime: 2 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
   });
 }
 

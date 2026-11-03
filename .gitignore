@@ -25,7 +25,12 @@ yarn-error.log*
 pnpm-debug.log*
 
 # local env files
+# Every env file is private (.env, .env.production, .env.staging, per-app
+# copies, ...). Only the *.example templates are committed.
 .env
+.env.*
+!.env.example
+!.env.*.example
 .env*.local
 # Server demo secrets (generated on the VPS only; the .example stays tracked)
 .env.demo.server
@@ -73,3 +78,18 @@ Thumbs.db
 # committed or copied into an image.
 secrets/
 *-firebase-adminsdk-*.json
+*service-account*.json
+# Private keys and certificate bundles (*.pem is ignored above).
+*.key
+*.p12
+*.pfx
+*.jks
+
+# Locally stored user uploads (company documents); never commit them.
+uploads/
+
+# Exported Docker image bundles (docker save), e.g. the 572 MB demo-server
+# archive. Never source; never part of a build or a commit.
+*.tar
+*.tar.gz
+*.tgz

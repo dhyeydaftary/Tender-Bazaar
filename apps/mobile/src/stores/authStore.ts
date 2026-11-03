@@ -52,7 +52,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
     onRefreshSuccess: async (rt: string) => {
       const res = await refreshTokenApi(rt);
       if (res.success && res.data) {
-        const newToken = res.data.token;
+        const newToken = res.data.accessToken;
         const newRefresh = res.data.refreshToken;
         await get().setToken(newToken);
         // Persist the new refresh token too

@@ -34,4 +34,10 @@ export const config = {
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:3000',
   nodeEnv: process.env.NODE_ENV || 'development',
   isDev: (process.env.NODE_ENV || 'development') !== 'production',
+  /**
+   * Production is the only mode in which an unconfigured provider is an
+   * error. Development and test keep the console fallbacks (see
+   * providers/delivery-guard.ts).
+   */
+  isProduction: process.env.NODE_ENV === 'production',
 };

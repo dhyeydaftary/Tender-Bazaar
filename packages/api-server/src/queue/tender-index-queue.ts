@@ -25,6 +25,7 @@ import { Queue, Worker, Job } from 'bullmq';
 import IORedis from 'ioredis';
 
 import { env } from '../config/env';
+import { ELASTICSEARCH_ENABLED } from '../config/elasticsearch';
 import { prisma } from '../config/database';
 import { indexTender, deleteTenderFromIndex } from '../config/elasticsearch-setup';
 
@@ -136,6 +137,13 @@ export function startTenderIndexWorker(): Worker<TenderIndexJobData> {
     TENDER_INDEX_QUEUE,
     async (job: Job<TenderIndexJobData>) => {
       const { tenderId, op } = job.data;
+
+      // With Elasticsearch switched off the queue is still consumed, so the
+      // scrapers' index jobs never pile up in Redis; they simply complete
+      // without touching an index that is not there.
+      if (!ELASTICSEARCH_ENABLED) {
+        return { tenderId, op, result: 'skipped: elasticsearch disabled' };
+      }
 
       if (op === 'delete') {
         await deleteTenderFromIndex(tenderId);

@@ -138,7 +138,9 @@ export const config = {
 
   // --- Admin API ---
   api: {
-    port: envInt('SCRAPER_API_PORT', 4001),
+    // Hosting platforms hand the service its port as PORT; SCRAPER_API_PORT
+    // still wins when both are set (Compose sets it explicitly).
+    port: envInt('SCRAPER_API_PORT', envInt('PORT', 4001)),
     enabled: envBool('SCRAPER_API_ENABLED', true),
     /**
      * Shared secret required by every state-changing control endpoint

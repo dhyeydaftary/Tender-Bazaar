@@ -115,6 +115,9 @@ services:
   ai-service:
     environment:
       REDIS_URL: *redis-url-auth
+      # Optional: unset leaves the AI service refusing every call (503) and the
+      # API on its rule-based fallbacks. Set the same value on api-server.
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:-}
     deploy:
       resources:
         limits:
@@ -144,6 +147,7 @@ services:
       FRONTEND_URL: ${FRONTEND_URL:?FRONTEND_URL must be set to the public web origin for production}
       ADMIN_URL: ${ADMIN_URL:?ADMIN_URL must be set to the public admin origin for production}
       SCRAPER_API_TOKEN: ${SCRAPER_API_TOKEN:?SCRAPER_API_TOKEN must be set to a strong shared secret for production}
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:-}
     deploy:
       resources:
         limits:

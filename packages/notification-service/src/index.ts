@@ -10,6 +10,7 @@ import type { NotificationJobData, NotificationChannel } from './queue/notificat
 import { config } from './config';
 import { getPushStatus } from './providers/push';
 import { describePushCredential } from './providers/firebase-credentials';
+import { selectEmailTransport, EMAIL_PROVIDER_VARIABLES } from './providers/email';
 
 // Re-export provider functions for direct use by API server
 export { sendEmail, sendTenderAlertEmail, sendDeadlineReminderEmail, sendWelcomeEmail } from './providers/email';
@@ -59,6 +60,26 @@ if (isMainModule) {
   //
   // Default (not required): the service starts and push is reported disabled,
   // so email, SMS and WhatsApp keep working — they are independent providers.
+  // ── Email provider status ─────────────────────────────────────────────
+  //
+  // Without a provider the JSON transport only prints messages. That is fine
+  // locally and wrong in production, where every EMAIL job now fails with
+  // EMAIL_NOT_CONFIGURED (providers/delivery-guard.ts). Said once, loudly, at
+  // startup, so the misconfiguration is found before the first job does.
+  {
+    const emailChoice = selectEmailTransport();
+    if (emailChoice.kind !== 'json') {
+      console.log(`[NotificationService] ${emailChoice.description}`);
+    } else if (config.isProduction) {
+      console.error(
+        `[NotificationService] No email provider is configured. Every EMAIL notification ` +
+          `(password resets, alerts, subscription notices) will FAIL until one is set: ${EMAIL_PROVIDER_VARIABLES}.`,
+      );
+    } else {
+      console.warn(`[NotificationService] ${emailChoice.description}`);
+    }
+  }
+
   {
     const pushStatus = getPushStatus();
     const summary = describePushCredential(pushStatus);

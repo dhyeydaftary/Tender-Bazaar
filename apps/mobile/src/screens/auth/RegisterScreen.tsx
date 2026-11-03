@@ -145,7 +145,7 @@ function StrengthSegment({
 export default function RegisterScreen() {
   const navigation = useNavigation<NavProp>();
   const insets = useSafeAreaInsets();
-  const { register: registerUser, isSubmitting, error: authError } = useAuth();
+  const { register: registerUser, sendOtp, isSubmitting, error: authError } = useAuth();
 
   const emailRef = useRef<TextInput>(null);
   const phoneRef = useRef<TextInput>(null);
@@ -215,6 +215,9 @@ export default function RegisterScreen() {
       });
       if (success) {
         ReactNativeHapticFeedback.trigger('notificationSuccess', hapticOptions);
+        // The OTP screen only verifies (and resends) a code, so send the first one here.
+        // Navigate even if sending fails: the account exists and "Resend Code" can retry.
+        await sendOtp(data.phone);
         navigation.navigate('Auth', {
           screen: 'OTP',
           params: { phone: data.phone },
@@ -223,7 +226,7 @@ export default function RegisterScreen() {
         ReactNativeHapticFeedback.trigger('notificationError', hapticOptions);
       }
     },
-    [termsAccepted, registerUser, navigation],
+    [termsAccepted, registerUser, sendOtp, navigation],
   );
 
   const renderFieldIcon = (
@@ -242,6 +245,10 @@ export default function RegisterScreen() {
     );
   };
 
+  // Views using this style must set collapsable={false}: inputFocused adds
+  // shadowColor/elevation, which would otherwise flip the wrapper into a new stacking
+  // context on focus. Fabric then re-parents the native TextInput, detaching it and
+  // dropping focus (Android), so tapping another field could not focus it.
   const getInputStyle = (name: string, hasError: boolean) => [
     styles.inputWrapper,
     focusedField === name && styles.inputFocused,
@@ -299,7 +306,7 @@ export default function RegisterScreen() {
               control={control}
               name="name"
               render={({ field: { onChange, onBlur, value } }) => (
-                <View style={getInputStyle('name', !!errors.name)}>
+                <View collapsable={false} style={getInputStyle('name', !!errors.name)}>
                   {renderFieldIcon('name', 'user', !!errors.name)}
                   <TextInput
                     style={styles.input}
@@ -331,7 +338,7 @@ export default function RegisterScreen() {
               control={control}
               name="email"
               render={({ field: { onChange, onBlur, value } }) => (
-                <View style={getInputStyle('email', !!errors.email)}>
+                <View collapsable={false} style={getInputStyle('email', !!errors.email)}>
                   {renderFieldIcon('email', 'mail', !!errors.email)}
                   <TextInput
                     ref={emailRef}
@@ -366,7 +373,7 @@ export default function RegisterScreen() {
               control={control}
               name="phone"
               render={({ field: { onChange, onBlur, value } }) => (
-                <View style={getInputStyle('phone', !!errors.phone)}>
+                <View collapsable={false} style={getInputStyle('phone', !!errors.phone)}>
                   <View style={styles.phonePrefix}>
                     <Text style={styles.phonePrefixText}>+91</Text>
                   </View>
@@ -403,7 +410,7 @@ export default function RegisterScreen() {
               control={control}
               name="password"
               render={({ field: { onChange, onBlur, value } }) => (
-                <View style={getInputStyle('password', !!errors.password)}>
+                <View collapsable={false} style={getInputStyle('password', !!errors.password)}>
                   {renderFieldIcon('password', 'lock', !!errors.password)}
                   <TextInput
                     ref={passwordRef}
@@ -467,6 +474,7 @@ export default function RegisterScreen() {
               name="confirmPassword"
               render={({ field: { onChange, onBlur, value } }) => (
                 <View
+                  collapsable={false}
                   style={getInputStyle(
                     'confirmPassword',
                     !!errors.confirmPassword,

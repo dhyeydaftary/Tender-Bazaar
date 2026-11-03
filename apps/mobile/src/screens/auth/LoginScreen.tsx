@@ -221,7 +221,11 @@ export default function LoginScreen() {
               control={control}
               name="email"
               render={({ field: { onChange, onBlur, value } }) => (
+                // collapsable={false}: inputFocused adds shadowColor/elevation, which would
+                // otherwise flip this view into a new stacking context on focus. Fabric then
+                // re-parents the native TextInput, detaching it and dropping focus (Android).
                 <View
+                  collapsable={false}
                   style={[
                     styles.inputWrapper,
                     emailFocused && styles.inputFocused,
@@ -275,7 +279,9 @@ export default function LoginScreen() {
               control={control}
               name="password"
               render={({ field: { onChange, onBlur, value } }) => (
+                // See the email field: keeps the stacking context stable across focus.
                 <View
+                  collapsable={false}
                   style={[
                     styles.inputWrapper,
                     passwordFocused && styles.inputFocused,

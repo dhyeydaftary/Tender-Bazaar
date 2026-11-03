@@ -23,6 +23,12 @@ export const searchTendersSchema = z.object({
   sortOrder: z.enum(['asc', 'desc']).default('desc'),
 });
 
+/** Pagination for the home-page tender lists (recommended, expiring soon). */
+export const tenderListPageSchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(50).default(20),
+});
+
 export const tenderIdSchema = z.object({
   id: z.string().min(1),
 });

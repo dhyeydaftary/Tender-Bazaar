@@ -5,6 +5,7 @@ import type SMTPTransport from 'nodemailer/lib/smtp-transport';
 import type JSONTransport from 'nodemailer/lib/json-transport';
 import { SESv2Client, SendEmailCommand } from '@aws-sdk/client-sesv2';
 import { config } from '../config';
+import { assertDevFallbackAllowed } from './delivery-guard';
 import {
   tenderAlertTemplate,
   TenderAlertItem,
@@ -119,11 +120,21 @@ async function getTransporter(): Promise<Transporter> {
   return transporter;
 }
 
+export const EMAIL_PROVIDER_VARIABLES =
+  'SMTP_HOST, SMTP_USER and SMTP_PASS; or GMAIL_USER and GMAIL_APP_PASSWORD; or AWS_SES_ACCESS_KEY and AWS_SES_SECRET_KEY';
+
 export async function sendEmail(
   to: string,
   subject: string,
   html: string
 ): Promise<void> {
+  // The JSON transport only prints the message. In production that is not
+  // delivery, so the job fails with an explicit configuration error instead
+  // of completing "successfully" with nothing sent.
+  if (selectEmailTransport().kind === 'json') {
+    assertDevFallbackAllowed('Email', EMAIL_PROVIDER_VARIABLES);
+  }
+
   const transport = await getTransporter();
 
   const mailOptions = {

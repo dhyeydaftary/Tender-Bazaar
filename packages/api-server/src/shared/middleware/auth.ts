@@ -5,6 +5,9 @@ import redis from '../../config/redis';
 import { env } from '../../config/env';
 import { AppError } from './error-handler';
 
+/** The only algorithm the API signs or accepts access and refresh tokens with. */
+export const JWT_ALGORITHM = 'HS256' as const;
+
 interface JwtPayload {
   userId: string;
   email: string;
@@ -26,8 +29,10 @@ export async function authenticate(req: Request, _res: Response, next: NextFunct
       throw new AppError('Token has been revoked', 401, 'TOKEN_REVOKED');
     }
 
-    const decoded = jwt.verify(token, env.JWT_SECRET) as any;
-    const userId = decoded.userId || decoded.id || decoded.sub;
+    // Only the configured secret is ever accepted, pinned to the algorithm the
+    // API signs with (see modules/auth/service.ts).
+    const decoded = jwt.verify(token, env.JWT_SECRET, { algorithms: [JWT_ALGORITHM] }) as any;
+    const userId = decoded?.userId || decoded?.id || decoded?.sub;
 
     if (!userId) {
       throw new AppError('Invalid token payload', 401, 'INVALID_TOKEN');

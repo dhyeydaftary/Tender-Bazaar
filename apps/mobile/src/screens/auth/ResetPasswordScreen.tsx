@@ -292,7 +292,11 @@ export default function ResetPasswordScreen() {
           {/* New Password */}
           <View style={styles.fieldContainer}>
             <Text style={styles.label}>New Password</Text>
+            {/* collapsable={false}: inputFocused adds shadowColor/elevation, which would
+                otherwise flip this view into a new stacking context on focus. Fabric then
+                re-parents the native TextInput, detaching it and dropping focus (Android). */}
             <View
+              collapsable={false}
               style={[
                 styles.inputWrapper,
                 focusedField === 'password' && styles.inputFocused,
@@ -359,7 +363,9 @@ export default function ResetPasswordScreen() {
           {/* Confirm Password */}
           <View style={styles.fieldContainer}>
             <Text style={styles.label}>Confirm Password</Text>
+            {/* See New Password: keeps the stacking context stable across focus. */}
             <View
+              collapsable={false}
               style={[
                 styles.inputWrapper,
                 focusedField === 'confirm' && styles.inputFocused,

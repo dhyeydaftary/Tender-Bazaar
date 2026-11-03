@@ -26,6 +26,35 @@ export function expiredOpenTendersWhere(now: Date) {
   };
 }
 
+/**
+ * Tenders a user can still bid on: an open status AND a deadline in the future.
+ * The deadline is checked as well as the status because expired tenders are only
+ * flipped to CLOSED when getTenderStats runs, so an ACTIVE status alone can be stale.
+ */
+export function openForBiddingWhere(now: Date) {
+  return {
+    status: { in: [...OPEN_TENDER_STATUSES] },
+    bidSubmissionDeadline: { gt: now },
+  };
+}
+
+/**
+ * "Expiring soon" window, in days. Matches the web app, which treats a deadline
+ * within 7 days as urgent (getDeadlineInfo in apps/web/src/lib/utils.ts).
+ */
+export const EXPIRING_SOON_DAYS = 7;
+
+/** Open-for-bidding tenders whose deadline falls within the expiring-soon window. */
+export function expiringSoonWhere(now: Date) {
+  return {
+    status: { in: [...OPEN_TENDER_STATUSES] },
+    bidSubmissionDeadline: {
+      gt: now,
+      lte: new Date(now.getTime() + EXPIRING_SOON_DAYS * 24 * 60 * 60 * 1000),
+    },
+  };
+}
+
 /** Summarise a `groupBy(['status'])` result into the tab counts. */
 export function summarizeStatusCounts(rows: Array<{ status: string; _count: number }>) {
   let open = 0;

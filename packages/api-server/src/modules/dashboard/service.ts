@@ -1,7 +1,8 @@
 import { prisma } from '../../config/database';
 import { planConfigService } from '../subscriptions/plan-config.service';
 import { eligibilityService } from '../eligibility/service';
-import { tenderService } from '../tenders/service';
+import { tenderService, TENDER_CARD_SELECT } from '../tenders/service';
+import { expiringSoonWhere, openForBiddingWhere } from '../tenders/status-groups';
 
 /**
  * Dashboard aggregation.
@@ -23,8 +24,16 @@ const startOfToday = () => {
 
 const daysFromNow = (days: number) => new Date(Date.now() + days * 24 * 60 * 60 * 1000);
 
-/** Expiring-soon window for saved tenders, in days. */
-const EXPIRING_SOON_DAYS = 7;
+/** Number of recommendations the dashboard and the mobile home page preview. */
+const RECOMMENDED_PREVIEW_LIMIT = 5;
+
+type CardTender = { [K in keyof typeof TENDER_CARD_SELECT]: unknown };
+
+/** Keep only the card fields of a full tender row (matches TENDER_CARD_SELECT). */
+const toCardFields = (tender: CardTender) =>
+  Object.fromEntries(
+    Object.keys(TENDER_CARD_SELECT).map((key) => [key, tender[key as keyof CardTender]]),
+  );
 
 export const dashboardService = {
   async getDashboard(userId: string) {
@@ -59,13 +68,7 @@ export const dashboardService = {
       prisma.savedTender.count({ where: { userId } }),
 
       prisma.savedTender.count({
-        where: {
-          userId,
-          tender: {
-            status: 'ACTIVE',
-            bidSubmissionDeadline: { gte: new Date(), lte: daysFromNow(EXPIRING_SOON_DAYS) },
-          },
-        },
+        where: { userId, tender: expiringSoonWhere(new Date()) },
       }),
 
       prisma.eligibilityCheck.aggregate({
@@ -140,42 +143,54 @@ export const dashboardService = {
    * `personalised: false` so the UI can invite them to complete their profile.
    */
   async getRecommendedTenders(userId: string) {
+    const { personalised, tenders } = await dashboardService.listRecommendedTenders(userId, {
+      page: 1,
+      limit: RECOMMENDED_PREVIEW_LIMIT,
+    });
+    return { personalised, tenders };
+  },
+
+  /**
+   * Paginated recommendations: the dashboard preview is page 1 of this list and
+   * GET /tenders/recommended serves the full "See all" listing, so both apply the
+   * same relevance ranking and the same open-for-bidding filter.
+   */
+  async listRecommendedTenders(userId: string, { page, limit }: { page: number; limit: number }) {
     const matches = await eligibilityService.getMatchingTenders(userId);
 
     if (matches.length > 0) {
       return {
         personalised: true,
-        tenders: matches.slice(0, 5).map(({ tender, matchScore, matchReasons }) => ({
-          id: tender.id,
-          title: tender.title,
-          organization: tender.organization,
-          category: tender.category,
-          state: tender.state,
-          estimatedValue: tender.estimatedValue,
-          bidSubmissionDeadline: tender.bidSubmissionDeadline,
-          aiScore: matchScore,
-          matchReasons,
-        })),
+        total: matches.length,
+        page,
+        limit,
+        tenders: matches
+          .slice((page - 1) * limit, page * limit)
+          .map(({ tender, matchScore, matchReasons }) => ({
+            ...toCardFields(tender),
+            aiScore: matchScore,
+            matchReasons,
+          })),
       };
     }
 
-    const fallback = await prisma.tender.findMany({
-      where: { status: 'ACTIVE', bidSubmissionDeadline: { gte: new Date() } },
-      orderBy: { publishedDate: 'desc' },
-      take: 5,
-      select: {
-        id: true,
-        title: true,
-        organization: true,
-        category: true,
-        state: true,
-        estimatedValue: true,
-        bidSubmissionDeadline: true,
-      },
-    });
+    const where = openForBiddingWhere(new Date());
+    const [fallback, total] = await Promise.all([
+      prisma.tender.findMany({
+        where,
+        orderBy: [{ publishedDate: 'desc' }, { id: 'asc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        select: TENDER_CARD_SELECT,
+      }),
+      prisma.tender.count({ where }),
+    ]);
 
     return {
       personalised: false,
+      total,
+      page,
+      limit,
       tenders: fallback.map((tender) => ({
         ...tender,
         aiScore: null,

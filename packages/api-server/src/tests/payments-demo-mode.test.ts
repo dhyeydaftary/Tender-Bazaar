@@ -44,6 +44,15 @@ const PROD_BASE = {
   JWT_SECRET: 'unit-test-access-signing-key-0123456789abcdef',
   JWT_REFRESH_SECRET: 'unit-test-refresh-signing-key-0123456789abcdef',
   REDIS_URL: 'redis://:unit-test-redis-pass@localhost:6379',
+  // Production startup also insists on an explicit https web origin, and the
+  // deployment-checked names below are pinned so values the generated Prisma
+  // client may load from the repository's .env cannot interfere.
+  FRONTEND_URL: 'https://app.unit-test.invalid',
+  ADMIN_URL: 'https://admin.unit-test.invalid',
+  CORS_ORIGINS: '',
+  GOOGLE_CLIENT_ID: '',
+  ALLOW_DEMO_GOOGLE_AUTH: 'false',
+  AI_SERVICE_TOKEN: '',
   RAZORPAY_KEY_ID: undefined,
   RAZORPAY_KEY_SECRET: undefined,
   RAZORPAY_WEBHOOK_SECRET: undefined,
@@ -455,6 +464,19 @@ async function main(): Promise<void> {
       ['whitespace key id, real-looking secret', { RAZORPAY_KEY_ID: '   ', RAZORPAY_KEY_SECRET: TEST_KEY_SECRET }],
     ];
     for (const [label, keys] of combos) {
+      // A HALF-configured pair is refused at startup (config/env.ts,
+      // validateDeploymentEnvironment): the production server never comes up,
+      // so no request can reach the payment paths at all.
+      const partial = (keys.RAZORPAY_KEY_ID.trim() === '') !== (keys.RAZORPAY_KEY_SECRET.trim() === '');
+      if (partial) {
+        assert.throws(
+          () => loadPayments({ ...PROD_BASE, DATABASE_URL: REAL_DB, ...keys, RAZORPAY_WEBHOOK_SECRET: '   ' }),
+          /RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET: set both/,
+          `${label}: production must refuse to start on half a Razorpay configuration`,
+        );
+        continue;
+      }
+
       const { paymentService, db } = loadPayments({
         ...PROD_BASE,
         DATABASE_URL: REAL_DB,
@@ -514,7 +536,7 @@ async function main(): Promise<void> {
     );
     assert.equal(demoDb.payments[0].status, 'FAILED');
     assert.equal(demoDb.subscriptions.length, 0);
-    console.log('✓ Whitespace-only key id, key secret and webhook secret are missing credentials; forged HMACs fail');
+    console.log('✓ Whitespace-only credentials are missing credentials: forged HMACs fail, and a half-configured pair cannot even start');
   }
 
   // 7–8. Real Razorpay mode: orders are created by the gateway, only a valid

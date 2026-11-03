@@ -124,8 +124,8 @@ async function main(): Promise<void> {
   {
     // NODE_ENV=production also engages the unrelated production guards in
     // config/env.ts (JWT strength, authenticated Redis, non-default DB
-    // password), so those are satisfied here to keep the test about Razorpay.
-    // None of these are real credentials.
+    // password, an explicit https FRONTEND_URL), so those are satisfied here
+    // to keep the test about Razorpay. None of these are real credentials.
     const mod = await loadRazorpayConfig({
       NODE_ENV: 'production',
       RAZORPAY_KEY_ID: 'rzp_live_phase9test',
@@ -134,6 +134,16 @@ async function main(): Promise<void> {
       JWT_REFRESH_SECRET: 'phase9-test-refresh-secret-fedcba9876543210fedcba9876543210',
       REDIS_URL: 'redis://:phase9testredispw@redis:6379',
       DATABASE_URL: 'postgresql://postgres:phase9testdbpw@postgres:5432/tenderbazaar',
+      FRONTEND_URL: 'https://app.phase9test.invalid',
+      // The generated Prisma client loads the repository's .env into
+      // process.env the first time it is required (by the error handler, in
+      // section 1). Pin the deployment-checked names so a developer's local
+      // values cannot fail the production rules here.
+      ADMIN_URL: 'https://admin.phase9test.invalid',
+      CORS_ORIGINS: '',
+      GOOGLE_CLIENT_ID: '',
+      ALLOW_DEMO_GOOGLE_AUTH: 'false',
+      AI_SERVICE_TOKEN: '',
     });
 
     assert.equal(mod.isRazorpayConfigured(), true);

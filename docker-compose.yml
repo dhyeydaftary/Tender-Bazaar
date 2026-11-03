@@ -127,6 +127,10 @@ services:
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       REDIS_URL: *redis-url
+      # Shared secret api-server presents on every call (packages/ai-service/
+      # app/auth.py). Production must supply a real value; this development
+      # default is rejected by api-server in production.
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:-dev-ai-service-token}
     depends_on:
       redis:
         condition: service_healthy
@@ -154,8 +158,8 @@ services:
       REDIS_URL: *redis-url
       ELASTICSEARCH_URL: http://elasticsearch:9200
       AI_SERVICE_URL: http://ai-service:5000
+      AI_SERVICE_TOKEN: ${AI_SERVICE_TOKEN:-dev-ai-service-token}
       FRONTEND_URL: http://localhost:3000
-      ALLOW_DEMO_GOOGLE_AUTH: 'true'
       # Shared secret for the scraper engine's control API (see
       # packages/scraper-engine/src/api/server.ts). Production must supply a
       # real value; this development default is rejected in production.
@@ -180,7 +184,6 @@ services:
       # Set them in .env before `docker compose build`.
       args:
         - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:4000/api/v1}
-        - NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH=${NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH:-true}
         - NEXT_PUBLIC_GOOGLE_CLIENT_ID=${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
     container_name: tenderbazaar-web
     restart: unless-stopped
@@ -189,7 +192,6 @@ services:
       - '3002:3000'
     environment:
       NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:4000/api/v1}
-      NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH: ${NEXT_PUBLIC_ENABLE_DEMO_GOOGLE_AUTH:-true}
       NEXT_PUBLIC_GOOGLE_CLIENT_ID: ${NEXT_PUBLIC_GOOGLE_CLIENT_ID:-}
       PORT: '3000'
       HOSTNAME: 0.0.0.0
