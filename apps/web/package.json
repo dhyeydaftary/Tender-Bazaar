@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "type-check": "tsc --noEmit",
-    "test": "tsx src/lib/tests/safe-html.test.ts && tsx src/lib/tests/razorpay-mode.test.ts && tsx src/lib/tests/limit-state.test.ts"
+    "test": "tsx src/lib/tests/safe-html.test.ts && tsx src/lib/tests/razorpay-mode.test.ts && tsx src/lib/tests/limit-state.test.ts && tsx src/lib/tests/api-url.test.ts && tsx src/lib/tests/otp-state.test.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

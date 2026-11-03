@@ -2,8 +2,10 @@ import axios from 'axios';
 import { prisma } from '../../config/database';
 import { AppError } from '../../shared/middleware/error-handler';
 import { env } from '../../config/env';
+import { aiServiceHeaders } from '../../config/ai-service';
 import { planConfigService } from '../subscriptions/plan-config.service';
 import { aiEligibilityResponseSchema } from './validation';
+import { openForBiddingWhere } from '../tenders/status-groups';
 
 async function getUserPlanSlug(userId: string): Promise<string> {
   const subscription = await prisma.subscription.findUnique({
@@ -291,7 +293,7 @@ export const eligibilityService = {
             eligibilityText: tender.aiEligibilityText,
           },
         },
-        { timeout: 30000 }
+        { timeout: 30000, headers: aiServiceHeaders() }
       );
 
       // Validate the model service's reply against a schema instead of
@@ -489,7 +491,9 @@ export const eligibilityService = {
 
     const tenders = await prisma.tender.findMany({
       where: {
-        status: 'ACTIVE',
+        // Only tenders still open for bidding; status: 'ACTIVE' alone let expired
+        // tenders through until the stats job closed them.
+        ...openForBiddingWhere(new Date()),
         ...(orConditions.length > 0 ? { OR: orConditions } : {}),
       },
       orderBy: { publishedDate: 'desc' },

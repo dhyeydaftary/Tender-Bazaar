@@ -1,20 +1,23 @@
 import axios from 'axios';
 import { useAuthStore } from './auth';
+import { API_BASE_URL, API_URL_NOT_CONFIGURED_MESSAGE } from './api-url';
 
 // ---------------------------------------------------------------------------
 // Axios Client — points to the API server admin routes
 // ---------------------------------------------------------------------------
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
-
 const api = axios.create({
-  baseURL: API_BASE_URL,
+  baseURL: API_BASE_URL ?? undefined,
   timeout: 15000,
   headers: { 'Content-Type': 'application/json' },
 });
 
 // Attach the Bearer token on every request
 api.interceptors.request.use((config) => {
+  if (!API_BASE_URL) {
+    // Never send the request anywhere when the build had no API URL.
+    return Promise.reject(new Error(API_URL_NOT_CONFIGURED_MESSAGE));
+  }
   const token = useAuthStore.getState().token;
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;

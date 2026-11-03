@@ -32,6 +32,7 @@ import { useAuthStore } from './src/stores/authStore';
 import { useSettingsStore } from './src/stores/settingsStore';
 import { useSubscriptionStore } from './src/stores/subscriptionStore';
 import { NotificationManager } from './src/services/notifications';
+import AppErrorBoundary from './src/components/shared/AppErrorBoundary';
 import * as subscriptionApi from './src/services/api/subscription';
 import type { RootStackParamList } from './src/types/navigation';
 
@@ -112,17 +113,19 @@ export default function App(): React.JSX.Element {
   // -----------------------------------------------------------------------
 
   return (
-    <GestureHandlerRootView style={styles.root}>
-      <SafeAreaProvider>
-        <QueryProvider>
-          <ThemeProvider initialMode={themeMode}>
-            <NavigationContainer ref={navigationRef} linking={linking}>
-              <RootNavigator />
-            </NavigationContainer>
-          </ThemeProvider>
-        </QueryProvider>
-      </SafeAreaProvider>
-    </GestureHandlerRootView>
+    <AppErrorBoundary>
+      <GestureHandlerRootView style={styles.root}>
+        <SafeAreaProvider>
+          <QueryProvider>
+            <ThemeProvider initialMode={themeMode}>
+              <NavigationContainer ref={navigationRef} linking={linking}>
+                <RootNavigator />
+              </NavigationContainer>
+            </ThemeProvider>
+          </QueryProvider>
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
+    </AppErrorBoundary>
   );
 }
 

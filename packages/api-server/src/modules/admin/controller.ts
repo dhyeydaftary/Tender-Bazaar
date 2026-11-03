@@ -137,10 +137,14 @@ export const adminController = {
     }
   },
 
+  // The acting administrator is passed down so the service can enforce who
+  // may change roles, touch privileged accounts, or reset passwords
+  // (modules/admin/authorization.ts). The admin UI hides what it should not
+  // offer; this is the check that actually holds.
   async updateUser(req: Request, res: Response, next: NextFunction) {
     try {
       const data = updateUserBodySchema.parse(req.body);
-      const result = await usersService.updateUser(req.params.id, data);
+      const result = await usersService.updateUser(req.params.id, data, getAdmin(req));
       audit(req, 'user.update', 'User', req.params.id, result.changes);
       res.json({ success: true, data: result.user });
     } catch (error) {
@@ -150,7 +154,7 @@ export const adminController = {
 
   async deleteUser(req: Request, res: Response, next: NextFunction) {
     try {
-      const result = await usersService.deleteUser(req.params.id);
+      const result = await usersService.deleteUser(req.params.id, getAdmin(req));
       audit(req, 'user.deactivate', 'User', req.params.id);
       res.json({ success: true, data: result });
     } catch (error) {
@@ -160,7 +164,7 @@ export const adminController = {
 
   async resetUserPassword(req: Request, res: Response, next: NextFunction) {
     try {
-      const result = await usersService.resetUserPassword(req.params.id);
+      const result = await usersService.resetUserPassword(req.params.id, getAdmin(req));
       audit(req, 'user.reset_password', 'User', req.params.id);
       res.json({ success: true, data: result });
     } catch (error) {

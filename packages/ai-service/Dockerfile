@@ -28,7 +28,9 @@ USER appuser
 
 EXPOSE 5000
 
+# The port comes from PORT when the platform sets one (Render does), and stays
+# 5000 otherwise (Compose). Shell form so the variable is expanded at runtime.
 HEALTHCHECK --interval=15s --timeout=10s --start-period=20s --retries=3 \
-  CMD curl -f http://localhost:5000/health || exit 1
+  CMD curl -f "http://localhost:${PORT:-5000}/health" || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "5000"]
+CMD exec uvicorn app.main:app --host 0.0.0.0 --port "${PORT:-5000}"

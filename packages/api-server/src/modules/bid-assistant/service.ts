@@ -3,6 +3,7 @@ import { prisma } from '../../config/database';
 import redis from '../../config/redis';
 import { AppError } from '../../shared/middleware/error-handler';
 import { env } from '../../config/env';
+import { aiServiceHeaders } from '../../config/ai-service';
 
 // Bid assistant plan access
 const PLAN_ACCESS: Record<string, boolean> = {
@@ -198,7 +199,7 @@ export const bidAssistantService = {
           document_text: effectiveDocumentText,
           company_profile: companyData,
         },
-        { timeout: 60000 }
+        { timeout: 60000, headers: aiServiceHeaders() }
       );
       analysisResult = analyzeResponse.data;
     } catch (error) {
@@ -402,7 +403,7 @@ export const bidAssistantService = {
           requirements: analysisResult,
           company_documents: companyDocuments,
         },
-        { timeout: 30000 }
+        { timeout: 30000, headers: aiServiceHeaders() }
       );
       checklistResult = checklistResponse.data;
     } catch (error) {
@@ -641,7 +642,7 @@ export const bidAssistantService = {
           company_profile: companyData,
           competitors: competitorData,
         },
-        { timeout: 60000 }
+        { timeout: 60000, headers: aiServiceHeaders() }
       );
       strategyResult = response.data;
     } catch (error) {

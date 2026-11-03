@@ -1,6 +1,6 @@
 import crypto from 'crypto';
 import { prisma } from '../../config/database';
-import { env, validatePaymentsDemoMode } from '../../config/env';
+import { env, validatePaymentsDemoMode, DEVELOPMENT_SHORTCUTS_ENABLED } from '../../config/env';
 import { getRazorpayClient, isRazorpayConfigured } from '../../config/razorpay';
 import { AppError } from '../../shared/middleware/error-handler';
 import { planConfigService } from '../subscriptions/plan-config.service';
@@ -48,12 +48,17 @@ function isRazorpayMockMode(): boolean {
   // key (config/razorpay.ts) — an accident, not a control. Making the client
   // lazy removes that crash, so the guard has to be explicit:
   //
-  //   production + unconfigured  -> NOT mock mode. The real branch runs,
+  //   anything but an EXPLICIT NODE_ENV=development + unconfigured
+  //                              -> NOT mock mode. The real branch runs,
   //                                 getRazorpayClient() raises a controlled
   //                                 PAYMENTS_NOT_CONFIGURED error, and
   //                                 signature verification is never skipped.
-  //   development + unconfigured -> mock mode, exactly as before.
-  if (env.NODE_ENV === 'production') return false;
+  //   NODE_ENV=development + unconfigured -> mock mode, exactly as before.
+  //
+  // The check reads the raw NODE_ENV (DEVELOPMENT_SHORTCUTS_ENABLED), not the
+  // schema value: the schema defaults an unset NODE_ENV to 'development', so a
+  // server that forgot to set NODE_ENV used to fall into mock mode here.
+  if (!DEVELOPMENT_SHORTCUTS_ENABLED) return false;
 
   return !isRazorpayConfigured();
 }

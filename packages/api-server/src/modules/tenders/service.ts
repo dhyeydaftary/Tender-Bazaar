@@ -7,9 +7,26 @@ import { enrichTenderDetails } from './tender-enricher';
 import {
   OPEN_TENDER_STATUSES,
   expiredOpenTendersWhere,
+  expiringSoonWhere,
   pickUnambiguous,
   summarizeStatusCounts,
 } from './status-groups';
+
+/** Fields a tender card renders; shared by the home-page tender lists. */
+export const TENDER_CARD_SELECT = {
+  id: true,
+  title: true,
+  organization: true,
+  category: true,
+  state: true,
+  status: true,
+  estimatedValue: true,
+  emdAmount: true,
+  publishedDate: true,
+  bidSubmissionDeadline: true,
+  sourcePortal: true,
+  referenceNumber: true,
+} as const;
 
 interface SearchFilters {
   query?: string;
@@ -427,6 +444,25 @@ export const tenderService = {
         take: 10,
       });
     }
+  },
+
+  /**
+   * Open tenders whose deadline falls within the expiring-soon window, soonest
+   * deadline first. `total` uses the same filter, so pagination matches the list.
+   */
+  async getExpiringTenders(page: number, limit: number) {
+    const where = expiringSoonWhere(new Date());
+    const [tenders, total] = await Promise.all([
+      prisma.tender.findMany({
+        where,
+        orderBy: [{ bidSubmissionDeadline: 'asc' }, { id: 'asc' }],
+        skip: (page - 1) * limit,
+        take: limit,
+        select: TENDER_CARD_SELECT,
+      }),
+      prisma.tender.count({ where }),
+    ]);
+    return { tenders, total, page, limit };
   },
 
   async getTenderStats(stateFilter?: string) {

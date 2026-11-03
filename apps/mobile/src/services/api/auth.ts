@@ -17,14 +17,15 @@ export interface RegisterRequest {
   companyName?: string;
 }
 
+// Matches the API: /auth/refresh returns { accessToken, refreshToken }, and
+// /auth/login, /auth/register and /auth/otp/verify return them flat beside `user`.
 export interface AuthTokens {
-  token: string;
+  accessToken: string;
   refreshToken: string;
 }
 
-export interface AuthResponse {
+export interface AuthResponse extends AuthTokens {
   user: User;
-  tokens: AuthTokens;
 }
 
 export interface OtpResponse {
@@ -51,12 +52,22 @@ export function refreshToken(
   token: string,
 ): Promise<ApiResponse<AuthTokens>> {
   return apiRequest(
-    apiClient.post('/auth/refresh', { refreshToken: token }),
+    apiClient.post('/auth/refresh-token', { refreshToken: token }),
   );
 }
 
-export function logout(): Promise<ApiResponse<void>> {
-  return apiRequest(apiClient.post('/auth/logout'));
+export function logout(
+  refreshToken: string,
+  accessToken: string,
+): Promise<ApiResponse<void>> {
+  // Tokens are passed explicitly: callers clear the auth store right after firing
+  // this request, so the request interceptor may no longer find the access token.
+  return apiRequest(
+    apiClient.delete('/auth/logout', {
+      data: { refreshToken },
+      headers: { Authorization: `Bearer ${accessToken}` },
+    }),
+  );
 }
 
 export function getMe(): Promise<ApiResponse<User>> {
@@ -66,12 +77,12 @@ export function getMe(): Promise<ApiResponse<User>> {
 export function sendOtp(
   phone: string,
 ): Promise<ApiResponse<OtpResponse>> {
-  return apiRequest(apiClient.post('/auth/otp/send', { phone }));
+  return apiRequest(apiClient.post('/auth/send-otp', { phone }));
 }
 
 export function verifyOtp(
   phone: string,
   otp: string,
 ): Promise<ApiResponse<AuthResponse>> {
-  return apiRequest(apiClient.post('/auth/otp/verify', { phone, otp }));
+  return apiRequest(apiClient.post('/auth/verify-otp', { phone, otp }));
 }

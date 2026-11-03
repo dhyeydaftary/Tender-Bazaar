@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { config } from '../config';
+import { assertDevFallbackAllowed } from './delivery-guard';
 
 interface WatiResponse {
   result: boolean;
@@ -11,6 +12,9 @@ export async function sendWhatsAppMessage(
   templateName: string,
   params: Record<string, string>[]
 ): Promise<void> {
+  if (!config.whatsapp.apiUrl || !config.whatsapp.apiKey) {
+    assertDevFallbackAllowed('WhatsApp', 'WATI_API_URL and WATI_API_KEY');
+  }
   if (config.isDev || !config.whatsapp.apiUrl || !config.whatsapp.apiKey) {
     console.log('[WhatsApp] Dev mode - message would be sent:');
     console.log(`  To: ${phone}`);
@@ -108,6 +112,9 @@ export async function sendTenderAlertWhatsApp(
     { name: 'dashboard_url', value: `${config.frontendUrl}/dashboard/alerts` },
   ];
 
+  if (!config.whatsapp.apiUrl || !config.whatsapp.apiKey) {
+    assertDevFallbackAllowed('WhatsApp', 'WATI_API_URL and WATI_API_KEY');
+  }
   if (
     config.isDev ||
     !config.whatsapp.apiUrl ||

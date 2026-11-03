@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/stores/auth-store';
@@ -8,6 +8,29 @@ import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
 import { Eye, EyeOff, Mail, Lock, Phone, Loader2 } from 'lucide-react';
 import { GoogleSignInButton } from '@/components/auth/google-sign-in-button';
+import {
+  type OtpState,
+  apiErrorOf,
+  applyApiError,
+  applySendSuccess,
+  clearOtpState,
+  deriveOtpControls,
+  emptyOtpState,
+  formatCountdown,
+  hasActiveRestriction,
+  loadOtpState,
+  saveOtpState,
+} from '@/lib/otp-state';
+
+const EMPTY_OTP = ['', '', '', '', '', ''];
+
+function browserStorage(): Storage | null {
+  try {
+    return typeof window !== 'undefined' ? window.localStorage : null;
+  } catch {
+    return null;
+  }
+}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -22,8 +45,42 @@ export default function LoginPage() {
 
   // Phone login form
   const [phone, setPhone] = useState('');
-  const [otp, setOtp] = useState(['', '', '', '', '', '']);
+  const [otp, setOtp] = useState(EMPTY_OTP);
   const otpRefs = useRef<(HTMLInputElement | null)[]>([]);
+
+  // Restrictions the API reported for this number (code validity, resend
+  // cooldown, wrong-code lockout, hourly send limit), plus a once-a-second
+  // clock so the countdowns move. The API re-checks every limit on each
+  // request; this only tells the user how long to wait and keeps the buttons
+  // honest in the meantime. Saved to localStorage so a refresh cannot make the
+  // page forget a lockout the server still remembers.
+  const [otpState, setOtpState] = useState<OtpState | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    const restored = loadOtpState(browserStorage(), Date.now());
+    if (restored) {
+      setOtpState(restored);
+      setPhone(restored.phone);
+      setMode('phone');
+      const controls = deriveOtpControls(restored, Date.now());
+      setOtpSent(restored.otpExpiresAt !== null || controls.lockRemainingSeconds > 0);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!otpState || !hasActiveRestriction(otpState, Date.now())) return;
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [otpState]);
+
+  const updateOtpState = (next: OtpState | null) => {
+    setOtpState(next);
+    if (next && hasActiveRestriction(next, Date.now())) saveOtpState(browserStorage(), next);
+    else clearOtpState(browserStorage());
+  };
+
+  const controls = otpState ? deriveOtpControls(otpState, now) : null;
 
   const handleEmailLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -72,23 +129,44 @@ export default function LoginPage() {
       toast.error('Invalid phone number. Mobile number must start with 6, 7, 8, or 9.');
       return;
     }
+    const current = otpState && otpState.phone === cleanPhone ? otpState : emptyOtpState(cleanPhone);
+    const before = deriveOtpControls(current, Date.now());
+    if (!before.canResend) {
+      // The server would refuse anyway; say why without a round trip.
+      toast.error(resendBlockedMessage(before));
+      return;
+    }
     try {
-      await sendOtp(cleanPhone);
+      const response = await sendOtp(cleanPhone);
+      updateOtpState(applySendSuccess(current, response ?? {}, Date.now()));
+      setOtp(EMPTY_OTP);
       setOtpSent(true);
       toast.success('Verification code sent to your phone number');
       setTimeout(() => otpRefs.current[0]?.focus(), 100);
     } catch (error: any) {
-      const err = error.response?.data?.error;
+      const err = apiErrorOf(error);
+      if (err?.code) updateOtpState(applyApiError(current, err, Date.now()));
       const message =
-        err?.details?.[0]?.message ||
+        (Array.isArray(err?.details) ? err?.details?.[0]?.message : null) ||
         err?.message ||
-        (typeof err === 'string' ? err : null) ||
         error.response?.data?.message ||
         (error.message?.includes('Network Error') ? 'Cannot connect to server. Please check your connection.' : null) ||
         error.message ||
         'Failed to send OTP';
       toast.error(message);
     }
+  };
+
+  const resendBlockedMessage = (c: NonNullable<typeof controls>): string => {
+    if (c.resendBlockedBy === 'locked') {
+      return `Too many incorrect codes. Try again in ${formatCountdown(c.lockRemainingSeconds)}.`;
+    }
+    if (c.resendBlockedBy === 'hourly-limit') {
+      return c.sendLimitRemainingSeconds > 0
+        ? `You have requested too many codes. Try again in ${formatCountdown(c.sendLimitRemainingSeconds)}.`
+        : 'You have requested too many codes for this number. Please try again later.';
+    }
+    return `Please wait ${formatCountdown(c.resendRemainingSeconds)} before requesting another code.`;
   };
 
   const handleOtpChange = (index: number, value: string) => {
@@ -135,16 +213,26 @@ export default function LoginPage() {
       toast.error('Please enter the complete 6-digit OTP');
       return;
     }
+    if (controls && !controls.canVerify) {
+      toast.error(
+        controls.lockRemainingSeconds > 0
+          ? `Too many incorrect codes. Try again in ${formatCountdown(controls.lockRemainingSeconds)}.`
+          : 'This code has expired. Please request a new one.',
+      );
+      return;
+    }
     try {
       await verifyOtp(cleanPhone, otpValue);
+      updateOtpState(null);
       toast.success('Welcome!');
       router.push('/dashboard');
     } catch (error: any) {
-      const err = error.response?.data?.error;
+      const err = apiErrorOf(error);
+      if (err?.code && otpState) updateOtpState(applyApiError(otpState, err, Date.now()));
+      if (err?.code === 'INVALID_OTP') setOtp(EMPTY_OTP);
       const message =
-        err?.details?.[0]?.message ||
+        (Array.isArray(err?.details) ? err?.details?.[0]?.message : null) ||
         err?.message ||
-        (typeof err === 'string' ? err : null) ||
         error.response?.data?.message ||
         (error.message?.includes('Network Error') ? 'Cannot connect to server. Please check your connection.' : null) ||
         error.message ||
@@ -348,21 +436,77 @@ export default function LoginPage() {
                     </div>
                   </div>
 
+                  {/* Status: validity countdown, attempts left, lockout */}
+                  {controls && (
+                    <p
+                      role="status"
+                      aria-live="polite"
+                      data-testid="otp-status"
+                      className={cn(
+                        'text-sm text-center',
+                        controls.lockRemainingSeconds > 0 || controls.otpExpired
+                          ? 'text-red-600 dark:text-red-400'
+                          : 'text-muted-foreground',
+                      )}
+                    >
+                      {controls.lockRemainingSeconds > 0 ? (
+                        <>
+                          Too many incorrect codes. Try again in{' '}
+                          <span className="font-semibold tabular-nums">{formatCountdown(controls.lockRemainingSeconds)}</span>.
+                        </>
+                      ) : controls.otpExpired ? (
+                        'This code has expired. Request a new one below.'
+                      ) : controls.otpRemainingSeconds > 0 ? (
+                        <>
+                          Code expires in{' '}
+                          <span className="font-semibold tabular-nums">{formatCountdown(controls.otpRemainingSeconds)}</span>
+                          {otpState?.attemptsRemaining !== null &&
+                            otpState?.maxAttempts !== null &&
+                            otpState!.attemptsRemaining < otpState!.maxAttempts && (
+                              <>
+                                {' · '}
+                                {otpState!.attemptsRemaining} attempt{otpState!.attemptsRemaining === 1 ? '' : 's'} remaining
+                              </>
+                            )}
+                        </>
+                      ) : null}
+                    </p>
+                  )}
+
                   {/* Verify OTP Button */}
                   <button
                     type="submit"
-                    disabled={otpValue.length !== 6 || isLoading}
+                    disabled={otpValue.length !== 6 || isLoading || (controls !== null && !controls.canVerify)}
                     className="w-full py-2.5 bg-primary-500 hover:bg-primary-600 active:bg-primary-700 text-white font-medium rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                   >
                     {isLoading && <Loader2 className="h-4 w-4 animate-spin" />}
                     Verify OTP
                   </button>
 
+                  {/* Resend, disabled through cooldown, lockout and the hourly limit */}
+                  <button
+                    type="button"
+                    data-testid="otp-resend"
+                    onClick={handleSendOtp}
+                    disabled={isLoading || (controls !== null && !controls.canResend)}
+                    className="w-full py-2.5 border border-border text-foreground font-medium rounded-lg transition-colors hover:bg-muted/80 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    {controls?.resendBlockedBy === 'locked'
+                      ? `Locked · ${formatCountdown(controls.lockRemainingSeconds)}`
+                      : controls?.resendBlockedBy === 'hourly-limit'
+                        ? controls.sendLimitRemainingSeconds > 0
+                          ? `Limit reached · try again in ${formatCountdown(controls.sendLimitRemainingSeconds)}`
+                          : 'Limit reached · try again later'
+                        : controls?.resendBlockedBy === 'cooldown'
+                          ? `Resend code in ${formatCountdown(controls.resendRemainingSeconds)}`
+                          : 'Resend code'}
+                  </button>
+
                   <button
                     type="button"
                     onClick={() => {
                       setOtpSent(false);
-                      setOtp(['', '', '', '', '', '']);
+                      setOtp(EMPTY_OTP);
                     }}
                     className="w-full text-sm text-muted-foreground hover:text-foreground transition-colors"
                   >

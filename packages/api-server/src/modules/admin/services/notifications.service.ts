@@ -31,23 +31,10 @@ interface BroadcastListFilters {
   sortOrder?: string;
 }
 
-async function ensureBroadcastTable() {
-  await prisma.$executeRawUnsafe(`
-    CREATE TABLE IF NOT EXISTS broadcast_campaigns (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      message TEXT NOT NULL,
-      channel TEXT NOT NULL,
-      target TEXT NOT NULL DEFAULT 'ALL',
-      status TEXT NOT NULL DEFAULT 'DELIVERED',
-      delivered INTEGER NOT NULL DEFAULT 0,
-      failed INTEGER NOT NULL DEFAULT 0,
-      opened INTEGER NOT NULL DEFAULT 0,
-      sent_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
-      created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
-    );
-  `).catch(() => {});
-}
+// The broadcast_campaigns table used to be created here at request time with
+// a raw CREATE TABLE IF NOT EXISTS, outside the Prisma schema and migrations
+// (schema drift, and `prisma db push` conflicts). It is now the
+// BroadcastCampaign model, created by the broadcast_campaigns migration.
 
 export const notificationsService = {
   async getNotificationList(filters: NotificationListFilters) {
@@ -75,8 +62,6 @@ export const notificationsService = {
   },
 
   async getBroadcastStats() {
-    await ensureBroadcastTable();
-
     // Synchronize opened counts with live Notification table
     await prisma.$executeRawUnsafe(`
       UPDATE broadcast_campaigns bc
@@ -112,8 +97,6 @@ export const notificationsService = {
   },
 
   async getBroadcastList(filters: BroadcastListFilters) {
-    await ensureBroadcastTable();
-
     // Synchronize opened counts with live Notification table
     await prisma.$executeRawUnsafe(`
       UPDATE broadcast_campaigns bc
@@ -205,7 +188,6 @@ export const notificationsService = {
   },
 
   async sendBroadcast(payload: BroadcastPayload) {
-    await ensureBroadcastTable();
     const { title, message, channel, type, target = 'ALL', userFilter } = payload;
 
     const userWhere: any = {};

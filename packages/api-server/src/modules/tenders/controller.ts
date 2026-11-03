@@ -1,7 +1,9 @@
 import { Request, Response, NextFunction } from 'express';
 import { tenderService } from './service';
-import { searchTendersSchema } from './validation';
+import { searchTendersSchema, tenderListPageSchema } from './validation';
 import { prisma } from '../../config/database';
+import { dashboardService } from '../dashboard/service';
+import { AppError } from '../../shared/middleware/error-handler';
 
 export const tenderController = {
   async searchTenders(req: Request, res: Response, next: NextFunction) {
@@ -50,6 +52,29 @@ export const tenderController = {
     try {
       const tenders = await tenderService.getSimilarTenders(req.params.id);
       res.json({ success: true, data: tenders });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async getRecommendedTenders(req: Request, res: Response, next: NextFunction) {
+    try {
+      const userId = (req as any).user?.id;
+      if (!userId) throw new AppError('Not authenticated', 401, 'NOT_AUTHENTICATED');
+      const { page, limit } = tenderListPageSchema.parse(req.query);
+      const result = await dashboardService.listRecommendedTenders(userId, { page, limit });
+      // tenderPagination pins free plans to page 1; tell the client so it stops paging.
+      res.json({ success: true, data: { ...result, paginationLocked: !!(req as any).paginationLocked } });
+    } catch (error) {
+      next(error);
+    }
+  },
+
+  async getExpiringTenders(req: Request, res: Response, next: NextFunction) {
+    try {
+      const { page, limit } = tenderListPageSchema.parse(req.query);
+      const result = await tenderService.getExpiringTenders(page, limit);
+      res.json({ success: true, data: { ...result, paginationLocked: !!(req as any).paginationLocked } });
     } catch (error) {
       next(error);
     }
