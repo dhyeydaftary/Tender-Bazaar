@@ -190,7 +190,7 @@ async function main() {
       paginationAllowed: true,
       advancedFilters: true,
       // Alerts
-      maxAlerts: 25,
+      maxAlerts: 20,
       emailAlerts: true,
       pushAlerts: true,
       whatsappAlerts: true,
@@ -226,8 +226,8 @@ async function main() {
       name: 'Enterprise',
       slug: 'enterprise',
       description: 'For large organizations needing full-scale tender management',
-      monthlyPrice: 9999,
-      yearlyPrice: 99999,
+      monthlyPrice: 14999,
+      yearlyPrice: 149999,
       currency: 'INR',
       // Tender discovery
       tenderViewsPerPage: -1,

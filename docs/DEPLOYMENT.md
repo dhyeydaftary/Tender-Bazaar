@@ -17,7 +17,7 @@ dashboard only.
 | Redis | Render | Key Value, persistent, `noeviction` | — |
 | Notification service | Render | Background Worker, native Node | `packages/notification-service` |
 | AI service | Render | Private Service, native Python (or Docker) | `packages/ai-service` |
-| Scraper | Render | Private Service, Docker, ≥ 2 GB RAM | `packages/scraper-engine` |
+| Scraper | Render | Web Service, native Node, Free instance (512 MB), woken by GitHub Actions | `packages/scraper-engine` |
 | Elasticsearch | not deployed in v1 | — | optional; search runs on PostgreSQL |
 
 How the services talk to each other:
@@ -30,6 +30,7 @@ browser ──HTTPS──▶ api-server ──▶ PostgreSQL
    └──(admin app)────┘
 notification-service ◀─ Redis queue "notifications" ◀─ api-server
 scraper ──▶ PostgreSQL (writes tenders) ──▶ Redis queue "tender-index" ──▶ api-server worker
+GitHub Actions (scrape.yml) ──HTTPS every 4 h──▶ scraper /api/ready (wake + keep awake)
 ```
 
 All inter-service addresses are configuration (`AI_SERVICE_URL`,
@@ -126,26 +127,65 @@ Every endpoint except `/health` requires `Authorization: Bearer
 sent only for origins listed in `AI_SERVICE_ALLOWED_ORIGINS` (leave empty).
 Interactive docs are off unless `AI_SERVICE_EXPOSE_DOCS=true`.
 
-### 2.5 Scraper — Private Service (Docker)
+### 2.5 Scraper — Web Service (native Node, Free instance)
 
 | Setting | Value |
 |---|---|
-| Runtime | Docker |
-| Dockerfile path | `packages/scraper-engine/Dockerfile` |
-| Docker build context | *(repository root)* |
-| Start | image `CMD`: `node packages/scraper-engine/dist/main.js` |
-| Port | reads `PORT` (fallback `SCRAPER_API_PORT`, then 4001) |
+| Runtime | Node (not Docker) |
+| Region | Singapore, same as PostgreSQL and Key Value, so their internal URLs work |
+| Root directory | *(empty)* |
+| Build command | `corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm db:generate && pnpm --filter @tenderbazaar/scraper-engine build` |
+| Start command | `node packages/scraper-engine/dist/main.js` |
 | Health check path | `/api/ready` (liveness: `/api/health`) |
-| Plan | **2 GB RAM or more**, exactly **1 instance** |
+| Port | the engine reads `PORT` (Render sets it); do not set `SCRAPER_API_PORT` |
+| Instance type | Free (512 MB, 0.1 CPU), exactly **1** instance |
 
-The image is `mcr.microsoft.com/playwright:v1.64.1-jammy`, which bundles its own Node runtime (Node 26 for this tag) plus pnpm 10.33.0 installed by the Dockerfile;
-the Playwright browsers ship inside it (`PLAYWRIGHT_BROWSERS_PATH=/ms-playwright`),
-so no browser download happens at runtime. The version must match the
-`playwright` package in `pnpm-lock.yaml` (enforced by a scraper test).
+What the build does: `pnpm db:generate` runs `prisma generate` for the shared
+schema, then `tsc` compiles `packages/scraper-engine/src` to `dist/`. No
+browser is downloaded: the `playwright` package has no install hook, and pnpm
+runs no dependency build scripts outside `onlyBuiltDependencies`.
+
+Why native rather than the Dockerfile: every portal scraper fetches with axios
+and parses with cheerio. `fetchWithPlaywright()` has no call sites and the
+`usePlaywright` flags are never read (`packages/scraper-engine/PLAYWRIGHT.md`),
+so the 3.4 GB Playwright image buys nothing. The Dockerfile stays for local
+Compose use; it is not what runs on Render. Idle memory measured about 130 MB;
+expect 200–350 MB during runs, which fits the Free instance.
+
+Free-instance behaviour to plan around:
+
+- Render spins the service down after 15 minutes without inbound traffic and
+  takes about a minute to wake it. The engine's crons (`node-cron`, in
+  process) fire only while it is awake, so scheduled scraping is driven by the
+  GitHub Actions workflow in § 2.7, which wakes the service every 4 hours and
+  keeps it awake until the work is done. A window that passed while the
+  process slept is replayed by the engine's missed-window sweep (first sweep
+  5 minutes after boot, at most one catch-up per portal per sweep). Net
+  effect: every enabled portal runs at least every 4 hours; GeM's own 2-hour
+  cron collapses to the 4-hour wake cadence.
+- Manual runs from the admin panel keep working. The API's trigger request
+  (3-second timeout) is itself the inbound traffic that wakes the service; the
+  API then falls back to the shared `scraper-jobs` Redis queue and the
+  engine's worker picks the job up about a minute later. The Scrapers page
+  already polls for completion and reports "queued" rather than a fake
+  success.
+- The workspace pool is 750 Free instance-hours per month. A 4-hourly
+  wake-and-wait of 20–30 minutes uses roughly 60–90 hours. Do not add a
+  keep-alive pinger: an always-on Free service uses the whole pool.
+- Free web services cannot join Render's private network, so the control API
+  is reachable from the internet at the service's `onrender.com` URL. Only
+  `GET /api/health` and `GET /api/ready` answer without the token; everything
+  else requires `SCRAPER_API_TOKEN` (constant-time compared; at least 16
+  random characters and no placeholder, enforced at boot). Set
+  `SCRAPER_API_URL` on the API to this `https://` URL.
+- Render may restart a Free instance at any time. An interrupted run is
+  recovered as stale on the next boot and retried by the hourly retry cron
+  while the process is awake.
 
 In production every real portal is **disabled** until its `PORTAL_<NAME>_ENABLED=true`
-is set (names in `.env.example`). The control API refuses to start without a
-real `SCRAPER_API_TOKEN`.
+is set (names in `.env.example`). Enable one server-rendered portal first
+(CPPP or eProcure), trigger it from the admin panel, and read its run record
+before enabling more.
 
 ### 2.6 Vercel (web and admin)
 
@@ -155,6 +195,39 @@ files outside of the Root Directory" enabled, Node 20. Required build variable:
 without it, and on Vercel it must be https and not localhost. Optional:
 `NEXT_PUBLIC_GOOGLE_CLIENT_ID`, `NEXT_PUBLIC_SENTRY_DSN`, `NEXT_PUBLIC_GA_ID`.
 Never set `NEXT_PUBLIC_DEMO_*`.
+
+### 2.7 Scheduled scraping — GitHub Actions (`.github/workflows/scrape.yml`)
+
+The workflow runs every 4 hours (`23 */4 * * *` UTC, off the hour because
+GitHub delays top-of-the-hour schedules) and on manual dispatch. It needs two
+repository secrets and nothing else:
+
+| Secret | Value |
+|---|---|
+| `SCRAPER_API_URL` | the scraper's public URL, `https://<scraper>.onrender.com` |
+| `SCRAPER_API_TOKEN` | the same value as on the scraper and API services |
+
+What one run does:
+
+1. Polls `GET /api/ready` every 15 s for up to 5 minutes until it answers 200
+   with `ready: true` (Render's wake-up page is a 503 until then).
+2. Exits early, successfully, if the engine reports scheduling paused or no
+   enabled portal.
+3. Polls `GET /api/ready` and `GET /api/runs` every 30 s (the polling is the
+   keep-alive) until the process has been up for at least 6½ minutes (one
+   missed-window sweep), the BullMQ queue has nothing waiting, active or
+   delayed, and no run is `PENDING` or `RUNNING`, observed twice in a row; or
+   until 22 minutes have passed, in which case it warns and exits 0 (the runs
+   continue on the engine). The job's hard limit is 30 minutes.
+4. Writes a table of the runs created during the wake-up to the job summary.
+
+The workflow never calls `POST /api/portals/<key>/run`: which portals run, and
+when, is decided by the engine (`PORTAL_<NAME>_ENABLED` AND the admin toggle,
+each portal's own cron, the per-portal lock). The job fails only when the
+service never becomes ready, stops answering, or rejects the token. Standard
+runners are free and unlimited for this public repository. GitHub disables
+schedules in a public repository after 60 days without repository activity; a
+manual dispatch re-enables them.
 
 ## 3. Environment variables
 
@@ -178,7 +251,7 @@ Never set `NEXT_PUBLIC_DEMO_*`.
 | `CORS_ORIGINS` | no | no | Extra exact origins (custom domain + `*.vercel.app` preview is NOT allowed: wildcards refused) | comma-separated https origins |
 | `AI_SERVICE_URL` | yes (for AI features) | no | Where the AI service listens | `https://<ai-service>.onrender.com` or internal URL |
 | `AI_SERVICE_TOKEN` | yes (for AI features) | yes | Bearer token sent to the AI service | ≥ 16 chars, random (`openssl rand -hex 24`); unset disables AI calls |
-| `SCRAPER_API_URL` | yes | no | Scraper control API | internal URL of the scraper service, e.g. `http://<scraper>:10000` |
+| `SCRAPER_API_URL` | yes | no | Scraper control API | public URL of the scraper web service, e.g. `https://<scraper>.onrender.com` (a Free instance has no private network) |
 | `SCRAPER_API_TOKEN` | yes | yes | Bearer token for the scraper control API | ≥ 16 chars, random |
 | `SCRAPER_QUEUE_FALLBACK` | no | no | Queue a run when the scraper API is unreachable | `true` (default) |
 | `ELASTICSEARCH_ENABLED` | no | no | `false` for v1 (no cluster) | `true`/`false` |
@@ -243,7 +316,7 @@ API refuses to start with the first three when they would change behaviour.
 | `SCRAPER_API_ALLOWED_ORIGINS` | no | no | CORS; leave empty | comma-separated |
 | `PORTAL_<NAME>_ENABLED` | per portal | no | Opt each real portal in | `true` (GEM, CPPP, EPROCURE, GUJARAT, MAHARASHTRA, RAJASTHAN, KARNATAKA, TAMILNADU, UP, MP, DELHI, KERALA, WB) |
 | `SCRAPER_CONCURRENCY`, `SCRAPER_REQUEST_DELAY_MS`, `SCRAPER_MAX_PAGES`, `QUEUE_*`, `PROXY_URLS`, `LOG_LEVEL` | no | no | Tuning | see `.env.example` |
-| `PLAYWRIGHT_BROWSERS_PATH` | set by the image | no | Browser location | `/ms-playwright` |
+| `PLAYWRIGHT_*`, `SCRAPER_API_PORT` | — | — | Do not set: no browser is used, and Render supplies `PORT` | — |
 
 Must **not** be set: `DEMO_SCRAPER_MODE`, `SCRAPER_ALLOW_INSECURE_TLS` (ignored in
 production anyway).
@@ -295,9 +368,12 @@ production anyway).
 
 - Render private services and the API reach each other over the private
   network by service hostname and the `PORT` each service listens on. Put the
-  resulting URLs into `AI_SERVICE_URL` and `SCRAPER_API_URL` on the API.
-- The scraper's control API is reachable only inside the private network; the
-  API authenticates to it with `SCRAPER_API_TOKEN`.
+  resulting URL into `AI_SERVICE_URL` on the API.
+- The scraper runs on a Free web service, which cannot join the private
+  network, so `SCRAPER_API_URL` is its public `https://…onrender.com` URL. The
+  API and the GitHub Actions workflow authenticate to it with
+  `SCRAPER_API_TOKEN`; the two health endpoints are the only unauthenticated
+  routes.
 - The AI service must never be public: keep it a Private Service.
 - CORS on the API trusts exactly `FRONTEND_URL`, `ADMIN_URL` and `CORS_ORIGINS`.
   Vercel preview URLs are not trusted (no wildcards); add a stable custom
@@ -336,6 +412,11 @@ production anyway).
    real Google OAuth client.
 8. The notification worker's failure path has been unit-tested but not
    exercised against a live BullMQ worker.
+9. **The scraper sleeps between wake-ups.** On the Free instance scheduled
+   scraping happens only during the 4-hourly GitHub Actions window (§ 2.7),
+   so a portal's effective interval is 4 hours, and a manual run started from
+   the admin panel can take a minute or two to begin. The admin Scrapers page
+   shows the engine as unreachable while it sleeps; that is expected.
 
 ## 9. Manual steps before deployment
 
@@ -343,8 +424,9 @@ production anyway).
    `SCRAPER_API_TOKEN` (random, ≥ 32 chars for the JWT pair).
 2. Create the Render Postgres (Singapore) and Key Value (persistent,
    `noeviction`) instances; note their internal URLs.
-3. Create the services in this order: AI service, scraper, API, notification
-   worker. The API needs the internal URLs of the first two.
+3. Create the services in this order: AI service, scraper (§ 2.5), API,
+   notification worker. The API needs the AI service's internal URL and the
+   scraper's public URL.
 4. Configure one email provider on the notification worker and one SMS
    provider on the API (or accept that phone sign-in answers 503).
 5. Razorpay: live keys plus a webhook pointing at
@@ -353,6 +435,8 @@ production anyway).
    `NEXT_PUBLIC_GOOGLE_CLIENT_ID` on Vercel.
 7. Run the first deploy of the API (the pre-deploy command applies the
    migrations), then seed the first SUPER_ADMIN as described in §4.
-8. Enable the portals you want scraped with `PORTAL_<NAME>_ENABLED=true`.
+8. Add the `SCRAPER_API_URL` and `SCRAPER_API_TOKEN` repository secrets on
+   GitHub and run the `Scrape Portals` workflow once by hand (§ 2.7). Then
+   enable portals one at a time with `PORTAL_<NAME>_ENABLED=true`.
 9. Decide on object storage for uploads before enabling document upload for
    users.

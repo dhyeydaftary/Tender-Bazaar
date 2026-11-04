@@ -1,0 +1,267 @@
+name: Scrape Portals
+
+# Wakes the scraper engine (a Render Free web service that spins down after
+# 15 minutes without inbound traffic) and keeps it awake until its OWN
+# scheduler has run whatever is due. See docs/DEPLOYMENT.md § 2.7.
+#
+# This workflow deliberately never calls POST /api/portals/<key>/run:
+#
+#   - Which portals may be scraped is decided inside the engine
+#     (PORTAL_<NAME>_ENABLED on the service AND the admin toggle in
+#     ScraperHealth). The control API's manual-run endpoint honours a human
+#     instruction even for a portal the environment has disabled, so a
+#     workflow that triggered portals itself could scrape one the operator
+#     never switched on.
+#   - Which portals are DUE is the engine's cron maths (each portal has its own
+#     interval: GeM 2 h, CPPP/eProcure 4 h, states 6 h). While the process is
+#     awake node-cron fires on time; windows that passed while it slept are
+#     replayed by the missed-window sweep (scheduler/missed-windows.ts), at
+#     most one catch-up run per portal per 5-minute sweep. Re-implementing
+#     that here would be a second copy of the schedule that could drift.
+#   - Duplicates are prevented by the engine's per-portal lock, so even an
+#     admin clicking "Run" during this window cannot start a second run.
+#
+# So the job's only duties are: wake the service, wait for /api/ready, then
+# poll (which is itself the inbound traffic that keeps the instance up) until
+# the queue is idle and no run is in progress, or the time budget is spent.
+#
+# Secrets: SCRAPER_API_URL (the service's public https URL) and
+# SCRAPER_API_TOKEN (the engine's control-API bearer token). Nothing else.
+# Neither is echoed; curl runs with stderr discarded so a connection error
+# cannot print the host, and the token travels only in a request header.
+
+on:
+  schedule:
+    # Every 4 hours at :23 UTC. Off the hour on purpose: GitHub warns that
+    # schedules at the top of the hour are the most delayed or dropped.
+    # Portal crons (UTC) are at :00–:50 of hours 0/2/4/6..., so each wake
+    # finds the windows that passed since the last one and replays them.
+    - cron: '23 */4 * * *'
+  workflow_dispatch:
+
+# One wake-and-wait at a time; a manual dispatch queues behind a scheduled run
+# instead of racing it.
+concurrency:
+  group: scrape-portals
+  cancel-in-progress: false
+
+# No checkout and no GitHub API calls: the job needs no token at all.
+permissions: {}
+
+jobs:
+  wake-and-wait:
+    name: Wake scraper and wait for scheduled runs
+    runs-on: ubuntu-latest
+    # Hard ceiling. The script's own budget (MAX_WAIT_SECONDS below) ends
+    # before this so the summary step still runs.
+    timeout-minutes: 30
+    env:
+      SCRAPER_API_URL: ${{ secrets.SCRAPER_API_URL }}
+      SCRAPER_API_TOKEN: ${{ secrets.SCRAPER_API_TOKEN }}
+    steps:
+      - name: Check configuration
+        run: |
+          set -euo pipefail
+          if [ -z "${SCRAPER_API_URL:-}" ] || [ -z "${SCRAPER_API_TOKEN:-}" ]; then
+            echo "::error::SCRAPER_API_URL and SCRAPER_API_TOKEN must be set as repository secrets."
+            exit 1
+          fi
+          case "$SCRAPER_API_URL" in
+            https://*) ;;
+            *) echo "::error::SCRAPER_API_URL must be an https:// URL."; exit 1 ;;
+          esac
+
+      - name: Wake the scraper and wait for its scheduled runs
+        env:
+          # Tunables (seconds). Defaults fit the 30-minute job ceiling.
+          WAKE_TIMEOUT_SECONDS: '300'   # Render spins a Free service up in ~1 min
+          WAKE_POLL_SECONDS: '15'
+          POLL_SECONDS: '30'            # also the keep-alive heartbeat
+          MIN_UPTIME_SECONDS: '390'     # first missed-window sweep is at +300 s
+          MAX_WAIT_SECONDS: '1320'      # 22 min from job start
+          IDLE_POLLS_REQUIRED: '2'      # consecutive idle observations before "done"
+          MAX_CONSECUTIVE_ERRORS: '4'
+        run: |
+          set -euo pipefail
+
+          BASE="${SCRAPER_API_URL%/}"
+          AUTH="Authorization: Bearer ${SCRAPER_API_TOKEN}"
+          START_EPOCH="$(date -u +%s)"
+          START_ISO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "START_ISO=${START_ISO}" >> "$GITHUB_ENV"
+          BODY="$(mktemp)"
+
+          # GET $1 into $BODY; prints the HTTP status, or 000 when the request
+          # never completed. stderr is discarded so curl cannot print the host.
+          fetch() {
+            local code
+            code="$(curl -s -m 25 -o "$BODY" -w '%{http_code}' -H "$AUTH" "${BASE}$1" 2>/dev/null)" || true
+            echo "${code:-000}"
+          }
+
+          # Read one value out of $BODY with node (always present on the
+          # runner); prints "" on malformed JSON instead of failing the step.
+          jsonq() {
+            node -e '
+              let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+                try {
+                  const j = JSON.parse(s);
+                  const v = process.argv[1].split(".").reduce((o, k) => (o == null ? undefined : o[k]), j);
+                  process.stdout.write(v === undefined || v === null ? "" : String(v));
+                } catch { process.stdout.write(""); }
+              });' "$1" < "$BODY"
+          }
+
+          # Count runs in $BODY (GET /api/runs) whose status is PENDING or RUNNING.
+          inflight_runs() {
+            node -e '
+              let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+                try {
+                  const runs = JSON.parse(s).data || [];
+                  process.stdout.write(String(runs.filter(r => r.status === "PENDING" || r.status === "RUNNING").length));
+                } catch { process.stdout.write(""); }
+              });' < "$BODY"
+          }
+
+          elapsed() { echo $(( $(date -u +%s) - START_EPOCH )); }
+
+          # ── Phase 1: wake up and wait for readiness ────────────────────────
+          echo "Waking the scraper (budget ${WAKE_TIMEOUT_SECONDS}s)..."
+          ready=""
+          last_reason=""
+          while [ "$(elapsed)" -lt "$WAKE_TIMEOUT_SECONDS" ]; do
+            code="$(fetch /api/ready)"
+            if [ "$code" = "200" ] && [ "$(jsonq data.ready)" = "true" ]; then
+              ready=1
+              break
+            fi
+            if [ "$code" = "503" ]; then
+              # The engine answers 503 itself only when it is up but not ready;
+              # Render's wake-up page is also a 503 but carries no JSON reason.
+              r="$(jsonq data.reason)"
+              [ -n "$r" ] && last_reason="$r"
+            fi
+            echo "  not ready yet (HTTP ${code}${last_reason:+, reason: ${last_reason}}), retrying in ${WAKE_POLL_SECONDS}s"
+            sleep "$WAKE_POLL_SECONDS"
+          done
+
+          if [ -z "$ready" ]; then
+            echo "::error::The scraper did not become ready within ${WAKE_TIMEOUT_SECONDS}s${last_reason:+ (last reason: ${last_reason})}. Nothing was triggered."
+            exit 1
+          fi
+
+          uptime="$(jsonq data.uptime)"
+          paused="$(jsonq data.paused)"
+          enabled="$(jsonq data.enabledPortalCount)"
+          echo "Scraper ready after $(elapsed)s (process uptime ${uptime%.*}s, enabled portals: ${enabled:-unknown}, paused: ${paused:-unknown})."
+
+          if [ "$paused" = "true" ]; then
+            echo "::notice::Scheduling is paused by an administrator; the engine will not run any portal. Nothing to wait for."
+            echo "OUTCOME=paused" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [ "$enabled" = "0" ]; then
+            echo "::notice::No portal is enabled on the scraper (PORTAL_<NAME>_ENABLED and the admin toggle). Nothing to wait for."
+            echo "OUTCOME=no-portals" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          # ── Phase 2: keep the instance awake until its own work is done ────
+          # "Done" = the process has been up long enough for one missed-window
+          # sweep to have run, the BullMQ queue has nothing waiting, active or
+          # delayed, and no ScrapingRun is PENDING/RUNNING — seen on
+          # IDLE_POLLS_REQUIRED consecutive polls.
+          echo "Waiting for the engine's scheduled runs (budget ${MAX_WAIT_SECONDS}s from job start)..."
+          idle_polls=0
+          errors=0
+          outcome="timeout"
+          while [ "$(elapsed)" -lt "$MAX_WAIT_SECONDS" ]; do
+            sleep "$POLL_SECONDS"
+
+            code="$(fetch /api/ready)"
+            if [ "$code" != "200" ]; then
+              errors=$((errors + 1))
+              echo "  /api/ready answered HTTP ${code} (${errors}/${MAX_CONSECUTIVE_ERRORS} consecutive errors)"
+              if [ "$errors" -ge "$MAX_CONSECUTIVE_ERRORS" ]; then
+                echo "::error::The scraper stopped answering after it had become ready."
+                exit 1
+              fi
+              continue
+            fi
+            uptime="$(jsonq data.uptime)"; uptime="${uptime%.*}"
+            waiting="$(jsonq data.queue.waiting)"
+            active="$(jsonq data.queue.active)"
+            delayed="$(jsonq data.queue.delayed)"
+
+            code="$(fetch '/api/runs?limit=40')"
+            if [ "$code" != "200" ]; then
+              errors=$((errors + 1))
+              echo "  /api/runs answered HTTP ${code} (${errors}/${MAX_CONSECUTIVE_ERRORS} consecutive errors)"
+              if [ "$code" = "401" ]; then
+                echo "::error::The scraper rejected SCRAPER_API_TOKEN. Check that the secret matches the service."
+                exit 1
+              fi
+              if [ "$errors" -ge "$MAX_CONSECUTIVE_ERRORS" ]; then
+                echo "::error::The scraper stopped answering after it had become ready."
+                exit 1
+              fi
+              continue
+            fi
+            errors=0
+            inflight="$(inflight_runs)"
+
+            echo "  t+$(elapsed)s uptime=${uptime:-?}s queue waiting=${waiting:-?} active=${active:-?} delayed=${delayed:-?} runs in flight=${inflight:-?}"
+
+            sweep_done=0
+            [ -n "$uptime" ] && [ "$uptime" -ge "$MIN_UPTIME_SECONDS" ] && sweep_done=1
+            if [ "$sweep_done" = "1" ] && [ "${waiting:-1}" = "0" ] && [ "${active:-1}" = "0" ] && [ "${delayed:-1}" = "0" ] && [ "${inflight:-1}" = "0" ]; then
+              idle_polls=$((idle_polls + 1))
+              if [ "$idle_polls" -ge "$IDLE_POLLS_REQUIRED" ]; then
+                outcome="completed"
+                break
+              fi
+            else
+              idle_polls=0
+            fi
+          done
+
+          echo "OUTCOME=${outcome}" >> "$GITHUB_ENV"
+          if [ "$outcome" = "completed" ]; then
+            echo "All scheduled work finished; the instance may spin down now."
+          else
+            echo "::warning::Time budget spent while work was still queued or running. Those runs continue on the engine; anything interrupted by a later spin-down is recovered as a stale run and retried on the next wake."
+          fi
+
+      - name: Summarise runs
+        if: always() && env.START_ISO != ''
+        run: |
+          set -euo pipefail
+          BASE="${SCRAPER_API_URL%/}"
+          BODY="$(mktemp)"
+          code="$(curl -s -m 25 -o "$BODY" -w '%{http_code}' -H "Authorization: Bearer ${SCRAPER_API_TOKEN}" "${BASE}/api/runs?limit=60" 2>/dev/null)" || true
+          code="${code:-000}"
+          # shellcheck disable=SC2016  # the ${...} below are JavaScript template literals, not shell
+          {
+            echo "## Scrape wake-up ${START_ISO}"
+            echo
+            echo "Outcome: **${OUTCOME:-not ready}**"
+            echo
+            if [ "$code" != "200" ]; then
+              echo "_Run list unavailable (HTTP ${code})._"
+            else
+              START_ISO="$START_ISO" node -e '
+                let s = ""; process.stdin.on("data", d => s += d).on("end", () => {
+                  let runs = [];
+                  try { runs = JSON.parse(s).data || []; } catch {}
+                  const since = new Date(process.env.START_ISO).getTime() - 10 * 60 * 1000;
+                  const rows = runs.filter(r => new Date(r.createdAt).getTime() >= since);
+                  if (rows.length === 0) { console.log("_No runs were created during this wake-up._"); return; }
+                  console.log("| Portal | Status | Trigger | Found | New | Updated | Errors | Pages | Duration |");
+                  console.log("|---|---|---|---|---|---|---|---|---|");
+                  for (const r of rows) {
+                    const d = r.duration == null ? "" : Math.round(r.duration / 1000) + " s";
+                    console.log(`| ${r.portalName} | ${r.status} | ${r.triggeredBy} | ${r.totalFound} | ${r.newTenders} | ${r.updatedTenders} | ${r.errors} | ${r.pagesScraped} | ${d} |`);
+                  }
+                });' < "$BODY"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
