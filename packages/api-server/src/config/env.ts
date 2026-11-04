@@ -177,28 +177,82 @@ function connectionPassword(url: string): string | null {
 }
 
 /**
+ * What a production REDIS_URL looks like once parsed. `null` when the value is
+ * not a redis:// or rediss:// URL at all.
+ */
+export function parseRedisUrl(
+  value: string | undefined,
+): { host: string; username: string; password: string | null; tls: boolean } | null {
+  const trimmed = (value ?? '').trim();
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'redis:' && url.protocol !== 'rediss:') return null;
+  if (!url.hostname) return null;
+  const decode = (raw: string) => {
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  };
+  const password = url.password === '' ? null : decode(url.password);
+  return { host: url.hostname, username: decode(url.username), password, tls: url.protocol === 'rediss:' };
+}
+
+/**
  * Production must not run on the development infrastructure credentials.
  *
  * `REDIS_PASSWORD` previously defaulted to the literal `changeme` in
  * docker-compose.prod.yml, and the database password defaulted to `postgres`,
  * so a deployment that set neither came up fully functional and fully
- * guessable. Exported for unit testing; values never appear in the messages.
+ * guessable.
+ *
+ * Redis in particular:
+ *   - the URL must parse as redis:// or rediss://;
+ *   - an unauthenticated loopback URL is the development default and refused;
+ *   - a password, when present, must not be a known placeholder;
+ *   - a username without a password is malformed and refused;
+ *   - a URL WITHOUT a password is accepted only with the explicit opt-in
+ *     REDIS_ALLOW_UNAUTHENTICATED=true. Render's Key Value service hands out
+ *     an internal URL with no credentials by default; the opt-in records the
+ *     operator's statement that the instance is reachable only on a private
+ *     network. Nothing is inferred from the hostname, which the API cannot
+ *     verify.
+ *
+ * Exported for unit testing; values never appear in the messages.
  */
 export function validateProductionConnections(input: {
   NODE_ENV?: string;
   DATABASE_URL?: string;
   REDIS_URL?: string;
+  REDIS_ALLOW_UNAUTHENTICATED?: string;
 }): string[] {
   if (input.NODE_ENV !== 'production') return [];
 
   const problems: string[] = [];
 
-  const redisPassword = connectionPassword(input.REDIS_URL ?? '');
-  if (redisPassword === null) {
-    problems.push(
-      'REDIS_URL: must include credentials in production (set REDIS_PASSWORD; Redis holds the scheduler state and job queues).',
-    );
-  } else if (WEAK_CONNECTION_PASSWORDS.has(redisPassword.toLowerCase())) {
+  const redis = parseRedisUrl(input.REDIS_URL);
+  if (!redis) {
+    problems.push('REDIS_URL: must be a valid redis:// or rediss:// URL in production.');
+  } else if (redis.password === null) {
+    if (isLoopbackHost(redis.host)) {
+      // An unauthenticated loopback URL is the development default, whatever
+      // the opt-in says. An authenticated loopback URL (a sidecar) stays valid.
+      problems.push('REDIS_URL: must not be the unauthenticated localhost default in production.');
+    } else if (redis.username !== '') {
+      problems.push('REDIS_URL: has a username but no password; the credentials are malformed.');
+    } else if (input.REDIS_ALLOW_UNAUTHENTICATED !== 'true') {
+      problems.push(
+        'REDIS_URL: has no password. Either put the Redis password in the URL, or set ' +
+          'REDIS_ALLOW_UNAUTHENTICATED=true to confirm this Redis is reachable only on a private network ' +
+          "(for example Render Key Value's internal URL with authentication off).",
+      );
+    }
+  } else if (WEAK_CONNECTION_PASSWORDS.has(redis.password.toLowerCase())) {
     problems.push(
       'REDIS_URL: uses a placeholder Redis password. Set REDIS_PASSWORD to a real value.',
     );
@@ -406,6 +460,10 @@ export function validateDeploymentEnvironment(raw: Record<string, string | undef
     problems.push('DATABASE_URL: must be set in production (the development default points at localhost).');
   }
 
+  if ((raw.REDIS_URL ?? '').trim() === '') {
+    problems.push('REDIS_URL: must be set in production (the development default points at localhost).');
+  }
+
   if ((raw.FRONTEND_URL ?? '').trim() === '') {
     problems.push('FRONTEND_URL: must be set in production; it is the web origin trusted by CORS and used in emailed links.');
   } else {
@@ -464,6 +522,13 @@ export const envSchema = z
   PORT: z.coerce.number().default(4000),
   DATABASE_URL: z.string().default('postgresql://postgres:postgres@localhost:5432/tenderbazaar'),
   REDIS_URL: z.string().default('redis://localhost:6379'),
+  /**
+   * Explicit statement that REDIS_URL may carry no password because the Redis
+   * instance is reachable only on a private network (Render Key Value's
+   * default internal URL). Without it, production refuses an unauthenticated
+   * URL. It never relaxes the placeholder-password or malformed-URL checks.
+   */
+  REDIS_ALLOW_UNAUTHENTICATED: z.enum(['true', 'false']).default('false'),
   ELASTICSEARCH_URL: z.string().default('http://localhost:9200'),
   /**
    * Elasticsearch is optional: tender search falls back to PostgreSQL whenever

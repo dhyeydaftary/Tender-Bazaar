@@ -167,7 +167,8 @@ Never set `NEXT_PUBLIC_DEMO_*`.
 | `NODE_ENV` | yes | no | Selects production rules; refused on Render otherwise | `production` |
 | `PORT` | set by Render | no | Listening port | integer |
 | `DATABASE_URL` | yes | yes | PostgreSQL (Prisma) | `postgresql://user:pass@host:5432/db?connection_limit=10&pool_timeout=20` |
-| `REDIS_URL` | yes | yes | Sessions, OTP, plan cache, BullMQ | `rediss://default:password@host:6379` (password required in production) |
+| `REDIS_URL` | yes | yes | Sessions, OTP, plan cache, BullMQ | Render's internal Key Value URL (`redis://<host>:6379`, no password) with `REDIS_ALLOW_UNAUTHENTICATED=true`, or `rediss://default:password@host:6379` |
+| `REDIS_ALLOW_UNAUTHENTICATED` | with an unauthenticated URL | no | Confirms the Redis is private-network only; otherwise a URL without a password is refused | `true` for Render's default internal URL, `false` everywhere else |
 | `JWT_SECRET` | yes | yes | Signs access tokens | ≥ 32 chars, random (`openssl rand -base64 48`) |
 | `JWT_REFRESH_SECRET` | yes | yes | Signs refresh tokens | ≥ 32 chars, different from `JWT_SECRET` |
 | `JWT_EXPIRY` | no | no | Access token lifetime | default `15m` |
@@ -271,8 +272,18 @@ production anyway).
 - Render Key Value, **paid/persistent** plan, `maxmemory-policy noeviction`.
   OTP lockouts and throttles, token revocations, plan caches and the BullMQ
   queues live here; eviction would silently lift lockouts.
-- The URL must carry a password (the API refuses to start otherwise) and may
-  use `rediss://` (ioredis and BullMQ support TLS from the URL scheme).
+- Render's default **internal** connection URL has no password
+  (`redis://<host>:6379`) and is reachable only from services in the same
+  Render workspace and region. The API accepts it when
+  `REDIS_ALLOW_UNAUTHENTICATED=true` is set alongside it; that flag is an
+  explicit operator statement, not something inferred from the hostname. A
+  URL that carries a password is validated as before (placeholders refused),
+  a username without a password is refused, an unauthenticated loopback URL
+  (the development default) is refused while an authenticated one is still
+  accepted, and `rediss://` works (ioredis and BullMQ take TLS from the URL
+  scheme). If you
+  later enable Render's internal authentication, put the password in the URL
+  and remove the flag.
 - When Redis is unreachable the API fails closed: authenticated requests error
   (token revocation cannot be checked), OTP operations error, `/health` is 503.
   There is no in-memory substitute.
