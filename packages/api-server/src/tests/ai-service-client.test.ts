@@ -70,6 +70,7 @@ const SRC = join(__dirname, '..');
   const base = {
     NODE_ENV: 'production',
     DATABASE_URL: 'postgresql://app:Real-Db-Pass-123@db.internal:5432/tenderbazaar',
+    REDIS_URL: 'rediss://default:Real-Redis-Pass-456@redis.internal:6379',
     FRONTEND_URL: 'https://app.tenderbazaar.example',
   };
   assert.deepEqual(validateDeploymentEnvironment(base), [], 'unset is allowed (AI calls disabled)');
